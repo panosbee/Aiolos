@@ -1,0 +1,100 @@
+# ══════════════════════════════════════════════════════════════
+#  XDART-Φ × XHEART — Docker Compose (Production)
+#
+#  Usage:
+#    cp .env.production .env          # fill in your API keys
+#    docker compose up -d             # start everything
+#    docker compose logs -f xdart     # watch logs
+#    docker compose down              # stop
+#
+#  Architecture:
+#    xdart      — FastAPI app (port 8000 internal)
+#    searxng    — Meta search engine (port 8888 internal)
+#    nginx      — Reverse proxy + SSL termination (port 80/443)
+# ══════════════════════════════════════════════════════════════
+
+services:
+  # ── XDART-Φ Application ──
+  xdart:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xdart-phi
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/app/data
+      - SEARXNG_URL=http://searxng:8080
+      - LOG_LEVEL=INFO
+    volumes:
+      # Persistent data — survives container rebuilds
+      - xdart-data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"  # Only localhost — nginx handles external
+    depends_on:
+      - searxng
+    networks:
+      - xdart-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+
+  # ── SearXNG Meta Search Engine ──
+  searxng:
+    image: searxng/searxng:latest
+    container_name: xdart-searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-xdart-phi-search-2026}
+    volumes:
+      - searxng-data:/etc/searxng
+    networks:
+      - xdart-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── Nginx Reverse Proxy + SSL ──
+  nginx:
+    image: nginx:alpine
+    container_name: xdart-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certbot/conf:/etc/letsencrypt:ro
+      - ./deploy/certbot/www:/var/www/certbot:ro
+    depends_on:
+      - xdart
+    networks:
+      - xdart-net
+
+  # ── Certbot (SSL certificate renewal) ──
+  certbot:
+    image: certbot/certbot
+    container_name: xdart-certbot
+    volumes:
+      - ./deploy/certbot/conf:/etc/letsencrypt
+      - ./deploy/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - xdart-net
+
+volumes:
+  xdart-data:
+    driver: local
+  searxng-data:
+    driver: local
+
+networks:
+  xdart-net:
+    driver: bridge

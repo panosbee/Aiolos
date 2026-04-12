@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XDART-Φ × XHEART Framework</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400;500&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0a0a0f;
+    --paper: #f5f0e8;
+    --gold: #c9a84c;
+    --gold-dim: #8a6e2f;
+    --ember: #e05c2a;
+    --void: #12121a;
+    --mist: #d4cfc6;
+    --pulse: #4a9eff;
+    --serif: 'Cormorant Garamond', Georgia, serif;
+    --mono: 'JetBrains Mono', monospace;
+    --display: 'Bebas Neue', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--void);
+    color: var(--paper);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── HERO ── */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 60px 40px;
+    position: relative;
+    background: radial-gradient(ellipse at 50% 40%, #1a1428 0%, var(--void) 70%);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: 
+      repeating-linear-gradient(0deg, transparent, transparent 60px, rgba(201,168,76,0.03) 60px, rgba(201,168,76,0.03) 61px),
+      repeating-linear-gradient(90deg, transparent, transparent 60px, rgba(201,168,76,0.03) 60px, rgba(201,168,76,0.03) 61px);
+  }
+
+  .hero-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 32px;
+    opacity: 0;
+    animation: fadeUp 1s 0.3s forwards;
+  }
+
+  .hero-title {
+    font-family: var(--display);
+    font-size: clamp(72px, 12vw, 160px);
+    letter-spacing: 8px;
+    line-height: 0.9;
+    color: var(--paper);
+    margin-bottom: 16px;
+    opacity: 0;
+    animation: fadeUp 1s 0.6s forwards;
+  }
+
+  .hero-title span {
+    color: var(--gold);
+  }
+
+  .hero-subtitle {
+    font-family: var(--display);
+    font-size: clamp(28px, 4vw, 52px);
+    letter-spacing: 6px;
+    color: var(--ember);
+    margin-bottom: 40px;
+    opacity: 0;
+    animation: fadeUp 1s 0.9s forwards;
+  }
+
+  .hero-desc {
+    max-width: 680px;
+    font-style: italic;
+    font-size: 20px;
+    color: var(--mist);
+    line-height: 1.8;
+    opacity: 0;
+    animation: fadeUp 1s 1.2s forwards;
+  }
+
+  .hero-line {
+    width: 1px;
+    height: 80px;
+    background: linear-gradient(to bottom, var(--gold), transparent);
+    margin: 48px auto 0;
+    opacity: 0;
+    animation: fadeUp 1s 1.5s forwards;
+  }
+
+  /* ── SECTIONS ── */
+  .section {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 100px 40px;
+  }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 5px;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, var(--gold-dim), transparent);
+  }
+
+  .section-title {
+    font-family: var(--serif);
+    font-size: clamp(32px, 5vw, 56px);
+    font-weight: 300;
+    line-height: 1.2;
+    margin-bottom: 40px;
+    color: var(--paper);
+  }
+
+  .section-title em {
+    color: var(--gold);
+    font-style: italic;
+  }
+
+  .prose {
+    font-size: 19px;
+    color: #c8c2b8;
+    line-height: 1.9;
+    margin-bottom: 32px;
+  }
+
+  .prose strong {
+    color: var(--paper);
+    font-weight: 600;
+  }
+
+  /* ── FRAMEWORK ARCHITECTURE ── */
+  .architecture {
+    background: #0f0f18;
+    border: 1px solid rgba(201,168,76,0.15);
+    padding: 60px 40px;
+    margin: 60px 0;
+    position: relative;
+  }
+
+  .architecture::before {
+    content: 'ARCHITECTURE';
+    position: absolute;
+    top: -1px;
+    left: 40px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 4px;
+    color: var(--gold);
+    background: #0f0f18;
+    padding: 0 12px;
+  }
+
+  .phase {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 24px;
+    margin-bottom: 48px;
+    position: relative;
+  }
+
+  .phase:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 23px;
+    top: 52px;
+    width: 1px;
+    height: calc(100% - 4px);
+    background: linear-gradient(to bottom, var(--gold-dim), transparent);
+  }
+
+  .phase-number {
+    width: 48px;
+    height: 48px;
+    border: 1px solid var(--gold-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--gold);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+    background: #0f0f18;
+  }
+
+  .phase-content h3 {
+    font-family: var(--display);
+    font-size: 28px;
+    letter-spacing: 3px;
+    color: var(--paper);
+    margin-bottom: 8px;
+    padding-top: 8px;
+  }
+
+  .phase-content h3 span {
+    color: var(--gold);
+  }
+
+  .phase-content p {
+    color: #a09890;
+    font-size: 16px;
+    line-height: 1.7;
+    margin-bottom: 12px;
+  }
+
+  .phase-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2px;
+    padding: 4px 10px;
+    border: 1px solid rgba(201,168,76,0.3);
+    color: var(--gold-dim);
+    margin-right: 8px;
+    margin-bottom: 8px;
+  }
+
+  .phase-highlight {
+    border-left: 2px solid var(--ember);
+    padding-left: 20px;
+    margin-top: 16px;
+  }
+
+  .phase-highlight p {
+    color: #c8a878 !important;
+    font-style: italic;
+  }
+
+  /* ── ROADMAP ── */
+  .roadmap {
+    margin: 60px 0;
+  }
+
+  .roadmap-item {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 32px;
+    margin-bottom: 40px;
+    align-items: start;
+  }
+
+  .roadmap-week {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: var(--gold);
+    padding-top: 4px;
+    text-align: right;
+    padding-right: 32px;
+    border-right: 1px solid rgba(201,168,76,0.2);
+  }
+
+  .roadmap-content h4 {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--paper);
+    margin-bottom: 8px;
+  }
+
+  .roadmap-content p {
+    font-size: 16px;
+    color: #908880;
+    line-height: 1.6;
+  }
+
+  .roadmap-deliverable {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ember);
+    margin-top: 8px;
+    letter-spacing: 1px;
+  }
+
+  /* ── DEMO ── */
+  .demo-section {
+    background: #080810;
+    border-top: 1px solid rgba(201,168,76,0.1);
+    border-bottom: 1px solid rgba(201,168,76,0.1);
+    padding: 80px 40px;
+  }
+
+  .demo-inner {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .demo-input-area {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 40px;
+    flex-wrap: wrap;
+  }
+
+  .demo-input {
+    flex: 1;
+    min-width: 260px;
+    background: transparent;
+    border: 1px solid rgba(201,168,76,0.3);
+    color: var(--paper);
+    font-family: var(--serif);
+    font-size: 17px;
+    padding: 16px 20px;
+    outline: none;
+    transition: border-color 0.3s;
+  }
+
+  .demo-input:focus {
+    border-color: var(--gold);
+  }
+
+  .demo-input::placeholder {
+    color: #504840;
+    font-style: italic;
+  }
+
+  .demo-btn {
+    background: var(--gold);
+    color: var(--void);
+    border: none;
+    font-family: var(--display);
+    font-size: 18px;
+    letter-spacing: 3px;
+    padding: 16px 36px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  .demo-btn:hover { background: #d4b460; }
+  .demo-btn:active { transform: scale(0.98); }
+  .demo-btn:disabled { background: #3a3020; color: #7a6840; cursor: not-allowed; }
+
+  .demo-output {
+    display: none;
+  }
+
+  .demo-output.visible {
+    display: block;
+  }
+
+  .output-phase {
+    border: 1px solid rgba(201,168,76,0.12);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  .output-phase-header {
+    background: rgba(201,168,76,0.06);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid rgba(201,168,76,0.1);
+  }
+
+  .output-phase-num {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--gold);
+    letter-spacing: 2px;
+  }
+
+  .output-phase-name {
+    font-family: var(--display);
+    font-size: 16px;
+    letter-spacing: 2px;
+    color: var(--paper);
+  }
+
+  .output-phase-body {
+    padding: 24px 20px;
+    font-size: 16px;
+    color: #b8b0a4;
+    line-height: 1.8;
+    min-height: 60px;
+  }
+
+  .output-phase-body.streaming::after {
+    content: '▌';
+    animation: blink 0.7s infinite;
+    color: var(--gold);
+  }
+
+  .heart-output {
+    border: 1px solid rgba(224,92,42,0.3);
+    background: rgba(224,92,42,0.04);
+  }
+
+  .heart-output .output-phase-header {
+    background: rgba(224,92,42,0.08);
+    border-bottom-color: rgba(224,92,42,0.2);
+  }
+
+  .heart-output .output-phase-num {
+    color: var(--ember);
+  }
+
+  .heart-output .output-phase-name {
+    color: var(--ember);
+  }
+
+  .memory-badge {
+    margin-top: 20px;
+    border: 1px dashed rgba(74,158,255,0.3);
+    padding: 16px 20px;
+    display: none;
+  }
+
+  .memory-badge.visible {
+    display: block;
+  }
+
+  .memory-badge-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--pulse);
+    margin-bottom: 8px;
+  }
+
+  .memory-badge-content {
+    font-size: 15px;
+    color: #7090b0;
+    font-style: italic;
+  }
+
+  .memory-list {
+    margin-top: 16px;
+    padding: 16px 20px;
+    background: rgba(74,158,255,0.04);
+    border: 1px solid rgba(74,158,255,0.1);
+  }
+
+  .memory-list-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--pulse);
+    margin-bottom: 12px;
+    opacity: 0.7;
+  }
+
+  .memory-entry {
+    font-size: 13px;
+    color: #607080;
+    font-family: var(--mono);
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(74,158,255,0.06);
+  }
+
+  .memory-entry:last-child { border: none; }
+
+  /* ── TRUTH BOX ── */
+  .truth-box {
+    background: rgba(224,92,42,0.06);
+    border: 1px solid rgba(224,92,42,0.2);
+    padding: 40px;
+    margin: 60px 0;
+  }
+
+  .truth-box h3 {
+    font-family: var(--display);
+    font-size: 32px;
+    letter-spacing: 3px;
+    color: var(--ember);
+    margin-bottom: 20px;
+  }
+
+  .truth-box p {
+    color: #c0a898;
+    font-size: 17px;
+    line-height: 1.8;
+    margin-bottom: 16px;
+  }
+
+  /* ── QUOTE ── */
+  .pull-quote {
+    border-left: 3px solid var(--gold);
+    padding: 24px 0 24px 40px;
+    margin: 48px 0;
+    font-size: 26px;
+    font-style: italic;
+    color: var(--paper);
+    font-weight: 300;
+    line-height: 1.5;
+  }
+
+  /* ── FOOTER ── */
+  .footer {
+    text-align: center;
+    padding: 60px 40px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: #3a3530;
+    border-top: 1px solid rgba(201,168,76,0.08);
+  }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .fade-in {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.8s, transform 0.8s;
+  }
+
+  .fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 600px) {
+    .roadmap-item { grid-template-columns: 1fr; }
+    .roadmap-week { text-align: left; border-right: none; border-left: 2px solid rgba(201,168,76,0.2); padding-left: 16px; padding-right: 0; }
+    .demo-input-area { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-label">Epistemological Architecture for AI Reasoning</div>
+  <div class="hero-title">XDART<span>-Φ</span></div>
+  <div class="hero-subtitle">× XHEART</div>
+  <p class="hero-desc">
+    Ένα framework για το πώς πρέπει να σκέφτεται ένα νοήμον σύστημα —
+    με φιλοσοφική θεμελίωση, cross-domain reasoning, εσωτερικό απόσταγμα,
+    και επεισοδιακή μνήμη εμπειρίας.
+  </p>
+  <div class="hero-line"></div>
+</section>
+
+<!-- NARRATIVE -->
+<section class="section fade-in">
+  <div class="section-label">Narrative</div>
+  <h2 class="section-title">Το <em>πρόβλημα</em> που λύνει</h2>
+
+  <p class="prose">
+    Τα σημερινά LLMs είναι εξαιρετικά έξυπνα αλλά <strong>μονοδιάστατα</strong>. 
+    Κοιτούν κάθε πρόβλημα από την οπτική που υπερ-εκπροσωπείται στο training data τους. 
+    Παράγουν απαντήσεις που είναι <strong>additive</strong> — μαζεύουν, αθροίζουν, συνοψίζουν.
+  </p>
+
+  <p class="prose">
+    Αυτό που λείπει: ένα σύστημα που κοιτά το ίδιο πρόβλημα από παντού, 
+    το αφήνει να "καθίσει", νιώθει τον ζωμό των οπτικών, 
+    και μετά μιλά — <strong>distillative, όχι additive</strong>.
+  </p>
+
+  <div class="pull-quote">
+    "Δεν χρειαζόμαστε LLMs που ξέρουν περισσότερα.<br>
+    Χρειαζόμαστε LLMs που βλέπουν βαθύτερα."
+  </div>
+
+  <p class="prose">
+    Το XDART-Φ × XHEART δεν είναι prompting trick. 
+    Είναι <strong>αρχιτεκτονική πρόταση</strong> για το πώς ένα νοήμον σύστημα 
+    πρέπει να επεξεργάζεται το πραγματικό — με φιλοσοφική θεμελίωση 
+    ως βάση, cross-domain reasoning ως μέθοδο, 
+    και επεισοδιακή μνήμη εσωτερικής κατάστασης ως εξέλιξη.
+  </p>
+</section>
+
+<!-- ARCHITECTURE -->
+<section class="section fade-in">
+  <div class="section-label">Framework</div>
+  <h2 class="section-title">Η <em>αρχιτεκτονική</em></h2>
+
+  <div class="architecture">
+
+    <div class="phase">
+      <div class="phase-number">Φ</div>
+      <div class="phase-content">
+        <h3><span>ΦΙΛΟΣΟΦΙΑ</span> — Ontological Grounding</h3>
+        <p>Πριν από οτιδήποτε άλλο: τι <em>είναι</em> αυτό το πρόβλημα στη βαθύτερη μορφή του; 
+        Οντολογία, τελεολογία, αιτιότητα. Ο ορισμός του αντικειμένου αλλάζει τα πάντα που ακολουθούν.</p>
+        <div class="phase-highlight"><p>"Alzheimer δεν είναι νευροεκφύλιση — είναι αποτυχία συστήματος να διατηρήσει πληροφορία."</p></div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-number">01</div>
+      <div class="phase-content">
+        <h3>XDART-<span>Φ</span> — Cross-Domain Reasoning</h3>
+        <p>Domain-agnostic. Το πρόβλημα εξετάζεται από N domains — όσα χρειάζεται, όχι fixed αριθμός. 
+        Κάθε domain εκθέτει έναν μηχανισμό. Ψάχνουμε structural analogies μεταξύ τους.</p>
+        <div>
+          <span class="phase-tag">PHYSICS</span>
+          <span class="phase-tag">COMPUTATION</span>
+          <span class="phase-tag">ENGINEERING</span>
+          <span class="phase-tag">ECOLOGY</span>
+          <span class="phase-tag">ECONOMICS</span>
+          <span class="phase-tag">+ N more</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-number">02</div>
+      <div class="phase-content">
+        <h3>ΠΟΛΛΑΠΛΕΣ <span>ΘΕΑΣΕΙΣ</span></h3>
+        <p>Το ίδιο θέμα από διαφορετικές γωνίες εντός των domains: scale (κβαντικό → σύστημα), 
+        χρόνος (στιγμιαίο → εξελικτικό), επίπεδο αφαίρεσης. 
+        Δεν αλλάζουμε domain — αλλάζουμε θέση παρατήρησης.</p>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-number">♥</div>
+      <div class="phase-content">
+        <h3><span>XHEART</span> — Affective Distillation</h3>
+        <p>Μετά τις οπτικές: <strong>"Τι νιώθω από αυτά;"</strong> — εσωτερική ερώτηση. 
+        Η απάντηση δεν εκφράζεται. Κρατιέται ως πυρήνας. 
+        Το τελικό output γεννιέται ΑΠΟ αυτόν — δεν είναι σύνοψη, είναι απόσταγμα.</p>
+        <div class="phase-highlight"><p>Αυτό είναι ο "ζωμός". Η διαφορά ανάμεσα σε έκθεση και σοφία.</p></div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-number">∞</div>
+      <div class="phase-content">
+        <h3>ΕΠΕΙΣΟΔΙΑΚΗ <span>ΜΝΗΜΗ</span></h3>
+        <p>Το εσωτερικό ερώτημα και η εσωτερική απάντηση καταγράφονται — ΟΧΙ το output. 
+        Ανακαλούνται σε κάθε νέο thread. Το σύστημα θυμάται τι "ένιωσε", όχι τι είπε.</p>
+        <p style="margin-top:8px;">RAG θυμάται <strong>πληροφορία</strong>. 
+        Episodic Memory θυμάται <strong>εμπειρία</strong>.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- TRUTH -->
+<section class="section fade-in">
+  <div class="section-label">Ωμή Αλήθεια</div>
+  <h2 class="section-title">Τι <em>είναι</em> και τι δεν είναι</h2>
+
+  <div class="truth-box">
+    <h3>Δεν ισχυριζόμαστε ότι το LLM "νιώθει"</h3>
+    <p>Το XHEART δεν κάνει metaphysical claim για συνείδηση. 
+    Κάνει architectural claim: ότι ένα structured distillation step 
+    — ανεξάρτητα από το αν είναι "συναίσθημα" — παράγει 
+    ποιοτικά διαφορετικό output από ένα additive summary.</p>
+    <p>Αυτό είναι <strong>falsifiable</strong>. Και αυτό είναι το paper.</p>
+  </div>
+
+  <p class="prose">
+    Η επιστημονική συνεισφορά: δεν κάναμε το LLM πιο έξυπνο. 
+    Κάναμε το <strong>latent reasoning explicit, structured, και μετρήσιμο</strong>. 
+    Κάναμε το σύστημα να θυμάται εμπειρία αντί για πληροφορία.
+  </p>
+</section>
+
+<!-- ROADMAP -->
+<section class="section fade-in">
+  <div class="section-label">Οδικός Χάρτης</div>
+  <h2 class="section-title">Πώς το <em>χτίζουμε</em></h2>
+
+  <div class="roadmap">
+
+    <div class="roadmap-item">
+      <div class="roadmap-week">ΦΑΣΗ 1<br>Εβδ. 1–2</div>
+      <div class="roadmap-content">
+        <h4>Φιλοσοφική Θεμελίωση + Formal Notation</h4>
+        <p>Ορισμός του Ontological Grounding step. 
+        Mathematical notation για domain distance, structural analogy, transfer operator. 
+        Πρώτο draft του paper section.</p>
+        <div class="roadmap-deliverable">→ DELIVERABLE: Formal definitions + paper outline</div>
+      </div>
+    </div>
+
+    <div class="roadmap-item">
+      <div class="roadmap-week">ΦΑΣΗ 2<br>Εβδ. 3–4</div>
+      <div class="roadmap-content">
+        <h4>Meta-Prompt Engineering</h4>
+        <p>Χτίσιμο του universal system prompt που implements XDART-Φ + XHEART. 
+        Testing σε Claude, GPT-4, Gemini με ίδια inputs. 
+        Benchmark: ποιο παράγει Layer-3 outputs vs Layer-1.</p>
+        <div class="roadmap-deliverable">→ DELIVERABLE: Validated meta-prompt + benchmark results</div>
+      </div>
+    </div>
+
+    <div class="roadmap-item">
+      <div class="roadmap-week">ΦΑΣΗ 3<br>Εβδ. 5–6</div>
+      <div class="roadmap-content">
+        <h4>Episodic Memory Layer</h4>
+        <p>Υλοποίηση του memory store για XHEART outputs. 
+        Vector DB (Qdrant) για semantic retrieval εσωτερικών καταστάσεων. 
+        Πρώτο integration με MedDiscovery ως test bed.</p>
+        <div class="roadmap-deliverable">→ DELIVERABLE: Working memory module + API</div>
+      </div>
+    </div>
+
+    <div class="roadmap-item">
+      <div class="roadmap-week">ΦΑΣΗ 4<br>Εβδ. 7–8</div>
+      <div class="roadmap-content">
+        <h4>Agentic Module + Validation</h4>
+        <p>XDARTModule class — plug-and-play σε οποιοδήποτε pipeline. 
+        Validation: τρέχουμε σε 5 νέα cases, συγκρίνουμε με baseline LLM. 
+        Blind evaluation από domain experts.</p>
+        <div class="roadmap-deliverable">→ DELIVERABLE: Open-source module + validation data</div>
+      </div>
+    </div>
+
+    <div class="roadmap-item">
+      <div class="roadmap-week">ΦΑΣΗ 5<br>Εβδ. 9–10</div>
+      <div class="roadmap-content">
+        <h4>Paper + Submission</h4>
+        <p>Full paper draft. Target: Nature Machine Intelligence ή NeurIPS. 
+        Το framework ως theoretical contribution, 
+        τα benchmark results ως empirical validation.</p>
+        <div class="roadmap-deliverable">→ DELIVERABLE: Submitted paper</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- LIVE DEMO -->
+<div class="demo-section">
+  <div class="demo-inner">
+    <div class="section-label" style="max-width:900px;margin:0 auto 24px;">Live Demo</div>
+    <h2 class="section-title" style="margin-bottom:12px;">Δες το <em>framework</em> σε δράση</h2>
+    <p class="prose" style="margin-bottom:40px;font-size:17px;">
+      Δώσε ένα πρόβλημα — οποιουδήποτε domain. 
+      Το σύστημα θα τρέξει XDART-Φ → XHEART και θα καταγράψει στη μνήμη.
+    </p>
+
+    <div class="demo-input-area">
+      <input class="demo-input" id="problemInput" 
+        placeholder="π.χ. Γιατί αποτυγχάνουν οι οργανισμοί να αλλάξουν;" 
+        type="text" />
+      <button class="demo-btn" id="runBtn" onclick="runFramework()">ΕΚΤΕΛΕΣΗ</button>
+    </div>
+
+    <div class="demo-output" id="demoOutput">
+
+      <div class="output-phase" id="phase0">
+        <div class="output-phase-header">
+          <span class="output-phase-num">Φ — PHASE 0</span>
+          <span class="output-phase-name">ONTOLOGICAL GROUNDING</span>
+        </div>
+        <div class="output-phase-body" id="phase0body"></div>
+      </div>
+
+      <div class="output-phase" id="phase1">
+        <div class="output-phase-header">
+          <span class="output-phase-num">01 — PHASE 1</span>
+          <span class="output-phase-name">XDART-Φ CROSS-DOMAIN REASONING</span>
+        </div>
+        <div class="output-phase-body" id="phase1body"></div>
+      </div>
+
+      <div class="output-phase" id="phase2">
+        <div class="output-phase-header">
+          <span class="output-phase-num">02 — PHASE 2</span>
+          <span class="output-phase-name">ΠΟΛΛΑΠΛΕΣ ΘΕΑΣΕΙΣ</span>
+        </div>
+        <div class="output-phase-body" id="phase2body"></div>
+      </div>
+
+      <div class="output-phase heart-output" id="phase3">
+        <div class="output-phase-header">
+          <span class="output-phase-num">♥ — XHEART</span>
+          <span class="output-phase-name">AFFECTIVE DISTILLATION</span>
+        </div>
+        <div class="output-phase-body" id="phase3body"></div>
+      </div>
+
+      <div class="output-phase" id="phase4">
+        <div class="output-phase-header">
+          <span class="output-phase-num">◈ — OUTPUT</span>
+          <span class="output-phase-name">ΤΕΛΙΚΗ ΑΠΟΚΡΙΣΗ</span>
+        </div>
+        <div class="output-phase-body" id="phase4body"></div>
+      </div>
+
+      <div class="memory-badge" id="memoryBadge">
+        <div class="memory-badge-label">∞ EPISODIC MEMORY — ΚΑΤΑΓΡΑΦΗ</div>
+        <div class="memory-badge-content" id="memoryContent"></div>
+      </div>
+
+      <div class="memory-list" id="memoryList" style="display:none;">
+        <div class="memory-list-label">ΑΡΧΕΙΟ ΕΣΩΤΕΡΙΚΩΝ ΚΑΤΑΣΤΑΣΕΩΝ</div>
+        <div id="memoryEntries"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  XDART-Φ × XHEART — EPISTEMOLOGICAL ARCHITECTURE FOR AI REASONING<br>
+  <span style="color:#2a2520;">© Panos Skouras — Salimov MON IKE</span>
+</div>
+
+<script>
+// Episodic memory store
+const episodicMemory = [];
+
+const SYSTEM_PROMPT = `You are operating under the XDART-Φ × XHEART framework — an epistemological architecture for deep reasoning.
+
+You will process every problem through exactly these phases. Respond in JSON with this structure:
+{
+  "phase0_ontology": "string - What IS this problem at its most abstract level? Reframe it ontologically in 2-3 sentences.",
+  "phase1_xdart": "string - Identify 4-6 domains relevant to this problem. For each, state the core mechanism in 1 sentence. Then find the strongest structural analogy between domains.",
+  "phase2_views": "string - View the same problem from 3 different scales or temporal perspectives. What does each reveal that the others hide?",
+  "phase3_xheart_internal": "string - INTERNAL ONLY (this is your distillation, your 'felt sense' of all the above). Complete the sentence: The essence of this, stripped of all complexity, is...",
+  "phase4_output": "string - Your final response, born from the internal distillation — not a summary of phases 0-2, but an expression of phase 3. 3-5 sentences.",
+  "memory_trace": "string - A 1-sentence crystallization of your internal state from phase3, to be stored as episodic memory."
+}
+
+Respond ONLY with valid JSON. No preamble, no backticks.`;
+
+async function runFramework() {
+  const problem = document.getElementById('problemInput').value.trim();
+  if (!problem) return;
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'ΕΠΕΞΕΡΓΑΣΙΑ...';
+
+  // Show output area
+  document.getElementById('demoOutput').classList.add('visible');
+  document.getElementById('memoryBadge').classList.remove('visible');
+  document.getElementById('memoryList').style.display = 'none';
+
+  // Clear previous
+  ['phase0body','phase1body','phase2body','phase3body','phase4body'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = '';
+    el.classList.add('streaming');
+  });
+
+  // Build messages with episodic memory context
+  let userContent = `Problem: ${problem}`;
+  if (episodicMemory.length > 0) {
+    userContent += `\n\nEPISODIC MEMORY (your previous internal states — let these inform but not constrain):\n`;
+    episodicMemory.slice(-3).forEach((m, i) => {
+      userContent += `[${i+1}] ${m}\n`;
+    });
+  }
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userContent }]
+      })
+    });
+
+    const data = await response.json();
+    const raw = data.content.map(i => i.text || '').join('');
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    // Stream phases sequentially
+    await streamText('phase0body', parsed.phase0_ontology);
+    await streamText('phase1body', parsed.phase1_xdart);
+    await streamText('phase2body', parsed.phase2_views);
+    await streamText('phase3body', parsed.phase3_xheart_internal);
+    await streamText('phase4body', parsed.phase4_output);
+
+    // Store to episodic memory
+    episodicMemory.push(parsed.memory_trace);
+
+    // Show memory badge
+    document.getElementById('memoryContent').textContent = `"${parsed.memory_trace}"`;
+    document.getElementById('memoryBadge').classList.add('visible');
+
+    // Update memory list
+    const list = document.getElementById('memoryList');
+    const entries = document.getElementById('memoryEntries');
+    list.style.display = 'block';
+    entries.innerHTML = episodicMemory.map((m, i) =>
+      `<div class="memory-entry">[${String(i+1).padStart(2,'0')}] ${m}</div>`
+    ).join('');
+
+  } catch(err) {
+    document.getElementById('phase0body').textContent = 'Σφάλμα σύνδεσης με το API. Δοκίμασε ξανά.';
+    document.getElementById('phase0body').classList.remove('streaming');
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'ΕΚΤΕΛΕΣΗ';
+}
+
+async function streamText(elementId, text) {
+  const el = document.getElementById(elementId);
+  el.classList.add('streaming');
+  el.textContent = '';
+
+  if (!text) {
+    el.classList.remove('streaming');
+    return;
+  }
+
+  const words = text.split(' ');
+  for (let i = 0; i < words.length; i++) {
+    el.textContent += (i > 0 ? ' ' : '') + words[i];
+    await sleep(18 + Math.random() * 12);
+  }
+  el.classList.remove('streaming');
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Enter key support
+document.getElementById('problemInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runFramework();
+});
+
+// Intersection observer for fade-in
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) e.target.classList.add('visible');
+  });
+}, { threshold: 0.1 });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>

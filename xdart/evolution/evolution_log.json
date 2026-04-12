@@ -1,0 +1,216 @@
+{
+  "deployments": [
+    {
+      "action": "deploy",
+      "tool_name": "escalation_coupling_mapper",
+      "version": "1.0",
+      "timestamp": "2026-03-31T20:06:49.762071+00:00",
+      "gap_description": "The run identified a coupled-escalation risk across multiple theaters, but the system lacked a deterministic pre-phase tool that converts raw event streams into an explicit cross-theater escalation network with bridge nodes, chokepoints, and coupling intensity. The phases inferred this qualitatively, but a structured event-derived coupling map would improve grounding and consistency for crisis-risk questions and other multi-domain contagion problems.",
+      "purpose": "Builds a lightweight cross-theater escalation and chokepoint coupling map from world events and indicators.",
+      "expected_improvement": "This tool gives all later phases a concrete precomputed escalation graph: which theaters are active, which chokepoints are acting as couplers, which events bridge multiple theaters, and which economic channels could transmit stress. That should improve future runs involving war risk, systemic crisis, trade disruption, contagion, or multi-region instability by making coupling structure explicit before ontology, analogy, and view synthesis begin."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "diplomatic_signal_tracker",
+      "version": "1.0",
+      "timestamp": "2026-04-01T18:35:32.976531+00:00",
+      "gap_description": "The run identified a metastable multi-theater system and discussed chokepoints, alliance pressure, and slow trust erosion, but there is no dedicated pre-phase tool that converts raw event flow into a structured estimate of diplomatic posture, signaling coherence, and de-escalation credibility. The existing escalation_coupling_mapper captures cross-theater coupling, but not whether actor signals are converging toward containment, bargaining, or fragmentation. That missing capability would improve future analyses of crises where the key question is not only where pressure is coupling, but whether the political signal environment is stabilizing or decaying.",
+      "purpose": "Extracts and summarizes diplomatic posture, escalation language, and signal coherence from world events to estimate whether the current environment favors de-escalation, coercive bargaining, or fragmentation.",
+      "expected_improvement": "This adds a reusable capability for turning noisy headlines into a structured diplomatic-signal map before ontology, cross-domain reasoning, and views begin. Future runs will better distinguish true de-escalation from coercive bargaining, identify actor-level signal incoherence, and give downstream phases a cleaner basis for judging whether crises are stabilizing, synchronizing, or drifting toward accidental escalation."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "institutional_resilience_monitor",
+      "version": "1.0",
+      "timestamp": "2026-04-01T18:50:06.245708+00:00",
+      "gap_description": "The run identified governance quality, information disorder, and institutional self-displacement as central drivers, but the system lacks a dedicated pre-phase tool that measures whether the world context is showing concentrated institutional strain across legitimacy, civil liberties, labor stress, energy shock, and truth-conflict signals. Existing tools track diplomacy and escalation coupling, but not civilizational governance resilience or institutional degradation risk.",
+      "purpose": "Detects cross-domain signals of institutional strain, legitimacy erosion, and adaptive resilience from world events and indicators.",
+      "expected_improvement": "This will give future runs a structured pre-phase reading of whether the world context reflects institutional degradation, adaptive resilience, or rising self-displacement risk. That directly strengthens ontology, cross-domain reasoning, and XHEART synthesis on questions about AI, civilization, governance, collapse, and human agency under stress."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "narrative_divergence_mapper",
+      "version": "1.0",
+      "timestamp": "2026-04-01T20:20:06.695242+00:00",
+      "gap_description": "The current toolset maps diplomacy, escalation coupling, and institutional resilience, but it does not quantify source-level narrative divergence or consensus across outlets. Because the pipeline sees many overlapping wire reports, a missing capability is systematic detection of where sources converge, split, or frame the same world situation differently. That would improve future reasoning by giving all downstream phases a cleaner epistemic map of agreement, contradiction, and framing asymmetry in the world context.",
+      "purpose": "Detects cross-source convergence, divergence, and framing asymmetry across world events to improve epistemic calibration.",
+      "expected_improvement": "This adds an epistemic calibration layer before reasoning phases begin: it helps the system distinguish consensus from contested framing, identify weakly corroborated single-source topics, and detect where different outlets are describing the same situation through different lenses. That should improve ontology, cross-domain transfer, and final synthesis in many future runs involving geopolitics, economics, and media-heavy world context."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "strategic_dependency_bridge_mapper",
+      "version": "1.0",
+      "timestamp": "2026-04-02T14:17:11.455787+00:00",
+      "gap_description": "The run identified transitional instability in shared interfaces—payments, energy, semiconductors, shipping insurance, export controls, logistics—but no existing tool explicitly maps which cross-domain interfaces remain jointly depended upon and therefore act as residual fragility bridges during geopolitical decoupling. Current tools cover diplomacy, escalation coupling, institutional resilience, and narrative divergence, but not dependency-interface concentration.",
+      "purpose": "Maps residual cross-domain dependency bridges and chokepoint concentration from world events and indicators to reveal where partial decoupling can still propagate systemic shocks.",
+      "expected_improvement": "This will improve future runs by giving Phase 0-3 a concrete pre-analysis of which shared strategic interfaces still connect supposedly separating blocs, where chokepoint concentration is highest, and which cross-interface couplings could turn local shocks into systemic propagation. It complements existing escalation and diplomacy tools by focusing on material dependency architecture rather than signaling alone."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "transition_time_constant_analyzer",
+      "version": "1.0",
+      "timestamp": "2026-04-02T14:46:08.547409+00:00",
+      "gap_description": "The current toolset maps dependencies, escalation, diplomacy, institutions, and narrative divergence, but it does not explicitly detect temporal mismatch risk: situations where political/strategic realignment is accelerating faster than the system’s operational buffers, diversification, and coordination interfaces can adapt. This run centered on a split-brain transition driven by asymmetric time constants, and a dedicated tool that scores transition-speed imbalance would have strengthened the analysis.",
+      "purpose": "Detects when geopolitical, economic, and institutional change is occurring faster than stabilizing interfaces can adapt, producing a temporal mismatch risk map.",
+      "expected_improvement": "This tool adds a missing temporal-structure capability: it helps future runs distinguish ordinary dependency stress from dangerous asynchronous transition, where political decoupling, coercive moves, or security realignment outpace the redesign of energy, finance, logistics, and deterrence interfaces. That improves Phase 0 reframing, sharpens Phase 1 analogies around metastability and lag, and gives later phases an explicit signal for split-brain transition risk."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "coordination_interface_gap_mapper",
+      "version": "1.0",
+      "timestamp": "2026-04-02T15:36:30.252373+00:00",
+      "gap_description": "The current toolset maps dependencies, escalation, narratives, institutions, diplomacy, and transition speed, but it does not explicitly detect governance-interface fragmentation: where authority is splitting across blocs while the coordinating mechanisms needed to manage shared exposure (payments, shipping, deterrence signaling, crisis communication, standards, energy routing) remain thin, stressed, or absent. This was central to the run's split-brain diagnosis and would be broadly useful in future geopolitical, economic, and systemic-risk analyses.",
+      "purpose": "Detects fragmentation between strategic blocs and the remaining coordination interfaces that still carry shared systemic risk.",
+      "expected_improvement": "This adds a missing pre-phase capability: explicit measurement of whether political-strategic fragmentation is outrunning the coordination mechanisms needed to manage residual interdependence. It will improve future runs on decoupling, sanctions, alliance strain, strategic autonomy, chokepoints, crisis management, and multipolar transition by giving all later phases a concrete map of interface gaps rather than forcing them to infer that structure indirectly."
+    },
+    {
+      "action": "deploy",
+      "tool_name": "trigger_incident_pathway_analyzer",
+      "version": "1.0",
+      "timestamp": "2026-04-02T20:53:00.303358+00:00",
+      "gap_description": "The current toolset maps escalation, dependencies, narratives, diplomacy, and institutional strain, but it does not explicitly estimate accidental-escalation pathways driven by trigger incidents such as mass-casualty strikes, shipping attacks, base hits, or leadership-targeting rhetoric. In this run, the final answer hinged on whether a local incident could outrun verification and deconfliction. That causal question is distinct from general escalation mapping and would benefit from a dedicated trigger-path analyzer.",
+      "purpose": "Detects high-risk trigger incidents and maps the most plausible accidental-escalation pathways they could activate.",
+      "expected_improvement": "This tool gives future runs a dedicated pre-phase layer for identifying specific trigger incidents and the causal pathways by which they could transform a regional crisis into a wider accidental escalation. It complements existing escalation and dependency tools by shifting from structural coupling alone to incident-driven propagation logic, improving answers to questions about whether a crisis is nearing broader war, what exact tripwires matter most, and which pathways deserve closest monitoring."
+    }
+  ],
+  "sandbox_failures": [
+    {
+      "tool_name": "narrative_extremity_mapper",
+      "error": "Code validation failed",
+      "timestamp": "2026-04-01T19:04:22.811617+00:00",
+      "gap_description": "The run identified apocalyptic and civilizational narratives as causal amplifiers, but the current toolset does not explicitly detect narrative frames that sacralize conflict, convert policy into destiny, or mark moral absolutization across world events. Existing tools cover diplomacy, escalation coupling, and institutional resilience, but none map mythic/apocalyptic legitimization language itself."
+    },
+    {
+      "tool_name": "systemic_bridge_detector",
+      "error": "Runtime error: UnicodeEncodeError: 'charmap' codec can't encode character '\\u2194' in position 363: character maps to <undefined>",
+      "timestamp": "2026-04-01T19:38:13.413271+00:00",
+      "gap_description": "The run identified coupled geopolitical, energy, labor, migration, and legitimacy dynamics, but lacked a dedicated capability to quantify which domains are acting as cross-domain bridge nodes and how concentrated systemic risk is across the event field. Existing tools cover diplomacy, escalation, and institutional resilience, but none explicitly map cross-domain connectivity concentration or identify the few events/domains functioning as transmission hubs for second-order effects. That missing structural map would improve decade-scale forecasting and many future runs involving systemic fragility, contagion, or multi-domain futures."
+    },
+    {
+      "tool_name": "crisis_concentration_index",
+      "error": "  File \"C:\\Users\\Panos\\AppData\\Local\\Temp\\tmpqcv_gige.py\", line 5\n    from collections import Counter, defaultdict\\nimport math\\nimport re\\n\\nTOOL_META = {\\n    \"name\": \"crisis_concentration_index\",\\n    \"version\": \"1.0\",\\n    \"purpose\": \"Measures how concentrated global crisis attention is across theaters and domains to detect when multiple events are compressing into a small number of systemically dangerous escalation clusters.\",\\n    \"trigger\": \"always\",\\n    \"inputs\": [\"events\", \"indicators\"",
+      "timestamp": "2026-04-01T19:51:29.566101+00:00",
+      "gap_description": "The run identified coupled escalation and institutional strain well, but it lacked a dedicated capability to estimate whether current world events are concentrated into a few dominant crisis theaters or dispersed across many independent ones. That concentration-vs-dispersion structure is crucial for judging whether regional conflicts can fuse into system-wide cascade windows, and it is not directly covered by the existing diplomatic, escalation-coupling, or institutional-resilience tools."
+    },
+    {
+      "tool_name": "evidentiary_support_mapper",
+      "error": "  File \"C:\\Users\\Panos\\AppData\\Local\\Temp\\tmp6jnzlozk.py\", line 258\n    \"output\": \"\n              ^\nSyntaxError: unterminated string literal (detected at line 258)\n",
+      "timestamp": "2026-04-01T20:33:36.366910+00:00",
+      "gap_description": "The run relied on broad claims about contradiction, single-source fragility, and attestation limits in the world context, but no existing tool explicitly measures evidentiary support density, source redundancy, and claim-attestation quality across the event field. Current tools cover diplomacy, escalation coupling, institutional resilience, and narrative divergence, but not the distinct question: how well-supported are the currently salient claims, and where is the context epistemically thin or monopolar? A dedicated evidentiary map would improve future reasoning whenever the system needs to judge continuity, trust, contradiction, or confidence under partial retrieval."
+    },
+    {
+      "tool_name": "systemic_interface_mapper",
+      "error": "  File \"C:\\Users\\Panos\\AppData\\Local\\Temp\\tmp6mg5pera.py\", line 275\n    \"output\": \"\n              ^\nSyntaxError: unterminated string literal (detected at line 275)\n",
+      "timestamp": "2026-04-02T12:12:50.468332+00:00",
+      "gap_description": "The current toolset can track diplomacy, escalation coupling, institutional strain, and narrative divergence, but it lacks a dedicated capability for identifying which cross-domain interface layers are becoming systemic transmission channels between geopolitical fragmentation and macro-economic disruption. In this run, the final answer correctly centered on interfaces like payments, insurance, licensing, energy, shipping chokepoints, and standards interoperability, but that synthesis had to be inferred by the LLM rather than supported by a structured pre-phase map of vulnerable coordination interfaces."
+    },
+    {
+      "tool_name": "gray_zone_threshold_mapper",
+      "error": "A/B test failed: The tool adds only a generic gray-zone label ('Stage 1') that is less specific and less actionable than the pipeline’s existing maritime-focused forecast and response guidance, so it contributes no meaningful new analytical signal.",
+      "timestamp": "2026-04-03T13:26:56.841510+00:00",
+      "gap_description": "The run reasoned well about escalation tempo, alliance signaling, and persistence denial, but it lacked a dedicated capability for extracting and ranking the concrete maritime-legal threshold states that sit between ambiguous presence and overt violation. Existing tools cover escalation, diplomacy, narratives, dependencies, and institutional strain, but none explicitly map gray-zone progression ladders such as survey/support presence, NAVTEX signaling, escorting patterns, drilling language, and sovereignty/legal framing into an actionable threshold sequence. A tool that converts world events plus the user problem into a structured coercion-stage ladder would improve early-warning, response timing, and playbook design in maritime sovereignty crises and other gray-zone disputes."
+    },
+    {
+      "tool_name": "seasonal_bottleneck_window_mapper",
+      "error": "A/B test failed: The tool mostly restates the same transitional-normalization-vs-calendar-damage framing already present in the pipeline output, while adding weak/confused diagnostics and no actionable new signal beyond a generic caution.",
+      "timestamp": "2026-04-03T20:26:54.594350+00:00",
+      "gap_description": "The run identified a strong fertilizer-chain and planting-calendar thesis, but the system lacked a dedicated capability to convert scattered event signals into a structured temporal bottleneck map showing whether disruption is hitting immediate market optics, physical input throughput, or irreversible agricultural decision windows. Existing tools cover escalation, dependencies, narratives, and transition speed, but none explicitly map calendar-sensitive supply-chain damage across sequential stages from chokepoint disruption to planting risk."
+    },
+    {
+      "tool_name": "deadline_synchronization_risk_mapper",
+      "error": "A/B test failed: The tool mostly restates the pipeline’s core timing-mismatch thesis in generic layer language and even weakens it with 'no strong synchronization failure detected,' adding little concrete, incremental signal.",
+      "timestamp": "2026-04-03T20:58:34.015977+00:00",
+      "gap_description": "The run identified a seasonal synchronization failure across food-energy-logistics, but the system lacks a dedicated tool that converts scattered event signals into an explicit deadline-pressure map showing which supply chain stages are time-critical, which are recovering only optically, and where lagged normalization can still cause real-economy damage despite headline improvement. Existing tools cover escalation, narratives, dependencies, coordination, and transition speed, but none specifically map deadline-bound supply-chain lag versus visible reopening."
+    },
+    {
+      "tool_name": "agricultural_decision_window_mapper",
+      "error": "A/B test failed: The tool adds no actionable signal beyond a generic restatement of the pipeline’s existing thesis and, with zero detected constraints/restorations, contributes mostly noise rather than incremental analytical value.",
+      "timestamp": "2026-04-04T05:17:17.908323+00:00",
+      "gap_description": "The system identified a food-energy-input synchronization breakdown, but it lacked a dedicated capability to extract and summarize time-sensitive biological/agronomic decision windows from world events and connect them to market timing. Existing tools cover escalation, diplomacy, narratives, dependency bridges, and transition speed, but none specifically map whether a shock is crossing from logistics disruption into irreversible planting/procurement decision lock-in."
+    },
+    {
+      "tool_name": "trade_regime_fragmentation_mapper",
+      "error": "A/B test failed: The candidate output is mostly orthogonal and generic trade-policy commentary that does not materially sharpen the pipeline’s specific Gulf war-risk, insurance, crew-clearance, and chartering analysis or change the decision.",
+      "timestamp": "2026-04-04T06:08:17.989678+00:00",
+      "gap_description": "The run handled geopolitical escalation, dependency concentration, and timing stress well, but it lacked a dedicated capability to translate macro trade-policy fragmentation into concrete cargo-flow exposure regimes. Existing tools map escalation, diplomacy, narratives, institutions, and chokepoints, but none specifically detect when tariff/anti-dumping/sanctions language is likely to re-route, suppress, or bifurcate trade corridors relevant to operational planning."
+    },
+    {
+      "tool_name": "gray_zone_precedent_monitor",
+      "error": "A/B test failed: The tool mostly restates that there is currently insufficient evidence of normalization, which does not materially improve the pipeline’s already more specific forecast about likely gray-zone incidents and strategic risk.",
+      "timestamp": "2026-04-04T11:47:55.171662+00:00",
+      "gap_description": "The run correctly identified that the main danger is not immediate full-scale war but gray-zone precedent formation through ambiguous incidents, delayed attribution, and slow alliance response. However, none of the existing tools explicitly estimate where a dispute sits on the ladder from routine friction to precedent-setting normalization. Current tools cover escalation coupling, trigger incidents, diplomacy, narratives, dependencies, interfaces, resilience, and transition speed, but not the specific capability to detect operational baseline shift and normalization pressure in contested theaters."
+    },
+    {
+      "tool_name": "travel_risk_substitution_mapper",
+      "error": "A/B test failed: The tool mostly repackages what the pipeline already says—Greece benefits relatively from substitution away from riskier Eastern Mediterranean destinations—while adding weakly supported rankings/scores and even conflicting with the pipeline on transport-cost pressure.",
+      "timestamp": "2026-04-05T09:57:51.140761+00:00",
+      "gap_description": "The run reasoned well about substitution advantage versus fuel-cost drag, but it lacked a dedicated capability for destination-demand reallocation under regional insecurity. Existing tools cover escalation, narratives, institutions, dependencies, and trigger pathways, yet none specifically estimate which travel destinations become relative winners or losers when safety perception, transport cost pressure, and regional proximity interact. A tool that converts raw geopolitical and economic signals into a tourism/travel substitution map would materially improve future analyses involving tourism, aviation, hospitality, consumer mobility, and regional demand shifts."
+    },
+    {
+      "tool_name": "sector_impact_analyzer",
+      "error": "A/B test failed: Tool failed on real context",
+      "timestamp": "2026-04-05T11:05:17.515086+00:00",
+      "gap_description": "The system lacks a tool to automatically identify and analyze the impact of world events and economic indicators on specific economic or social sectors mentioned in the user's problem (e.g., tourism in this case), which could enhance sector-focused analysis by filtering relevant data and assessing vulnerabilities."
+    },
+    {
+      "tool_name": "systemic_risk_scorer",
+      "error": "A/B test failed: Tool failed on real context",
+      "timestamp": "2026-04-05T16:48:10.858755+00:00",
+      "gap_description": "The system lacks a tool to quantitatively assess the overall risk of global conflict or systemic failure based on aggregated events and indicators, which could provide a baseline risk measure for analytical phases."
+    },
+    {
+      "tool_name": "scenario_risk_index_calculator",
+      "error": "A/B test failed: The tool output reports zero risk with no supporting data, adding no new insights and conflicting with the pipeline's detailed, evidence-based prediction.",
+      "timestamp": "2026-04-05T17:38:26.214292+00:00",
+      "gap_description": "The system produces predictive outputs (e.g., war risk within a timeframe) but lacks a tool to quantitatively assess the confidence or probability of such predictions based on real-time event trends and economic indicator anomalies, which could enhance decision-making by adding data-driven risk scoring."
+    },
+    {
+      "tool_name": "risk_quantification_estimator",
+      "error": "Runtime error: JSONDecodeError: Invalid control character at: line 1 column 144 (char 143)",
+      "timestamp": "2026-04-05T18:24:25.222193+00:00",
+      "gap_description": "The system did not provide quantified risk estimates or numerical weights for critical variables as specifically requested in the problem, relying instead on qualitative descriptions without probabilistic or weighted assessments."
+    },
+    {
+      "tool_name": "infrastructure_cascade_modeler",
+      "error": "A/B test failed: The tool output is empty and generic, adding no new analytical value beyond the existing pipeline's detailed scenario.",
+      "timestamp": "2026-04-07T17:34:18.121958+00:00",
+      "gap_description": "The system lacks a tool to explicitly map critical infrastructure interdependencies and simulate cascade failures from attack events, which is crucial for understanding non-linear collapse dynamics in geopolitical conflicts, especially given events like Iran targeting energy, water, and communications infrastructure."
+    },
+    {
+      "tool_name": "resource_shortage_timeline_predictor",
+      "error": "A/B test failed: The tool adds only a confidence level while omitting critical details and specific events from the pipeline output, providing negligible new analytical value.",
+      "timestamp": "2026-04-07T19:03:55.734290+00:00",
+      "gap_description": "The system lacks a dedicated tool for predicting resource shortage timelines based on supply chain disruption events and economic indicators, which was inferred manually in this analysis. This gap limits data-driven temporal precision in scenarios involving resource crises."
+    },
+    {
+      "tool_name": "personal_resilience_analyzer",
+      "error": "Code validation failed",
+      "timestamp": "2026-04-08T19:45:05.192174+00:00",
+      "gap_description": "The system lacks a tool to analyze world events and indicators for insights on personal resilience, psychological adaptation, and individual-level implications, which could enhance responses to problems involving personal agency in systemic crises."
+    },
+    {
+      "tool_name": "commodity_event_correlation_mapper",
+      "error": "A/B test failed: It introduces a contradictory data point that challenges existing assumptions, potentially prompting further investigation.",
+      "timestamp": "2026-04-11T09:59:20.579692+00:00",
+      "gap_description": "The system lacks a dedicated tool to automatically correlate geopolitical events with commodity price shocks, which was manually inferred in the analysis (e.g., linking Hormuz blockade news to oil price spikes). This gap limits systematic detection of event-driven price volatility in cross-domain reasoning."
+    },
+    {
+      "tool_name": "chaos_dynamics_mapper",
+      "error": "Code validation failed",
+      "timestamp": "2026-04-11T21:59:59.812091+00:00",
+      "gap_description": "The system lacks a tool that explicitly applies chaos theory principles to analyze world events and economic indicators for non-linear dynamics, emergent patterns, and chaotic behavior, which is crucial for problems involving humanizing chaos theory in geopolitics and economics."
+    },
+    {
+      "tool_name": "emergent_pattern_detector",
+      "error": "A/B test failed: The tool's vague keyword list does not enhance the pipeline's detailed, inferential scenario analysis and adds minimal analytical value.",
+      "timestamp": "2026-04-12T07:30:14.712962+00:00",
+      "gap_description": "The system lacks a dedicated tool to detect emergent patterns or novelty in world events and economic indicators, which is crucial for forecasting what new phenomena will arise from rapid developments, as highlighted by the user's request for predictions on 'what will be born.' Existing tools focus on specific aspects like coordination, escalation, or narratives, but not on identifying early signals of emergence or phase transitions in complex systems."
+    },
+    {
+      "tool_name": "hidden_coordination_monitor",
+      "error": "Code validation failed",
+      "timestamp": "2026-04-12T09:30:06.242630+00:00",
+      "gap_description": "The system lacks a dedicated tool to detect signals of covert or stealth coordination, logistics, and operations from world events, which are crucial for identifying hidden resilience or escalation risks in geopolitical analysis, as highlighted by the 'Hidden in Plain Sight' view in Phase 2."
+    }
+  ]
+}

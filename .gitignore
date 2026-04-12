@@ -1,0 +1,50 @@
+# ══════════════════════════════════════════════════════════════
+#  XDART-Φ × XHEART — Git Ignore
+# ══════════════════════════════════════════════════════════════
+
+# ── Secrets (NEVER commit) ──
+.env
+openai api key.txt
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Runtime data (persisted on server) ──
+perception.db
+perception.db-wal
+perception.db-shm
+qdrant_storage/
+
+# ── Logs & journals (recreated at runtime) ──
+*.log
+logs.txt
+introspection_log.jsonl
+self_evolution_journal.jsonl
+core_change_log.jsonl
+curiosity_journal.jsonl
+curiosity_state.json
+proactive_log.jsonl
+
+# ── SSL certificates (generated on server) ──
+deploy/certbot/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ──
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# ── Temporary / helper scripts ──
+_*.py
+migrate_from_docker.py

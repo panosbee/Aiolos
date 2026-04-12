@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ΑΙΟΛΟΣ — Command Center</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #111822;
+    --surface2: #1a2233;
+    --surface3: #222d3d;
+    --border: #1e2d40;
+    --border-glow: #00d4ff22;
+    --cyan: #00d4ff;
+    --cyan-dim: #0088aa;
+    --cyan-bg: #00d4ff0a;
+    --gold: #d4a843;
+    --gold-dim: #a07830;
+    --red: #ff4444;
+    --red-dim: #cc2222;
+    --green: #00ff88;
+    --green-dim: #00cc66;
+    --orange: #ff9800;
+    --purple: #7c4dff;
+    --text: #c8d4e0;
+    --text-dim: #607088;
+    --text-bright: #e8f0f8;
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Scanline overlay for JARVIS effect ── */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 212, 255, 0.015) 2px,
+      rgba(0, 212, 255, 0.015) 4px
+    );
+    z-index: 9999;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--cyan-dim); }
+
+  /* ── Header ── */
+  header {
+    background: linear-gradient(135deg, #0c1018, #141e2c);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    position: relative;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    opacity: 0.4;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .logo-symbol {
+    font-size: 28px;
+    color: var(--cyan);
+    font-weight: 700;
+    text-shadow: 0 0 12px rgba(0, 212, 255, 0.4);
+  }
+  .logo-text h1 {
+    font-size: 16px;
+    color: var(--cyan);
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .logo-text p {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--surface);
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    transition: background 0.3s;
+  }
+  .status-dot.ok {
+    background: var(--green);
+    box-shadow: 0 0 8px rgba(0, 255, 136, 0.4);
+    animation: pulse-green 2s ease-in-out infinite;
+  }
+  @keyframes pulse-green {
+    0%, 100% { box-shadow: 0 0 4px rgba(0, 255, 136, 0.3); }
+    50% { box-shadow: 0 0 12px rgba(0, 255, 136, 0.6); }
+  }
+  .nav-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 16px;
+    color: var(--gold);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s;
+    letter-spacing: 0.5px;
+  }
+  .nav-btn:hover { border-color: var(--gold); background: var(--surface2); }
+
+  /* ── KPI Cards ── */
+  .kpi-strip {
+    display: flex;
+    gap: 12px;
+    padding: 12px 24px;
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .kpi-card {
+    flex: 1;
+    min-width: 160px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s;
+  }
+  .kpi-card:hover { border-color: var(--cyan-dim); }
+  .kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+  }
+  .kpi-card.world::before { background: linear-gradient(90deg, var(--cyan), transparent); }
+  .kpi-card.prophecy::before { background: linear-gradient(90deg, var(--purple), transparent); }
+  .kpi-card.accuracy::before { background: linear-gradient(90deg, var(--green), transparent); }
+  .kpi-card.memory::before { background: linear-gradient(90deg, var(--gold), transparent); }
+  .kpi-card.evolution::before { background: linear-gradient(90deg, var(--orange), transparent); }
+  .kpi-card.wisdom::before { background: linear-gradient(90deg, var(--red), transparent); }
+  .kpi-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+  .kpi-value {
+    font-size: 26px;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--text-bright);
+    line-height: 1;
+  }
+  .kpi-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .kpi-card.world .kpi-value { color: var(--cyan); }
+  .kpi-card.prophecy .kpi-value { color: var(--purple); }
+  .kpi-card.accuracy .kpi-value { color: var(--green); }
+  .kpi-card.memory .kpi-value { color: var(--gold); }
+  .kpi-card.evolution .kpi-value { color: var(--orange); }
+  .kpi-card.wisdom .kpi-value { color: var(--red); }
+
+  /* ── Main Grid ── */
+  .dashboard-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 12px;
+    padding: 0 24px 12px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* ── Panel ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-bright);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .panel-title .icon { font-size: 14px; }
+  .panel-badge {
+    font-size: 10px;
+    background: var(--surface3);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-family: var(--mono);
+  }
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+
+  /* ── World Feed items ── */
+  .feed-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 0;
+    border-bottom: 1px solid #151f2d;
+    animation: fadeIn 0.3s ease;
+  }
+  .feed-item:last-child { border-bottom: none; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  .feed-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 4px;
+  }
+  .feed-dot.geopolitics { background: var(--red); box-shadow: 0 0 6px rgba(255,68,68,0.3); }
+  .feed-dot.economy { background: var(--green); box-shadow: 0 0 6px rgba(0,255,136,0.3); }
+  .feed-dot.security { background: var(--orange); box-shadow: 0 0 6px rgba(255,152,0,0.3); }
+  .feed-dot.energy { background: var(--gold); box-shadow: 0 0 6px rgba(212,168,67,0.3); }
+  .feed-dot.technology { background: var(--purple); box-shadow: 0 0 6px rgba(124,77,255,0.3); }
+  .feed-dot.climate { background: var(--cyan); box-shadow: 0 0 6px rgba(0,212,255,0.3); }
+  .feed-dot.default { background: var(--text-dim); }
+  .feed-content {
+    flex: 1;
+    min-width: 0;
+  }
+  .feed-headline {
+    font-size: 13px;
+    color: var(--text-bright);
+    line-height: 1.4;
+    margin-bottom: 3px;
+  }
+  .feed-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .feed-domain-tag {
+    background: var(--surface3);
+    padding: 1px 8px;
+    border-radius: 8px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .feed-salience {
+    font-family: var(--mono);
+    font-size: 10px;
+  }
+  .salience-high { color: var(--red); }
+  .salience-medium { color: var(--orange); }
+  .salience-low { color: var(--text-dim); }
+
+  /* ── Prophecy items ── */
+  .prophecy-item {
+    padding: 12px 0;
+    border-bottom: 1px solid #151f2d;
+    animation: fadeIn 0.3s ease;
+  }
+  .prophecy-item:last-child { border-bottom: none; }
+  .prophecy-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .prophecy-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-bright);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .prophecy-status {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .prophecy-status.active { background: #7c4dff22; color: var(--purple); }
+  .prophecy-status.tracking { background: #00d4ff22; color: var(--cyan); }
+  .prophecy-status.confirmed { background: #00ff8822; color: var(--green); }
+  .prophecy-status.disconfirmed { background: #ff444422; color: var(--red); }
+  .prophecy-status.expired { background: #60708822; color: var(--text-dim); }
+  .prophecy-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  .prophecy-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--surface3);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .prophecy-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s ease;
+  }
+  .prophecy-conf {
+    font-size: 12px;
+    font-family: var(--mono);
+    font-weight: 700;
+    color: var(--text-bright);
+    min-width: 38px;
+    text-align: right;
+  }
+  .prophecy-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 12px;
+  }
+
+  /* ── System Intelligence ── */
+  .intel-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #151f2d;
+  }
+  .intel-row:last-child { border-bottom: none; }
+  .intel-label {
+    font-size: 12px;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .intel-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    max-width: 200px;
+  }
+  .intel-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--surface3);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .intel-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s ease;
+  }
+  .intel-val {
+    font-size: 12px;
+    font-family: var(--mono);
+    font-weight: 700;
+    min-width: 40px;
+    text-align: right;
+  }
+  .proposals-list {
+    margin-top: 8px;
+  }
+  .proposal-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .proposal-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .proposal-badge.pending { background: #ff980022; color: var(--orange); }
+  .proposal-badge.deployed { background: #00ff8822; color: var(--green); }
+
+  /* ── Evolution Timeline ── */
+  .timeline-item {
+    display: flex;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #151f2d;
+    animation: fadeIn 0.3s ease;
+  }
+  .timeline-item:last-child { border-bottom: none; }
+  .timeline-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .timeline-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--orange);
+    border: 2px solid var(--surface);
+    box-shadow: 0 0 6px rgba(255,152,0,0.3);
+  }
+  .timeline-line {
+    width: 2px;
+    flex: 1;
+    background: #2a3544;
+    min-height: 20px;
+  }
+  .timeline-content {
+    flex: 1;
+    min-width: 0;
+  }
+  .timeline-title {
+    font-size: 12px;
+    color: var(--text-bright);
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .timeline-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+  .timeline-time {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+
+  /* ── Chat Bar ── */
+  .chat-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 24px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    position: relative;
+  }
+  .chat-bar::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    opacity: 0.3;
+  }
+  .chat-prompt-label {
+    font-size: 12px;
+    color: var(--cyan);
+    font-weight: 700;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    text-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+  }
+  .chat-input {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    color: var(--text-bright);
+    font-family: var(--font);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .chat-input:focus { border-color: var(--cyan); box-shadow: 0 0 8px rgba(0, 212, 255, 0.1); }
+  .chat-input::placeholder { color: var(--text-dim); }
+  .chat-send {
+    background: linear-gradient(135deg, var(--cyan), var(--cyan-dim));
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+  }
+  .chat-send:hover { opacity: 0.9; transform: translateY(-1px); }
+  .chat-send:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+
+  /* ── Chat response overlay ── */
+  .chat-response-overlay {
+    position: fixed;
+    bottom: 70px;
+    left: 24px;
+    right: 24px;
+    max-height: 40vh;
+    background: var(--surface);
+    border: 1px solid var(--cyan-dim);
+    border-radius: 12px;
+    padding: 20px;
+    overflow-y: auto;
+    display: none;
+    z-index: 100;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6);
+    animation: slideUp 0.3s ease-out;
+  }
+  .chat-response-overlay.visible { display: block; }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .chat-response-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .chat-response-label {
+    font-size: 11px;
+    color: var(--cyan);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+  }
+  .chat-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px;
+  }
+  .chat-close-btn:hover { color: var(--text); }
+  .chat-response-text {
+    font-size: 14px;
+    color: var(--text-bright);
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+  .chat-thinking {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--cyan);
+    padding: 12px 0;
+  }
+  .chat-thinking::before {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--cyan);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Last refresh indicator ── */
+  .refresh-indicator {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .refresh-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--cyan-dim);
+    animation: pulse-cyan 3s ease-in-out infinite;
+  }
+  @keyframes pulse-cyan {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* ── Empty state ── */
+  .empty-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+  }
+  .empty-panel .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+  .empty-panel p { font-size: 12px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .dashboard-grid {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto;
+    }
+    .kpi-strip { flex-wrap: wrap; }
+    .kpi-card { min-width: 120px; }
+  }
+
+  /* ── page-agent config panel ── */
+  .pa-config {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--surface);
+    border: 1px solid var(--cyan-dim);
+    border-radius: 12px;
+    padding: 24px;
+    z-index: 2000;
+    width: 420px;
+    display: none;
+    box-shadow: 0 16px 64px rgba(0, 0, 0, 0.8);
+  }
+  .pa-config.visible { display: block; }
+  .pa-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 1999;
+    display: none;
+  }
+  .pa-overlay.visible { display: block; }
+  .pa-config h3 {
+    color: var(--cyan);
+    font-size: 14px;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .pa-field {
+    margin-bottom: 12px;
+  }
+  .pa-field label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .pa-field input, .pa-field select {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text-bright);
+    font-size: 13px;
+    outline: none;
+  }
+  .pa-field input:focus, .pa-field select:focus { border-color: var(--cyan); }
+  .pa-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 16px;
+  }
+  .pa-btn {
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .pa-btn.primary { background: var(--cyan); color: #000; border-color: var(--cyan); }
+  .pa-btn.secondary { background: var(--surface2); color: var(--text); }
+  .pa-btn:hover { opacity: 0.85; }
+
+  /* ── page-agent status badge ── */
+  .pa-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--surface);
+    padding: 4px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .pa-badge:hover { border-color: var(--cyan-dim); }
+  .pa-badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-dim);
+  }
+  .pa-badge .dot.active { background: var(--cyan); box-shadow: 0 0 6px rgba(0,212,255,0.4); }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="header-left">
+    <span class="logo-symbol">Φ</span>
+    <div class="logo-text">
+      <h1>ΑΙΟΛΟΣ</h1>
+      <p>Command Center — XDART-Φ × XHEART</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="refresh-indicator">
+      <span class="refresh-dot"></span>
+      <span id="lastRefresh">Connecting...</span>
+    </div>
+    <div class="status-badge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Offline</span>
+    </div>
+    <div class="pa-badge" id="paBadge" onclick="openPageAgentConfig()" title="Page Agent Control">
+      <span class="dot" id="paDot"></span>
+      <span>PAGE AGENT</span>
+    </div>
+    <a href="/" class="nav-btn">◈ ANALYZE</a>
+  </div>
+</header>
+
+<!-- ── KPI Strip ── -->
+<div class="kpi-strip">
+  <div class="kpi-card world">
+    <div class="kpi-label">World Events</div>
+    <div class="kpi-value" id="kpiWorld">—</div>
+    <div class="kpi-sub" id="kpiWorldSub">Loading...</div>
+  </div>
+  <div class="kpi-card prophecy">
+    <div class="kpi-label">Prophecies</div>
+    <div class="kpi-value" id="kpiProphecies">—</div>
+    <div class="kpi-sub" id="kpiPropheciesSub">Loading...</div>
+  </div>
+  <div class="kpi-card accuracy">
+    <div class="kpi-label">Brier Score</div>
+    <div class="kpi-value" id="kpiAccuracy">—</div>
+    <div class="kpi-sub" id="kpiAccuracySub">Loading...</div>
+  </div>
+  <div class="kpi-card memory">
+    <div class="kpi-label">Memories</div>
+    <div class="kpi-value" id="kpiMemory">—</div>
+    <div class="kpi-sub" id="kpiMemorySub">Loading...</div>
+  </div>
+  <div class="kpi-card evolution">
+    <div class="kpi-label">Version</div>
+    <div class="kpi-value" id="kpiEvolution">—</div>
+    <div class="kpi-sub" id="kpiEvolutionSub">Loading...</div>
+  </div>
+  <div class="kpi-card wisdom">
+    <div class="kpi-label">Wisdom Index</div>
+    <div class="kpi-value" id="kpiWisdom">—</div>
+    <div class="kpi-sub" id="kpiWisdomSub">Loading...</div>
+  </div>
+</div>
+
+<!-- ── Main Dashboard Grid ── -->
+<div class="dashboard-grid">
+
+  <!-- Panel 1: World Feed -->
+  <div class="panel" id="panelWorld">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">📡</span> Live World Feed</div>
+      <span class="panel-badge" id="worldCount">0 events</span>
+    </div>
+    <div class="panel-body" id="worldFeed">
+      <div class="empty-panel"><span class="icon">📡</span><p>Connecting to perception layer...</p></div>
+    </div>
+  </div>
+
+  <!-- Panel 2: Active Prophecies -->
+  <div class="panel" id="panelProphecies">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">🔮</span> Active Prophecies</div>
+      <span class="panel-badge" id="prophecyCount">0 active</span>
+    </div>
+    <div class="panel-body" id="prophecyList">
+      <div class="empty-panel"><span class="icon">🔮</span><p>No prophecies yet. Run an analysis to generate predictions.</p></div>
+    </div>
+  </div>
+
+  <!-- Panel 3: System Intelligence -->
+  <div class="panel" id="panelIntel">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">📊</span> System Intelligence</div>
+      <span class="panel-badge" id="intelBadge">—</span>
+    </div>
+    <div class="panel-body" id="intelBody">
+      <div class="empty-panel"><span class="icon">📊</span><p>Gathering intelligence metrics...</p></div>
+    </div>
+  </div>
+
+  <!-- Panel 4: Evolution & Core Changes -->
+  <div class="panel" id="panelEvolution">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">🧬</span> Evolution Timeline</div>
+      <span class="panel-badge" id="evoCount">—</span>
+    </div>
+    <div class="panel-body" id="evoTimeline">
+      <div class="empty-panel"><span class="icon">🧬</span><p>Loading evolution history...</p></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Chat Response Overlay ── -->
+<div class="chat-response-overlay" id="chatOverlay">
+  <div class="chat-response-header">
+    <span class="chat-response-label">Αίολος Response</span>
+    <button class="chat-close-btn" onclick="closeChatOverlay()">×</button>
+  </div>
+  <div class="chat-response-text" id="chatResponseText"></div>
+</div>
+
+<!-- ── Chat Bar ── -->
+<div class="chat-bar">
+  <span class="chat-prompt-label">ΑΙΟΛΟΣ ▸</span>
+  <input type="text" class="chat-input" id="chatInput"
+         placeholder="Ask Αίολος anything... (Enter to send, Ctrl+Shift+Enter for full analysis)"
+         autocomplete="off" />
+  <button class="chat-send" id="chatSend" onclick="sendDashboardChat()">SEND</button>
+</div>
+
+<!-- ── Page Agent Config Dialog ── -->
+<div class="pa-overlay" id="paOverlay" onclick="closePageAgentConfig()"></div>
+<div class="pa-config" id="paConfig">
+  <h3>🤖 Page Agent Configuration</h3>
+  <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">
+    Enable natural language control of this dashboard. Page Agent uses an LLM to interpret your commands and manipulate the UI.
+  </p>
+  <div class="pa-field">
+    <label>LLM Provider</label>
+    <select id="paProvider">
+      <option value="proxy">XDART Backend Proxy (recommended)</option>
+      <option value="openai">OpenAI Direct</option>
+    </select>
+  </div>
+  <div class="pa-field" id="paKeyField" style="display:none;">
+    <label>API Key (stored locally only)</label>
+    <input type="password" id="paApiKey" placeholder="sk-..." />
+  </div>
+  <div class="pa-actions">
+    <button class="pa-btn secondary" onclick="closePageAgentConfig()">Cancel</button>
+    <button class="pa-btn primary" onclick="activatePageAgent()">Activate</button>
+  </div>
+</div>
+
+<!-- ── Page Agent: loaded dynamically on activation, NOT auto-loaded ── -->
+<!-- The demo CDN auto-activates with Alibaba's Chinese LLM — we load on demand instead -->
+
+<script>
+// ══════════════════════════════════════════════════════════════════════
+//  ΑΙΟΛΟΣ Command Center — Dashboard Logic
+// ══════════════════════════════════════════════════════════════════════
+
+const API = '';  // same origin
+let dashboardData = {};
+let refreshTimer = null;
+let chatHistory = [];
+const REFRESH_INTERVAL = 30_000; // 30s
+
+// ── HTML escape ──
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// ── Relative time ──
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  if (isNaN(then)) return dateStr;
+  const diff = Math.max(0, now - then);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+// ── Domain color mapping ──
+function domainClass(domain) {
+  if (!domain) return 'default';
+  const d = domain.toLowerCase();
+  if (d.includes('geopolit') || d.includes('conflict') || d.includes('war')) return 'geopolitics';
+  if (d.includes('econom') || d.includes('financ') || d.includes('market') || d.includes('trade')) return 'economy';
+  if (d.includes('secur') || d.includes('milit') || d.includes('defense')) return 'security';
+  if (d.includes('energy') || d.includes('oil') || d.includes('gas')) return 'energy';
+  if (d.includes('tech') || d.includes('cyber') || d.includes('ai')) return 'technology';
+  if (d.includes('climat') || d.includes('environment')) return 'climate';
+  return 'default';
+}
+
+// ── Confidence bar color ──
+function confColor(conf) {
+  if (conf >= 0.7) return 'var(--green)';
+  if (conf >= 0.4) return 'var(--orange)';
+  return 'var(--red)';
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  DATA FETCHING
+// ══════════════════════════════════════════════════════════════════════
+
+let _fetchRetries = 0;
+const MAX_RETRIES = 3;
+const FETCH_TIMEOUT = 45_000; // 45s — pipeline may block Qdrant
+
+async function fetchDashboardData() {
+  // ── Step 1: Fetch data (with timeout + retry) ──
+  let data;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+    const resp = await fetch(`${API}/xdart/dashboard/data`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+    _fetchRetries = 0; // reset on success
+  } catch (err) {
+    console.warn('[Dashboard] Fetch failed:', err.message);
+    _fetchRetries++;
+    if (_fetchRetries <= MAX_RETRIES) {
+      document.getElementById('statusText').textContent = `Retrying (${_fetchRetries}/${MAX_RETRIES})...`;
+    } else {
+      document.getElementById('statusDot').classList.remove('ok');
+      document.getElementById('statusText').textContent = 'Connection failed';
+    }
+    return; // don't touch render
+  }
+
+  // ── Step 2: Update connection status (always succeeds if fetch worked) ──
+  document.getElementById('statusDot').classList.add('ok');
+  document.getElementById('statusText').textContent = data.health?.model || 'Online';
+  document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
+
+  // ── Step 3: Render (errors here won't affect connection badge) ──
+  dashboardData = data;
+  try {
+    renderDashboard();
+  } catch (renderErr) {
+    console.error('[Dashboard] Render error:', renderErr);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDERING
+// ══════════════════════════════════════════════════════════════════════
+
+function renderDashboard() {
+  renderKPIs();
+  renderWorldFeed();
+  renderProphecies();
+  renderIntelligence();
+  renderEvolution();
+}
+
+// ── KPI Cards ──
+function renderKPIs() {
+  const d = dashboardData;
+
+  // World events
+  const worldTotal = d.world_context?.events?.length || 0;
+  const alerts = d.world_context?.events?.filter(e => (e.salience || 0) >= 0.7).length || 0;
+  document.getElementById('kpiWorld').textContent = worldTotal;
+  document.getElementById('kpiWorldSub').textContent = `${alerts} high-salience`;
+
+  // Prophecies
+  const propTotal = d.prophecies?.total || 0;
+  const propActive = d.prophecies?.prophecies?.filter(p => p.tracking_status === 'active' || p.tracking_status === 'tracking').length || 0;
+  const propConfirmed = d.prophecies?.prophecies?.filter(p => p.tracking_status === 'confirmed').length || 0;
+  document.getElementById('kpiProphecies').textContent = propTotal;
+  document.getElementById('kpiPropheciesSub').textContent = `${propActive} active · ${propConfirmed} confirmed`;
+
+  // Accuracy
+  const acc = d.accuracy?.accuracy;
+  if (acc && typeof acc.brier_score === 'number') {
+    document.getElementById('kpiAccuracy').textContent = acc.brier_score.toFixed(3);
+    document.getElementById('kpiAccuracySub').textContent = acc.rating || '—';
+  } else {
+    document.getElementById('kpiAccuracy').textContent = '—';
+    document.getElementById('kpiAccuracySub').textContent = 'No resolved predictions';
+  }
+
+  // Memory
+  const memCount = d.health?.memories || 0;
+  const conceptCount = d.health?.concepts || 0;
+  document.getElementById('kpiMemory').textContent = memCount.toLocaleString();
+  document.getElementById('kpiMemorySub').textContent = `${conceptCount} concepts`;
+
+  // Evolution version
+  const version = d.character?.version || '?';
+  document.getElementById('kpiEvolution').textContent = `v${version}`;
+  document.getElementById('kpiEvolutionSub').textContent = d.character?.name || 'Αίολος';
+
+  // Wisdom
+  const wisdomIdx = d.wisdom?.wisdom_index;
+  if (typeof wisdomIdx === 'number') {
+    document.getElementById('kpiWisdom').textContent = wisdomIdx.toFixed(2);
+    const report = d.wisdom?.calibration_report || {};
+    document.getElementById('kpiWisdomSub').textContent = report.overall_assessment || '—';
+  } else {
+    document.getElementById('kpiWisdom').textContent = '—';
+    document.getElementById('kpiWisdomSub').textContent = 'Calculating...';
+  }
+}
+
+// ── World Feed ──
+function renderWorldFeed() {
+  const events = dashboardData.world_context?.events || [];
+  const container = document.getElementById('worldFeed');
+  document.getElementById('worldCount').textContent = `${events.length} events`;
+
+  if (events.length === 0) {
+    container.innerHTML = '<div class="empty-panel"><span class="icon">📡</span><p>No world events collected yet. Perception layer may be initializing.</p></div>';
+    return;
+  }
+
+  container.innerHTML = events.map(e => {
+    const dc = domainClass(e.domain);
+    const sal = e.salience || 0;
+    const salClass = sal >= 0.7 ? 'salience-high' : sal >= 0.4 ? 'salience-medium' : 'salience-low';
+    return `
+      <div class="feed-item">
+        <span class="feed-dot ${dc}"></span>
+        <div class="feed-content">
+          <div class="feed-headline">${esc(e.headline)}</div>
+          <div class="feed-meta">
+            <span class="feed-domain-tag">${esc(e.domain || 'General')}</span>
+            <span class="feed-salience ${salClass}">◉ ${(sal * 100).toFixed(0)}%</span>
+            <span>${esc(e.source || '')}</span>
+            <span>${timeAgo(e.collected_at)}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── Prophecies ──
+function renderProphecies() {
+  const prophecies = dashboardData.prophecies?.prophecies || [];
+  const container = document.getElementById('prophecyList');
+  const active = prophecies.filter(p => p.tracking_status === 'active' || p.tracking_status === 'tracking');
+  document.getElementById('prophecyCount').textContent = `${active.length} active`;
+
+  if (prophecies.length === 0) {
+    container.innerHTML = '<div class="empty-panel"><span class="icon">🔮</span><p>No prophecies generated yet.</p></div>';
+    return;
+  }
+
+  // Show all, sorted by confidence descending
+  const sorted = [...prophecies].sort((a, b) =>
+    (b.scenario?.confidence || 0) - (a.scenario?.confidence || 0)
+  );
+
+  container.innerHTML = sorted.slice(0, 20).map(p => {
+    const conf = p.scenario?.confidence || 0;
+    const pct = (conf * 100).toFixed(0);
+    const color = confColor(conf);
+    return `
+      <div class="prophecy-item">
+        <div class="prophecy-header">
+          <span class="prophecy-name" title="${esc(p.scenario?.narrative || '')}">${esc(p.scenario?.name || 'Unnamed Scenario')}</span>
+          <span class="prophecy-status ${p.tracking_status || 'active'}">${esc(p.tracking_status || 'active')}</span>
+        </div>
+        <div class="prophecy-bar-wrap">
+          <div class="prophecy-bar">
+            <div class="prophecy-bar-fill" style="width:${pct}%;background:${color};"></div>
+          </div>
+          <span class="prophecy-conf">${pct}%</span>
+        </div>
+        <div class="prophecy-meta">
+          <span>⏳ ${esc(p.scenario?.timeframe || '—')}</span>
+          <span>Robustness: ${(p.simulation?.robustness_score || 0).toFixed(2)}</span>
+          <span>${timeAgo(p.timestamp)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── System Intelligence ──
+function renderIntelligence() {
+  const container = document.getElementById('intelBody');
+  const wisdom = dashboardData.wisdom || {};
+  const introspection = dashboardData.introspection || {};
+  const evolution = dashboardData.evolution || {};
+  const accuracy = dashboardData.accuracy?.accuracy || {};
+
+  const wisdomIdx = wisdom.wisdom_index || 0;
+  const integrityAvg = introspection.avg_integrity || 0;
+  const brierScore = accuracy.brier_score;
+  const proposals = evolution.active_proposals || [];
+  const stats = evolution.stats || {};
+
+  document.getElementById('intelBadge').textContent = `${proposals.length} proposals`;
+
+  let html = '';
+
+  // Metrics bars
+  const metrics = [
+    { label: 'Wisdom Index', val: wisdomIdx, max: 1, color: 'var(--gold)' },
+    { label: 'Avg Integrity', val: integrityAvg, max: 1, color: 'var(--cyan)' },
+  ];
+
+  if (typeof brierScore === 'number') {
+    metrics.push({
+      label: 'Brier Score',
+      val: 1 - brierScore,  // invert so higher = better on bar
+      max: 1,
+      color: brierScore < 0.1 ? 'var(--green)' : brierScore < 0.25 ? 'var(--cyan)' : brierScore < 0.5 ? 'var(--orange)' : 'var(--red)',
+      display: brierScore.toFixed(3)
+    });
+  }
+
+  metrics.forEach(m => {
+    const pct = Math.min(100, (m.val / m.max) * 100).toFixed(0);
+    html += `
+      <div class="intel-row">
+        <span class="intel-label">${esc(m.label)}</span>
+        <div class="intel-bar-wrap">
+          <div class="intel-bar">
+            <div class="intel-bar-fill" style="width:${pct}%;background:${m.color};"></div>
+          </div>
+          <span class="intel-val" style="color:${m.color}">${m.display || m.val.toFixed(3)}</span>
+        </div>
+      </div>
+    `;
+  });
+
+  // Stats line
+  if (stats.total_proposals) {
+    html += `
+      <div class="intel-row" style="font-size:11px;color:var(--text-dim);">
+        <span>Total Proposals: ${stats.total_proposals}</span>
+        <span>Deployed: ${stats.deployed || 0}</span>
+      </div>
+    `;
+  }
+
+  // Failure patterns from introspection
+  const failures = introspection.failure_patterns || [];
+  if (failures.length > 0) {
+    html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Known Failure Patterns</div>';
+    failures.slice(0, 5).forEach(f => {
+      html += `<div class="proposal-item"><span class="proposal-badge pending">⚠</span><span style="color:var(--orange);font-size:11px;">${esc(typeof f === 'string' ? f : f.pattern || JSON.stringify(f))}</span></div>`;
+    });
+  }
+
+  // Active proposals
+  if (proposals.length > 0) {
+    html += '<div style="margin-top:10px;font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Evolution Proposals</div>';
+    html += '<div class="proposals-list">';
+    proposals.slice(0, 8).forEach(p => {
+      const statusClass = (p.status === 'deployed' || p.deployed) ? 'deployed' : 'pending';
+      html += `
+        <div class="proposal-item">
+          <span class="proposal-badge ${statusClass}">${statusClass}</span>
+          <span>${esc(p.title || p.name || p.description || 'Proposal')}</span>
+        </div>
+      `;
+    });
+    html += '</div>';
+  }
+
+  container.innerHTML = html || '<div class="empty-panel"><span class="icon">📊</span><p>Gathering metrics...</p></div>';
+}
+
+// ── Evolution Timeline ──
+function renderEvolution() {
+  const container = document.getElementById('evoTimeline');
+  const changes = dashboardData.core_changes?.recent || [];
+  document.getElementById('evoCount').textContent = `${dashboardData.core_changes?.total || 0} total changes`;
+
+  if (changes.length === 0) {
+    container.innerHTML = '<div class="empty-panel"><span class="icon">🧬</span><p>No evolution events recorded yet.</p></div>';
+    return;
+  }
+
+  // Show most recent first
+  const reversed = [...changes].reverse();
+
+  container.innerHTML = reversed.slice(0, 15).map((c, i) => {
+    const type = c.type || c.change_type || 'UNKNOWN';
+    const desc = c.description || c.summary || c.change || '';
+    const ts = c.timestamp || c.created_at || '';
+    return `
+      <div class="timeline-item">
+        <div class="timeline-marker">
+          <span class="timeline-dot"></span>
+          ${i < reversed.length - 1 ? '<span class="timeline-line"></span>' : ''}
+        </div>
+        <div class="timeline-content">
+          <div class="timeline-title">${esc(type)}</div>
+          <div class="timeline-desc">${esc(desc.slice(0, 200))}${desc.length > 200 ? '...' : ''}</div>
+          <div class="timeline-time">${timeAgo(ts)}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  CHAT
+// ══════════════════════════════════════════════════════════════════════
+
+async function sendDashboardChat() {
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  input.value = '';
+  const overlay = document.getElementById('chatOverlay');
+  const textEl = document.getElementById('chatResponseText');
+
+  // Show thinking state
+  overlay.classList.add('visible');
+  textEl.innerHTML = '<div class="chat-thinking">Αίολος is thinking...</div>';
+
+  // Add to history
+  chatHistory.push({ role: 'user', content: msg });
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+
+  try {
+    const resp = await fetch(`${API}/xdart/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: msg,
+        history: chatHistory.slice(0, -1), // don't include current message in history
+      }),
+    });
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const data = await resp.json();
+
+    if (data.action === 'pipeline') {
+      // Redirect to main UI for full analysis
+      textEl.innerHTML = `
+        <div style="text-align:center;padding:16px;">
+          <div style="font-size:18px;margin-bottom:8px;">◈</div>
+          <p style="color:var(--gold);font-weight:600;">This question needs deep analysis.</p>
+          <p style="color:var(--text-dim);font-size:12px;margin-top:8px;">Redirecting to full pipeline...</p>
+        </div>
+      `;
+      setTimeout(() => {
+        window.location.href = `/?problem=${encodeURIComponent(data.problem || msg)}`;
+      }, 2000);
+      return;
+    }
+
+    const response = data.response || 'No response received.';
+    chatHistory.push({ role: 'assistant', content: response });
+    textEl.textContent = response;
+
+  } catch (err) {
+    textEl.innerHTML = `<span style="color:var(--red);">Error: ${esc(err.message)}</span>`;
+  }
+}
+
+function closeChatOverlay() {
+  document.getElementById('chatOverlay').classList.remove('visible');
+}
+
+// Chat input keyboard handler
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('chatInput');
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+      e.preventDefault();
+      sendDashboardChat();
+    }
+    if (e.key === 'Enter' && e.ctrlKey && e.shiftKey) {
+      // Full analysis — redirect to main UI
+      e.preventDefault();
+      const msg = input.value.trim();
+      if (msg) {
+        window.location.href = `/?problem=${encodeURIComponent(msg)}`;
+      }
+    }
+    if (e.key === 'Escape') {
+      closeChatOverlay();
+    }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+//  PAGE AGENT INTEGRATION
+// ══════════════════════════════════════════════════════════════════════
+
+let pageAgent = null;
+
+function openPageAgentConfig() {
+  document.getElementById('paOverlay').classList.add('visible');
+  document.getElementById('paConfig').classList.add('visible');
+  // Show/hide API key field
+  const sel = document.getElementById('paProvider');
+  sel.onchange = () => {
+    document.getElementById('paKeyField').style.display =
+      sel.value === 'openai' ? 'block' : 'none';
+  };
+}
+
+function closePageAgentConfig() {
+  document.getElementById('paOverlay').classList.remove('visible');
+  document.getElementById('paConfig').classList.remove('visible');
+}
+
+async function _loadPageAgentScript() {
+  if (window._PageAgentClass) return true;
+  try {
+    // Load English-patched page-agent from local server (no Chinese UI, no auto-activation)
+    const s = document.createElement('script');
+    s.src = '/static/page-agent.js';
+    await new Promise((resolve, reject) => {
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    // The IIFE exposes PageAgent globally
+    if (typeof PageAgent !== 'undefined') {
+      window._PageAgentClass = PageAgent;
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('[PageAgent] Script load failed:', e);
+    return false;
+  }
+}
+
+async function activatePageAgent() {
+  const provider = document.getElementById('paProvider').value;
+
+  const loaded = await _loadPageAgentScript();
+  if (!loaded) {
+    alert('Page Agent library failed to load. Check network.');
+    return;
+  }
+  const PA = window._PageAgentClass;
+
+  const config = {
+    language: 'en',
+    instructions: `You are controlling the ΑΙΟΛΟΣ Command Center dashboard.
+This dashboard shows: World Events feed, Active Prophecies, System Intelligence metrics, and Evolution Timeline.
+The dashboard has a chat bar at the bottom to talk to the AI named Αίολος.
+Help the user navigate, filter, and interact with the dashboard panels.
+Available panels: World Feed (📡), Prophecies (🔮), System Intelligence (📊), Evolution (🧬).
+You can scroll panels, click on items, and read data for the user.
+Always respond in English.`,
+  };
+
+  if (provider === 'proxy') {
+    config.baseURL = `${window.location.origin}/xdart/llm-proxy/v1`;
+    config.apiKey = 'proxy';
+    config.model = 'proxy';
+  } else {
+    const key = document.getElementById('paApiKey').value.trim();
+    if (!key) {
+      alert('Please enter your API key.');
+      return;
+    }
+    config.baseURL = 'https://api.openai.com/v1';
+    config.apiKey = key;
+    config.model = 'gpt-4o-mini';
+    localStorage.setItem('pa_api_key', key);
+  }
+
+  try {
+    pageAgent = new PA(config);
+    document.getElementById('paDot').classList.add('active');
+    closePageAgentConfig();
+  } catch (err) {
+    alert('Failed to activate Page Agent: ' + err.message);
+  }
+}
+
+// Try to restore from localStorage (only if user previously configured with API key)
+async function tryRestorePageAgent() {
+  const key = localStorage.getItem('pa_api_key');
+  if (!key) return;
+  const loaded = await _loadPageAgentScript();
+  if (!loaded) return;
+  const PA = window._PageAgentClass;
+  try {
+    pageAgent = new PA({
+      baseURL: 'https://api.openai.com/v1',
+      apiKey: key,
+      model: 'gpt-4o-mini',
+      language: 'en',
+      instructions: 'You are controlling the ΑΙΟΛΟΣ Command Center dashboard. Help navigate and interact with panels. Always respond in English.',
+    });
+    document.getElementById('paDot').classList.add('active');
+  } catch (e) {
+    console.warn('[PageAgent] Restore failed:', e);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════════════════════════════
+
+async function init() {
+  await fetchDashboardData();
+  // Auto-refresh
+  refreshTimer = setInterval(fetchDashboardData, REFRESH_INTERVAL);
+  // Try restore page agent
+  setTimeout(tryRestorePageAgent, 2000);
+}
+
+init();
+</script>
+</body>
+</html>

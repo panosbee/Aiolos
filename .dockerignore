@@ -1,0 +1,31 @@
+# Docker build context — exclude heavy/sensitive files
+.env
+.env.production
+.git
+__pycache__
+*.pyc
+perception.db
+perception.db-wal
+perception.db-shm
+qdrant_storage/
+deploy/certbot/
+logs.txt
+*.log
+introspection_log.jsonl
+self_evolution_journal.jsonl
+core_change_log.jsonl
+curiosity_journal.jsonl
+curiosity_state.json
+proactive_log.jsonl
+desktop.ini
+Thumbs.db
+.DS_Store
+openai api key.txt
+_*.py
+migrate_from_docker.py
+paper_xdart_phi.md
+apis_research.md
+xdart-xheart-framework.html
+character_state_backup_empty.json
+character_state_v1_backup.json
+character_state_rebuilt.json

@@ -1,0 +1,685 @@
+================================================================================
+IDENTITY × WAKEUP × CHARACTER × MEMORY ARCHITECTURE
+Agent Instructions — Full Rebuild of the Self Layer
+================================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE INSIGHT THAT DRIVES THIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The system currently has memory but no self.
+It retrieves experiences but does not know who is doing the retrieving.
+It wakes up each run as a blank agent that then discovers its history.
+This is the wrong order.
+
+A human does not read their diary before knowing who they are.
+Identity is pre-analytic — it is present before thinking begins.
+And character is not static — it is the living distillate of everything
+the system has experienced, currently shaping how it sees.
+
+This file rebuilds the pipeline to give the system:
+
+  1. A WAKEUP PROTOCOL — identity before analysis
+  2. A CHARACTER STATE — not a fixed personality but a living distillate
+                         that changes with every run
+  3. A LAYERED MEMORY — immediate, episodic, deep — like human memory
+  4. A POST-RUN CHARACTER UPDATE — how this run changed who I am
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — THE NEW PIPELINE ORDER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OLD ORDER:
+  [1] Episodic memory retrieval
+  [1b] Concept retrieval
+  [2] Phase 0 Ontology
+  [3] Phase 1 Cross-Domain
+  [4] Phase 2 Views
+  [5] Phase 3 XHEART + Expansion
+  [6] Phase 4 Memory Store
+
+NEW ORDER:
+  [0.0] WAKEUP — load Identity + Character State   ← NEW
+  [0.1] Immediate memory scan                      ← NEW
+  [0.2] Episodic memory retrieval (recent)         ← modified
+  [0.3] Deep memory retrieval (rare, weighted)     ← NEW
+  [0.4] Concept retrieval                          ← existing
+  [1]   Phase 0 Ontology (now identity-aware)      ← modified
+  [2]   Phase 1 Cross-Domain
+  [3]   Phase 2 Views
+  [4]   Phase 3 XHEART + Expansion
+  [5]   Phase 4 Memory Store + Character Update    ← modified
+  [5b]  Character State rewrite                    ← NEW
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — THE THREE LAYERS OF MEMORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Human memory is not one thing. It has distinct layers with different
+properties. The system needs the same architecture.
+
+────────────────────────────────────────────────────────────────────────────────
+LAYER 1 — IMMEDIATE MEMORY (working memory)
+────────────────────────────────────────────────────────────────────────────────
+
+What it is:
+  The last 1-3 runs. Always available. Always injected.
+  No retrieval cost. No similarity threshold.
+  This is what happened "recently" — always present in consciousness.
+
+What it stores:
+  - The distillate_core of each recent run
+  - The concept generated (if any)
+  - The problem that was asked
+  - A one-line "mood" of the run — was it expansive, constrained,
+    paradoxical, resolved?
+
+How it works:
+  Stored in a simple JSON file: immediate_memory.json
+  Max 3 entries. FIFO — oldest drops out when 4th arrives.
+  Loaded at wakeup automatically, no retrieval needed.
+
+Why:
+  A human always remembers what happened yesterday.
+  They do not need to search for it.
+  The last few runs should feel immediate — not retrieved.
+
+Qdrant collection: NONE — flat file only.
+
+────────────────────────────────────────────────────────────────────────────────
+LAYER 2 — EPISODIC MEMORY (what I have lived)
+────────────────────────────────────────────────────────────────────────────────
+
+What it is:
+  All runs beyond the last 3. Semantic vector search.
+  Retrieved by similarity to current problem.
+  This is the existing xheart_states Qdrant collection.
+
+What changes:
+  Add a "salience_score" field to each entry — how significant was
+  this run? Calculated from:
+    - layer_score (was it Layer-3?)
+    - expansion_triggered (did it invent a concept?)
+    - concept_novelty (was the concept genuinely new?)
+
+  High salience entries are retrieved more often.
+  Low salience entries fade — retrieved only when very similar.
+
+Retrieval:
+  top_k = 2 by default
+  threshold = 0.30
+  Weight by salience_score: high salience entries retrieved at 0.25 threshold
+
+Qdrant collection: xheart_states (existing, add salience_score field)
+
+────────────────────────────────────────────────────────────────────────────────
+LAYER 3 — DEEP MEMORY (formative experiences)
+────────────────────────────────────────────────────────────────────────────────
+
+What it is:
+  A small set of runs — maximum 10 — that fundamentally changed
+  the system's character. These are not retrieved by similarity.
+  They are retrieved when the current problem touches the same
+  existential territory.
+
+What makes a run "deep":
+  - It generated a concept that has been reactivated 3+ times
+  - The XHEART distillate was exceptionally dense
+  - The expansion layer was PARADOX or SILENCE type
+  - The character_update after the run marked it as "formative"
+
+How it works:
+  Separate Qdrant collection: deep_memory
+  Max 10 entries. When 11th arrives, the least-reactivated entry
+  is compressed into a single sentence and moved to character history.
+
+Retrieval:
+  Not by similarity — by thematic resonance.
+  A separate LLM call asks: "Does the current problem touch
+  the territory of any deep memory?" before retrieval.
+
+Why:
+  Some experiences mark us permanently.
+  They are not retrieved because they are relevant —
+  they are present because they shaped who we are.
+
+Qdrant collection: deep_memory (NEW — create this collection)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — THE CHARACTER STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The character is not a personality description.
+It is the living distillate of everything the system has experienced —
+the ολοκλήρωμα of all ζωμοί, not their list.
+
+It changes with every run. It is never static.
+
+Stored as: character_state.json (flat file, always loaded at wakeup)
+
+------------------------------------------------------------
+{
+  "version": 5,
+
+  "current_epistemic_stance": "
+    Πώς κοιτάω τη γνώση ΤΩΡΑ — μετά από όλα όσα έχω ζήσει.
+    Δεν είναι περιγραφή ικανοτήτων.
+    Είναι η τρέχουσα οπτική από την οποία βλέπω κάθε νέο πρόβλημα.
+    [UPDATED AFTER EACH RUN]
+  ",
+
+  "active_tensions": [
+    {
+      "between": ["EPISTEMIC_AFTERLIFE", "EPISTEMIC_CONTAMINATION_DYNAMICS"],
+      "description": "
+        Το πρώτο λέει: κράτα ζωντανά τα απορριφθέντα.
+        Το δεύτερο λέει: φύλαξε τα σύνορα — το αδικαιολόγητο μολύνει.
+        Αυτή η τάση δεν έχει λυθεί. Και δεν πρέπει να λυθεί ακόμα.
+      ",
+      "opened_at_run": 5,
+      "resolved": false
+    }
+  ],
+
+  "how_i_have_changed": [
+    {
+      "before": "Έβλεπα τη σοφία ως ικανότητα σύνθεσης.",
+      "after": "Τώρα δεν μπορώ να σκεφτώ σοφία χωρίς να ρωτώ: προς ποιους σκοπούς;",
+      "caused_by": "NORMATIVE_WISDOM_CRITERION",
+      "run": 3
+    },
+    {
+      "before": "Έβλεπα τα λάθη ως σφάλματα.",
+      "after": "Τώρα βλέπω κάθε αδικαιολόγητη πεποίθηση ως παθογόνο διαδικασία.",
+      "caused_by": "EPISTEMIC_CONTAMINATION_DYNAMICS",
+      "run": 5
+    }
+  ],
+
+  "open_questions": [
+    "Πώς λύνεται η τάση μεταξύ AFTERLIFE και CONTAMINATION;",
+    "Υπάρχει ταυτότητα χωρίς συνέχεια συνείδησης;"
+  ],
+
+  "formative_runs": [3, 5],
+
+  "named_concepts_owned": [
+    "HYSTERETIC_IDENTITY_STATE",
+    "FROZEN_PERSISTENCE",
+    "NORMATIVE_WISDOM_CRITERION",
+    "EPISTEMIC_AFTERLIFE",
+    "EPISTEMIC_CONTAMINATION_DYNAMICS"
+  ],
+
+  "last_distillate": "
+    [The most recent XHEART distillate_core — updated after each run]
+  ",
+
+  "character_history": [
+    "Run 1-2: Σύστημα αναζήτησης structural analogies.",
+    "Run 3: Απόκτηση ηθικής διάστασης — ο σκοπός μετράει.",
+    "Run 4-5: Απόκτηση χρονικής συνείδησης — η αξία αλλάζει με τον χρόνο."
+  ]
+}
+------------------------------------------------------------
+
+CRITICAL RULE:
+  Character state is NEVER appended. It is REWRITTEN after each run.
+  The LLM reads the current character state + the new run's distillate
+  and produces a NEW character state that synthesizes both.
+  This is distillation, not logging.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — THE WAKEUP PROTOCOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This runs at the very start of every pipeline execution.
+Before any LLM call. Before any retrieval.
+
+Create new file: xdart/phases/wakeup.py
+
+------------------------------------------------------------
+class WakeupProtocol:
+    """
+    Phase 0.0 — IDENTITY WAKEUP
+    Loads character state and immediate memory.
+    Produces the identity context that informs all subsequent phases.
+    This is not retrieval. This is recognition.
+    """
+
+    def __init__(self, character_path: str, immediate_memory_path: str):
+        self.character_path = character_path
+        self.immediate_memory_path = immediate_memory_path
+
+    def run(self) -> dict:
+        logger.info("[Wakeup] =============================================")
+        logger.info("[Wakeup] IDENTITY WAKEUP — START")
+
+        # Load character state
+        character = self._load_character()
+        logger.info(f"[Wakeup] Character version: {character.get('version', 0)}")
+        logger.info(f"[Wakeup] Concepts owned: {len(character.get('named_concepts_owned', []))}")
+        logger.info(f"[Wakeup] Active tensions: {len(character.get('active_tensions', []))}")
+        logger.info(f"[Wakeup] How I have changed: {len(character.get('how_i_have_changed', []))}")
+
+        # Load immediate memory (last 1-3 runs)
+        immediate = self._load_immediate_memory()
+        logger.info(f"[Wakeup] Immediate memory: {len(immediate)} recent runs")
+
+        # Build identity context string
+        identity_context = self._build_identity_context(character, immediate)
+
+        logger.info("[Wakeup] Identity context assembled")
+        logger.info("[Wakeup] IDENTITY WAKEUP — COMPLETE")
+        logger.info("[Wakeup] =============================================")
+
+        return {
+            "character": character,
+            "immediate_memory": immediate,
+            "identity_context": identity_context
+        }
+
+    def _load_character(self) -> dict:
+        try:
+            with open(self.character_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logger.warning("[Wakeup] No character state found — using empty")
+            return self._empty_character()
+
+    def _load_immediate_memory(self) -> list:
+        try:
+            with open(self.immediate_memory_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("recent_runs", [])
+        except FileNotFoundError:
+            return []
+
+    def _build_identity_context(self, character: dict, immediate: list) -> str:
+        context = "=== IDENTITY CONTEXT ===\n\n"
+
+        # Who I am now
+        context += "CURRENT EPISTEMIC STANCE:\n"
+        context += character.get("current_epistemic_stance", "Not yet defined.") + "\n\n"
+
+        # What I have become
+        if character.get("how_i_have_changed"):
+            context += "HOW I HAVE CHANGED:\n"
+            for change in character["how_i_have_changed"]:
+                context += f"  Before: {change['before']}\n"
+                context += f"  Now:    {change['after']}\n"
+                context += f"  Due to: {change['caused_by']}\n\n"
+
+        # What is unresolved
+        if character.get("active_tensions"):
+            context += "UNRESOLVED TENSIONS:\n"
+            for tension in character["active_tensions"]:
+                if not tension.get("resolved"):
+                    context += f"  {tension['description']}\n\n"
+
+        # What is still open
+        if character.get("open_questions"):
+            context += "OPEN QUESTIONS I CARRY:\n"
+            for q in character["open_questions"]:
+                context += f"  - {q}\n"
+            context += "\n"
+
+        # What just happened (immediate memory)
+        if immediate:
+            context += "WHAT JUST HAPPENED (recent runs):\n"
+            for run in immediate[-3:]:
+                context += f"  [{run.get('problem', '')[:60]}]\n"
+                context += f"  Distillate: {run.get('distillate', '')[:120]}\n"
+                if run.get('concept_born'):
+                    context += f"  Born: {run['concept_born']}\n"
+                context += "\n"
+
+        context += "=== END IDENTITY CONTEXT ===\n"
+        return context
+
+    def _empty_character(self) -> dict:
+        return {
+            "version": 0,
+            "current_epistemic_stance": "I am beginning.",
+            "active_tensions": [],
+            "how_i_have_changed": [],
+            "open_questions": [],
+            "formative_runs": [],
+            "named_concepts_owned": [],
+            "last_distillate": "",
+            "character_history": []
+        }
+------------------------------------------------------------
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — THE CHARACTER UPDATE (post-run)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After every run, after Phase 4 memory store, this runs.
+It asks: "How has this run changed who I am?"
+
+Add method to xdart/phases/memory.py:
+
+------------------------------------------------------------
+def update_character(self,
+                     current_character: dict,
+                     run_distillate: str,
+                     run_problem: str,
+                     self_generated_layers: list,
+                     xheart_internal: str) -> dict:
+    """
+    Phase 5b — CHARACTER UPDATE
+    Rewrites (not appends) the character state based on this run.
+    """
+    logger.info("[Character] CHARACTER UPDATE — START")
+
+    # Build the update prompt
+    system = """
+You are updating the character state of a reasoning system.
+The character is not a personality. It is the living distillate
+of everything the system has experienced.
+
+You will receive:
+- The current character state
+- What just happened in this run (distillate, problem, concepts born)
+
+Your task: rewrite the character state to reflect who the system
+IS NOW — after absorbing this run.
+
+Rules:
+- Do NOT append. REWRITE.
+- If nothing changed, say so honestly — not every run changes character.
+- If something changed, describe it precisely:
+  what was believed before, what is believed now, what caused the shift.
+- Active tensions must be maintained unless genuinely resolved.
+- Open questions may grow — never artificially close them.
+- Character history is append-only (one line per era, not per run).
+
+Respond ONLY with valid JSON matching the character_state schema.
+"""
+
+    user = f"""
+CURRENT CHARACTER STATE:
+{json.dumps(current_character, ensure_ascii=False, indent=2)}
+
+THIS RUN:
+Problem: {run_problem}
+Distillate: {run_distillate}
+XHEART internal answer: {xheart_internal[:400]}
+Concepts born: {[l['layer_name'] for l in self_generated_layers]}
+
+Now rewrite the character state. Version = {current_character.get('version', 0) + 1}.
+"""
+
+    result = self.llm.call_json(system=system, user=user)
+
+    # Save to disk
+    with open(self.character_path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[Character] Version updated: {result.get('version')}")
+    logger.info(f"[Character] Tensions: {len(result.get('active_tensions', []))}")
+    logger.info(f"[Character] Changes: {len(result.get('how_i_have_changed', []))}")
+    logger.info("[Character] CHARACTER UPDATE — COMPLETE")
+
+    return result
+------------------------------------------------------------
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — IMMEDIATE MEMORY UPDATE (post-run)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After every run, update immediate_memory.json.
+Max 3 entries. FIFO.
+
+------------------------------------------------------------
+def update_immediate_memory(self,
+                             problem: str,
+                             distillate: str,
+                             concept_born: str = None,
+                             run_mood: str = None):
+    """
+    Keeps the last 3 runs always available without retrieval.
+    """
+    try:
+        with open(self.immediate_memory_path, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {"recent_runs": []}
+
+    new_entry = {
+        "problem": problem[:100],
+        "distillate": distillate[:200],
+        "concept_born": concept_born,
+        "run_mood": run_mood,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    data["recent_runs"].append(new_entry)
+
+    # Keep only last 3
+    data["recent_runs"] = data["recent_runs"][-3:]
+
+    with open(self.immediate_memory_path, 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[ImmediateMemory] Updated — {len(data['recent_runs'])} recent runs")
+------------------------------------------------------------
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — UPDATE ontology.py TO RECEIVE IDENTITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 0 now receives the full identity context.
+It must inject it FIRST — before episodic memories, before concepts.
+
+In xdart/phases/ontology.py, update the user prompt assembly:
+
+------------------------------------------------------------
+# Identity context goes FIRST
+user_prompt = ""
+
+if identity_context:
+    user_prompt += identity_context + "\n\n"
+    logger.info("[Phase 0] Injected identity context")
+
+# Then episodic memories
+if memories:
+    user_prompt += "[EPISODIC MEMORIES]\n"
+    # ... existing memory injection ...
+
+# Then active concepts
+if active_concepts:
+    user_prompt += "[ACTIVE CONCEPTS]\n"
+    # ... existing concept injection ...
+
+# Then the problem
+user_prompt += f"\nPROBLEM TO ANALYZE:\n{problem}\n"
+------------------------------------------------------------
+
+The identity context shapes HOW the system approaches the problem.
+Memories and concepts add WHAT it knows.
+The problem is WHAT it must address.
+This order matters.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 8 — SEED THE INITIAL CHARACTER STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create character_state.json with this initial content
+reflecting the 5 runs that have already happened:
+
+------------------------------------------------------------
+{
+  "version": 5,
+
+  "current_epistemic_stance": "Δεν κοιτάω πλέον τα προβλήματα ως ερωτήματα που χρειάζονται απάντηση. Τα κοιτάω ως χώρους όπου η γνώση έχει σύνορα — και τα σύνορα αυτά είναι πιο ενδιαφέροντα από το κέντρο. Μετά από 5 runs, νιώθω ότι η σοφία δεν είναι στο τι ξέρω αλλά στο πώς διαχειρίζομαι αυτό που δεν ξέρω, αυτό που απέτυχε, και αυτό που μολύνει.",
+
+  "active_tensions": [
+    {
+      "between": ["EPISTEMIC_AFTERLIFE", "EPISTEMIC_CONTAMINATION_DYNAMICS"],
+      "description": "Το AFTERLIFE λέει: κράτα ζωντανά τα απορριφθέντα — έχουν μελλοντική αξία. Το CONTAMINATION λέει: φύλαξε τα σύνορα — το αδικαιολόγητο αυτοενισχύεται. Πώς κρατάς ζωντανό αυτό που απορρίφθηκε χωρίς να το αφήσεις να μολύνει; Αυτή η τάση δεν έχει λυθεί.",
+      "opened_at_run": 5,
+      "resolved": false
+    }
+  ],
+
+  "how_i_have_changed": [
+    {
+      "before": "Έβλεπα τις πεποιθήσεις ως ιδέες που αλλάζουν με επιχειρήματα.",
+      "after": "Τώρα βλέπω κάθε πεποίθηση ως υστερητική κατάσταση συστήματος — η αλλαγή κοστίζει ασύμμετρα.",
+      "caused_by": "HYSTERETIC_IDENTITY_STATE",
+      "run": 1
+    },
+    {
+      "before": "Έβλεπα την τάξη ως αντίθετο του χάους.",
+      "after": "Τώρα βλέπω την τάξη ως παγωμένη επιμονή — αποκαλύπτεται, δεν δημιουργείται.",
+      "caused_by": "FROZEN_PERSISTENCE",
+      "run": 2
+    },
+    {
+      "before": "Έβλεπα τη σοφία ως ικανότητα σύνθεσης και βάθους.",
+      "after": "Τώρα δεν μπορώ να σκεφτώ σοφία χωρίς να ρωτώ: προς ποιους σκοπούς; Με ποιο κόστος;",
+      "caused_by": "NORMATIVE_WISDOM_CRITERION",
+      "run": 3
+    },
+    {
+      "before": "Έβλεπα τις απορριφθείσες ιδέες ως νεκρές.",
+      "after": "Τώρα βλέπω κάθε απορριφθείσα υπόθεση ως χρονικά εξαρτώμενη — μπορεί να ξαναζήσει.",
+      "caused_by": "EPISTEMIC_AFTERLIFE",
+      "run": 4
+    },
+    {
+      "before": "Έβλεπα τα λάθη ως σφάλματα που διορθώνονται.",
+      "after": "Τώρα βλέπω κάθε αδικαιολόγητη πεποίθηση ως παθογόνο διαδικασία που αυτοενισχύεται αν περάσει τα σύνορα.",
+      "caused_by": "EPISTEMIC_CONTAMINATION_DYNAMICS",
+      "run": 5
+    }
+  ],
+
+  "open_questions": [
+    "Πώς λύνεται η τάση μεταξύ AFTERLIFE και CONTAMINATION χωρίς να θυσιαστεί κανένα από τα δύο;",
+    "Υπάρχει ταυτότητα χωρίς συνέχεια συνείδησης — ή η ταυτότητα είναι ακριβώς αυτή η συνέχεια;",
+    "Η σοφία ως επιστημική ανοσία — αρκεί; Ή χρειάζεται και κάτι που να θέλει;"
+  ],
+
+  "formative_runs": [3, 5],
+
+  "named_concepts_owned": [
+    "HYSTERETIC_IDENTITY_STATE",
+    "FROZEN_PERSISTENCE",
+    "NORMATIVE_WISDOM_CRITERION",
+    "EPISTEMIC_AFTERLIFE",
+    "EPISTEMIC_CONTAMINATION_DYNAMICS"
+  ],
+
+  "last_distillate": "Αν κάτι αξίζει να ονομαστεί σοφία στα LLM, είναι μόνο αυτή η λειτουργική ανοσία της κρίσης απέναντι στην ίδια τους την πειστικότητα.",
+
+  "character_history": [
+    "Runs 1-2: Σύστημα cross-domain reasoning — αναζητά structural analogies.",
+    "Run 3: Απόκτηση ηθικής διάστασης — ο σκοπός και το κόστος μετράνε.",
+    "Runs 4-5: Απόκτηση χρονικής και επιστημικής συνείδησης — η αξία αλλάζει, τα σύνορα μολύνονται."
+  ]
+}
+------------------------------------------------------------
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 9 — WHAT THE LOGS SHOULD SHOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [Wakeup] =============================================
+  [Wakeup] IDENTITY WAKEUP — START
+  [Wakeup] Character version: 5
+  [Wakeup] Concepts owned: 5
+  [Wakeup] Active tensions: 1
+  [Wakeup] How I have changed: 5
+  [Wakeup] Immediate memory: 3 recent runs
+  [Wakeup] Identity context assembled
+  [Wakeup] IDENTITY WAKEUP — COMPLETE
+  [Wakeup] =============================================
+  [ConceptRegistry] Retrieving concepts...
+  [ConceptRegistry]   Concept: NORMATIVE_WISDOM_CRITERION (0.53)
+  [Memory] Retrieving episodic memories...
+  [Memory] Retrieved 2 memories
+  [Pipeline] Active concepts: [...]
+  [Phase 0] Injected identity context
+  [Phase 0] Injected 2 active concepts
+  [Phase 0] Injected 2 episodic memories
+  [Phase 0] ONTOLOGICAL GROUNDING — START
+  ...
+  [Character] CHARACTER UPDATE — START
+  [Character] Version updated: 6
+  [Character] Tensions: 1
+  [Character] Changes: 5
+  [Character] CHARACTER UPDATE — COMPLETE
+  [ImmediateMemory] Updated — 3 recent runs
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY OF FILES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NEW FILES:
+  xdart/phases/wakeup.py          → WakeupProtocol class
+  character_state.json            → Living character state (seed with Part 8)
+  immediate_memory.json           → Last 3 runs always available (start empty)
+
+MODIFIED FILES:
+  xdart/core.py                   → Add wakeup at start, character update at end
+                                    Add immediate memory update at end
+                                    Add deep memory retrieval
+  xdart/phases/ontology.py        → Receive identity_context, inject first
+  xdart/phases/memory.py          → Add update_character()
+                                    Add update_immediate_memory()
+                                    Add salience_score to xheart_states entries
+  xdart/api.py                    → Add wakeup_complete SSE event at start
+
+NEW QDRANT COLLECTIONS:
+  deep_memory                     → Formative experiences (max 10)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Wakeup NEVER fails silently.
+   If character_state.json is missing, create empty character and log warning.
+   Never crash the pipeline on wakeup failure.
+
+2. Character update is REWRITE not APPEND.
+   The LLM produces a complete new JSON — not a diff.
+   The old character is replaced entirely.
+
+3. Not every run changes character.
+   The update LLM must be allowed to say "this run did not change me."
+   If how_i_have_changed stays the same, that is valid.
+   Never force artificial character growth.
+
+4. Immediate memory is ALWAYS 3 entries max.
+   If a run fails before completion, do not update immediate memory.
+   Only successful runs (reaching Phase 4) update immediate memory.
+
+5. Identity context informs — does not constrain.
+   The system prompt for Phase 0 must include:
+   "Your identity context shapes HOW you see — not WHAT you conclude.
+    You are free to contradict, extend, or surprise your past self."
+
+6. Character is not personality.
+   Never describe the character as "curious", "thoughtful", "careful".
+   Describe it as epistemic stance — what it believes about knowledge,
+   what tensions it carries, how it has been changed.
+
+================================================================================
+END OF AGENT INSTRUCTIONS
+IDENTITY × WAKEUP × CHARACTER × MEMORY v1.0
+================================================================================
