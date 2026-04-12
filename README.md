@@ -786,7 +786,7 @@ XDART-Φ/
 
 ## License
 
-XDART-Φ is proprietary software developed by **Salimov MON IKE** (Athens, Greece).
+XDART-Φ is proprietary software developed by **Panos Skouras** (Crete, Greece).
 
 © 2026 Panos Skouras — All rights reserved.
 
