@@ -25,6 +25,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from xdart.llm import LLMClient
 
@@ -99,7 +100,7 @@ class ProphecyResolver:
         logger.info("[ProphecyResolver] Starting resolution scan")
 
         all_prophecies = self.prophetic_memory.list_all(limit=500)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo("Europe/Athens"))
         current_date = now.strftime("%Y-%m-%d")
 
         # Separate into categories

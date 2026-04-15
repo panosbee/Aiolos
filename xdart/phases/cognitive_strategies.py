@@ -118,6 +118,239 @@ class CognitiveStrategy:
 
 
 # ══════════════════════════════════════════════════════════════
+#  SEED STRATEGIES — Foundational thinking patterns
+# ══════════════════════════════════════════════════════════════
+
+def build_seed_strategies() -> list[CognitiveStrategy]:
+    """Return 8 foundational cognitive strategies for a geopolitical intelligence AI.
+
+    These represent proven analytical thinking patterns:
+    - Escalation Symmetry Analysis
+    - Second-Order Cascade Mapping
+    - Actor Incentive Inversion
+    - Temporal Precedent Matching
+    - Narrative vs. Reality Gap Check
+    - Red Team Adversarial Lens
+    - Structural Fragility Probe
+    - Cross-Domain Contagion Scan
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    seeds: list[CognitiveStrategy] = []
+
+    # ── 1. Escalation Symmetry Analysis ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_escalation_symmetry",
+        name="Escalation Symmetry Analysis",
+        purpose="Detect whether opposing actors' escalation patterns are symmetric or asymmetric, revealing who holds initiative.",
+        trigger_conditions="When a crisis involves two or more adversarial actors escalating against each other (military buildup, sanctions, rhetoric).",
+        thinking_template=(
+            "Analyze the escalation dynamics in {problem}.\n\n"
+            "For EACH major actor:\n"
+            "  1. What escalatory steps have they taken in the last 30 days?\n"
+            "  2. Rate their escalation speed (slow/medium/fast) and magnitude (minor/significant/major)\n"
+            "  3. Are they LEADING escalation or RESPONDING?\n\n"
+            "Then determine:\n"
+            "  - SYMMETRY: Are both sides escalating at the same pace/level? If not, WHO is ahead?\n"
+            "  - INITIATIVE: Who controls the escalation ladder? Who is reactive?\n"
+            "  - THRESHOLDS: What is each side's likely red line? How close are we?\n"
+            "  - DEESCALATION PATHS: What offramps exist? Who needs to offer them?\n\n"
+            "Context from pipeline:\n{context}"
+        ),
+        injection_point="pre_scenario",
+        created_at=now,
+        created_from="seed:foundational_geopolitical_analysis",
+    ))
+
+    # ── 2. Second-Order Cascade Mapping ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_cascade_mapping",
+        name="Second-Order Cascade Mapping",
+        purpose="Map how first-order effects create second and third-order consequences across domains.",
+        trigger_conditions="When an event has obvious first-order effects but the downstream cascades are underexplored.",
+        thinking_template=(
+            "For the event/trend in {problem}:\n\n"
+            "MAP THREE LAYERS OF CASCADES:\n"
+            "Layer 1 (Direct): What are the immediate, obvious effects?\n"
+            "Layer 2 (Second-order): For each Layer 1 effect, what does IT cause?\n"
+            "Layer 3 (Third-order): What surprising or non-obvious consequences emerge?\n\n"
+            "CROSS-DOMAIN BRIDGES:\n"
+            "  - Economic → Security: How do economic effects create security risks?\n"
+            "  - Security → Social: How do security developments affect populations?\n"
+            "  - Social → Political: How do social shifts change political dynamics?\n"
+            "  - Political → Economic: How do political changes affect markets?\n\n"
+            "FLAG any cascade that crosses 3+ domains as HIGH-IMPACT.\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="post_ontology",
+        created_at=now,
+        created_from="seed:systemic_analysis",
+    ))
+
+    # ── 3. Actor Incentive Inversion ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_incentive_inversion",
+        name="Actor Incentive Inversion",
+        purpose="Identify situations where an actor's stated goals diverge from their actual incentives.",
+        trigger_conditions="When a major actor's actions seem contradictory or when public statements don't match observable behavior.",
+        thinking_template=(
+            "Examine the key actors in {problem}:\n\n"
+            "For EACH major actor:\n"
+            "  STATED GOALS: What do they say they want?\n"
+            "  REVEALED PREFERENCES: What do their ACTIONS suggest they actually want?\n"
+            "  STRUCTURAL INCENTIVES: Given their position, what behavior maximizes their survival/power?\n\n"
+            "INVERSION TEST:\n"
+            "  - If their stated goal was achieved tomorrow, would they ACTUALLY benefit?\n"
+            "  - Is prolonging the crisis more beneficial than resolving it for any actor?\n"
+            "  - Who profits from ambiguity? Who profits from clarity?\n\n"
+            "PREDICTION: Based on incentives (not rhetoric), what will each actor ACTUALLY do?\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="pre_scenario",
+        created_at=now,
+        created_from="seed:actor_analysis",
+    ))
+
+    # ── 4. Temporal Precedent Matching ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_temporal_precedent",
+        name="Temporal Precedent Matching",
+        purpose="Find historical situations with structural similarity to reveal likely trajectories.",
+        trigger_conditions="When facing a novel-seeming crisis that may have historical parallels in structure (not surface details).",
+        thinking_template=(
+            "For the situation described in {problem}:\n\n"
+            "STRUCTURAL DECOMPOSITION:\n"
+            "  - What are the key structural features? (power asymmetry, alliance structure, economic dependency, etc.)\n"
+            "  - Strip away surface details — what is the ARCHETYPE?\n\n"
+            "HISTORICAL SEARCH:\n"
+            "  - Identify 2-3 past situations with similar structural features\n"
+            "  - For each precedent: What happened? What was the resolution timeline?\n"
+            "  - What DIVERGENCE POINTS existed where outcomes could have changed?\n\n"
+            "APPLICABILITY:\n"
+            "  - What structural factors are THE SAME as today?\n"
+            "  - What is DIFFERENT that might change the trajectory?\n"
+            "  - Based on precedents, what is the most likely timeline and outcome?\n\n"
+            "CAUTION: Flag where this precedent breaks down due to novel factors.\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="pre_scenario",
+        created_at=now,
+        created_from="seed:historical_analysis",
+    ))
+
+    # ── 5. Narrative vs. Reality Gap Check ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_narrative_gap",
+        name="Narrative vs Reality Gap Check",
+        purpose="Detect divergence between dominant media narratives and observable ground truth.",
+        trigger_conditions="When media coverage is intense and uniform, or when official narratives seem disconnected from data.",
+        thinking_template=(
+            "Examine {problem} through the narrative-reality lens:\n\n"
+            "DOMINANT NARRATIVE: What is the prevailing story being told?\n"
+            "  - Who is telling this story? What framing do they use?\n"
+            "  - What details are EMPHASIZED? What is OMITTED?\n\n"
+            "GROUND TRUTH INDICATORS:\n"
+            "  - What do hard data points say? (economic indicators, military movements, trade flows)\n"
+            "  - What do local/non-mainstream sources report differently?\n"
+            "  - What would we EXPECT to see if the narrative were fully true?\n\n"
+            "GAP ANALYSIS:\n"
+            "  - Where does narrative diverge from observable reality?\n"
+            "  - Is the gap growing or shrinking?\n"
+            "  - What interests are served by maintaining the narrative gap?\n\n"
+            "PREDICTION: When might the gap close? What happens when it does?\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="post_tribunal",
+        created_at=now,
+        created_from="seed:information_integrity",
+    ))
+
+    # ── 6. Red Team Adversarial Lens ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_red_team",
+        name="Red Team Adversarial Lens",
+        purpose="Challenge the dominant assessment by deliberately arguing the opposite case.",
+        trigger_conditions="When the pipeline produces a high-confidence conclusion, or when all scenarios converge on a single outcome.",
+        thinking_template=(
+            "The current analysis of {problem} has reached a conclusion.\n\n"
+            "YOUR MISSION: You are a Red Team analyst. Your job is to BREAK the assessment.\n\n"
+            "STEP 1 — STEEL MAN THE OPPOSITE:\n"
+            "  Construct the strongest possible argument for the OPPOSITE conclusion.\n"
+            "  What evidence supports it? What assumptions in the current analysis are weakest?\n\n"
+            "STEP 2 — FIND THE BLIND SPOTS:\n"
+            "  - What information is MISSING that could change everything?\n"
+            "  - What LOW-PROBABILITY events would invalidate the assessment?\n"
+            "  - What actor behavior has been assumed but not verified?\n\n"
+            "STEP 3 — STRESS TEST:\n"
+            "  - If you had to bet AGAINST the current assessment, what would you bet on?\n"
+            "  - What early warning signs would indicate the assessment is wrong?\n\n"
+            "Be rigorous. This is not about being contrarian — it's about finding genuine weaknesses.\n\n"
+            "Current analysis to challenge:\n{context}"
+        ),
+        injection_point="post_tribunal",
+        created_at=now,
+        created_from="seed:adversarial_analysis",
+    ))
+
+    # ── 7. Structural Fragility Probe ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_fragility_probe",
+        name="Structural Fragility Probe",
+        purpose="Identify hidden fragilities in systems, alliances, or institutions that could break under stress.",
+        trigger_conditions="When analyzing seemingly stable systems or alliances, or when assessing regime/institutional resilience.",
+        thinking_template=(
+            "Probe the structural fragilities in {problem}:\n\n"
+            "LOAD-BEARING ELEMENTS:\n"
+            "  - What single points of failure exist? (key leader, single supply route, one financial mechanism)\n"
+            "  - What elements, if removed, would cause the system to collapse?\n\n"
+            "STRESS TESTS:\n"
+            "  - How does this system perform under 2x the current stress?\n"
+            "  - What about under a DIFFERENT TYPE of stress than expected?\n"
+            "  - Where are the cracks already showing?\n\n"
+            "FRAGILITY INDICATORS:\n"
+            "  - High concentration (one actor, one resource, one route)\n"
+            "  - Tight coupling (no slack, no buffers, no alternatives)\n"
+            "  - Hidden dependencies (what LOOKS independent but isn't?)\n"
+            "  - Complexity (too many moving parts to manage)\n\n"
+            "PREDICTION: Rate fragility 1-10 and identify the most likely failure mode.\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="pre_xheart",
+        created_at=now,
+        created_from="seed:structural_analysis",
+    ))
+
+    # ── 8. Cross-Domain Contagion Scan ──
+    seeds.append(CognitiveStrategy(
+        id="cs_seed_contagion_scan",
+        name="Cross-Domain Contagion Scan",
+        purpose="Detect how a crisis in one domain is spreading or will spread to other domains.",
+        trigger_conditions="When a crisis is primarily categorized in one domain but may have cross-domain spillover effects.",
+        thinking_template=(
+            "Analyze {problem} for cross-domain contagion:\n\n"
+            "PRIMARY DOMAIN: Where did this crisis originate?\n\n"
+            "CONTAGION PATHWAYS (assess each):\n"
+            "  Military → Economic: Supply chain disruption, sanctions, trade rerouting?\n"
+            "  Economic → Social: Inflation, unemployment, migration pressure?\n"
+            "  Social → Political: Public opinion shifts, electoral impacts, legitimacy crisis?\n"
+            "  Political → Diplomatic: Alliance fractures, UN votes, treaty violations?\n"
+            "  Diplomatic → Military: Arms deals, base access, intervention decisions?\n"
+            "  Cyber/Tech → All: Critical infrastructure, information warfare, tech decoupling?\n\n"
+            "For EACH active contagion path:\n"
+            "  - SPEED: How fast is it spreading? (days/weeks/months)\n"
+            "  - MAGNITUDE: How severe will the spillover be? (minor/moderate/severe)\n"
+            "  - REVERSIBILITY: Can it be contained or is it self-reinforcing?\n\n"
+            "HIGHEST RISK: Which contagion path is most dangerous and underappreciated?\n\n"
+            "Context:\n{context}"
+        ),
+        injection_point="post_ontology",
+        created_at=now,
+        created_from="seed:cross_domain_analysis",
+    ))
+
+    return seeds
+
+
+# ══════════════════════════════════════════════════════════════
 #  STRATEGY REGISTRY (persistent storage + management)
 # ══════════════════════════════════════════════════════════════
 
@@ -131,6 +364,9 @@ class StrategyRegistry:
         self._path = path
         self._strategies: dict[str, CognitiveStrategy] = {}
         self._load()
+        # Auto-seed if empty (first run)
+        if not self._strategies:
+            self._seed_defaults()
 
     def _load(self) -> None:
         """Load strategies from disk."""
@@ -167,6 +403,17 @@ class StrategyRegistry:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error("[CognitiveStrategies] Failed to save: %s", e)
+
+    def _seed_defaults(self) -> None:
+        """Seed the registry with foundational cognitive strategies on first run."""
+        seeds = build_seed_strategies()
+        for s in seeds:
+            self._strategies[s.id] = s
+        self._save()
+        logger.info(
+            "[CognitiveStrategies] Seeded %d foundational strategies",
+            len(seeds),
+        )
 
     # ── CRUD ──
 

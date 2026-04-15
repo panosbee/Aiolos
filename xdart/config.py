@@ -127,11 +127,41 @@ PROACTIVE_ENABLED: bool = os.getenv("PROACTIVE_ENABLED", "true").lower() in ("tr
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# ── Multimodal Perception ──
+# OpenSky Network (free, registration recommended for higher rate limits)
+# API Client credentials — clientId as user, clientSecret as pass
+OPENSKY_USER: str = os.getenv("OPENSKY_USER", "***REMOVED***")
+OPENSKY_PASS: str = os.getenv("OPENSKY_PASS", "***REMOVED***")
+# NASA FIRMS (free MAP_KEY from https://firms.modaps.eosdis.nasa.gov/api/area/)
+FIRMS_MAP_KEY: str = os.getenv("FIRMS_MAP_KEY", "***REMOVED***")
+# MarineTraffic (optional, free tier available)
+MARINETRAFFIC_API_KEY: str = os.getenv("MARINETRAFFIC_API_KEY", "")
+# Enable/disable multimodal perception
+MULTIMODAL_ENABLED: bool = os.getenv("MULTIMODAL_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# ── Cross-system Learning ──
+# CORE API key (free from https://core.ac.uk/services/api)
+# Works without key (100 tokens/day unauth), better with key (1000+/day)
+CORE_API_KEY: str = os.getenv("CORE_API_KEY", "")
+# Semantic Scholar API key (free from https://www.semanticscholar.org/product/api)
+# Without key: 1000 req/s shared among ALL unauthenticated users (frequent 429s)
+# With key: dedicated 1 RPS (introductory), much more reliable
+S2_API_KEY: str = os.getenv("S2_API_KEY", "")
+# Enable/disable cross-system learning
+CROSS_SYSTEM_LEARNING_ENABLED: bool = os.getenv("CROSS_SYSTEM_LEARNING_ENABLED", "true").lower() in ("true", "1", "yes")
+
 # ── ElevenLabs Voice (TTS + STT) ──
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
 ELEVENLABS_MODEL_TTS: str = os.getenv("ELEVENLABS_MODEL_TTS", "eleven_v3")
 ELEVENLABS_MODEL_STT: str = os.getenv("ELEVENLABS_MODEL_STT", "scribe_v2")
+
+# ── Vision System (Αίολος' Eyes) ──
+# Face detection + recognition via FaceNet microservice
+VISION_ENABLED: bool = os.getenv("VISION_ENABLED", "true").lower() in ("true", "1", "yes")
+VISION_SERVICE_URL: str = os.getenv("VISION_SERVICE_URL", "http://localhost:8100")
+# Minimum interval between proactive conversation triggers from vision (seconds)
+VISION_PRESENCE_COOLDOWN: int = int(os.getenv("VISION_PRESENCE_COOLDOWN", "300"))
 
 # ── Logging ──
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

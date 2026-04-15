@@ -2,7 +2,8 @@
 XDART-Φ × XHEART — Core Orchestrator (Prophet Edition)
 
 Η κεντρική κλάση που τρέχει ΟΛΟ το framework:
-  Phase 0 → Phase 1 → Phase 2 → Phase 2.5 (Scenarios) → Phase 2.7 (Simulation)
+  Phase 0 → Phase 1 → Phase 1.5 (Creative Synthesis) → Phase 2
+  → Phase 2.5 (Scenarios) → Phase 2.7 (Simulation)
   → Phase 2.9 (Tribunal) → Phase 2.91 (Quantum Engine) → Phase 3 (XHEART)
   → Phase 3.5 (Historical Resonance) → Phase 3.7 (Strategic Foresight)
   → Phase 3.9 (Prophetic Bets) → Phase 4 (Memory) → Prophetic Loop
@@ -19,7 +20,9 @@ XDART-Φ × XHEART — Core Orchestrator (Prophet Edition)
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from xdart.config import (
     BASE_DIR, CHARACTER_STATE_PATH, IMMEDIATE_MEMORY_PATH,
@@ -45,6 +48,7 @@ from xdart.models import (
     ScenarioActionMappingResult,
     StrategicForesightResult,
 )
+from xdart.phases.creative_synthesis import CreativeSynthesisPhase
 from xdart.phases.cross_domain import CrossDomainPhase
 from xdart.phases.memory import EpisodicMemoryPhase
 from xdart.phases.memory_architecture import (
@@ -108,10 +112,18 @@ class XDARTFramework:
         )
         self.phase0 = OntologyPhase(self.llm)
         self.phase1 = CrossDomainPhase(self.llm)
+        self.phase1_5 = CreativeSynthesisPhase(self.llm)
         self.phase2 = ViewsPhase(self.llm)
         self.phase3 = XHEARTPhase(self.llm)
         self.memory = EpisodicMemoryPhase(self.llm)
         self.self_awareness = SelfAwarenessBrief(self.llm)
+
+        # ── Auto-seed Concept Registry (idempotent — skips if already seeded) ──
+        try:
+            from seed_concepts import SEED_CONCEPTS
+            self.memory.seed_concepts(SEED_CONCEPTS)
+        except Exception as e:
+            logger.warning("Concept registry auto-seed skipped: %s", e)
 
         # ── Deep Self-Awareness Modules (αυτογνωσία / αυτοεξέλιξη / σοφία) ──
         self.introspection = IntrospectionLayer(self.llm)
@@ -594,7 +606,7 @@ class XDARTFramework:
                 prophetic_loop_result = self.prophetic_loop.run(
                     problem=problem,
                     past_scenarios=past_prophecies,
-                    world_context=world_context_str,
+                    world_context=world_context_str[:10000],
                 )
                 phase_times["prophetic_loop"] = time.perf_counter() - pl_t0
                 prophetic_loop_context = self.prophetic_loop.format_for_context(prophetic_loop_result)
@@ -657,8 +669,8 @@ class XDARTFramework:
 
         # ── World context budget enforcement ──
         # DeepSeek has 131K context. System + identity + memory + concepts + wisdom ~20K tokens.
-        # World context must leave room. Hard cap at 200K chars (~60K tokens).
-        WORLD_CONTEXT_BUDGET = 200_000
+        # World context must leave room. Hard cap at 80K chars (~25K tokens).
+        WORLD_CONTEXT_BUDGET = 80_000
         if len(world_context_str) > WORLD_CONTEXT_BUDGET:
             logger.warning(
                 "[Pipeline] World context too large: %d chars → truncating to %d chars",
@@ -685,7 +697,7 @@ class XDARTFramework:
         analysis_plan = self.meta_orchestrator.plan(
             problem=problem,
             memory_context=memory_context,
-            world_context=world_context_str,
+            world_context=world_context_str[:5000],
             past_runs_summary=past_runs_summary,
             has_client_profile=bool(client_context),
             quantum_enabled=bool(self.quantum_engine),
@@ -975,16 +987,68 @@ class XDARTFramework:
             )
 
         # ──────────────────────────────────────────────────────────
-        # PHASE 2 — Multiple Views
+        # PHASE 1.5 — CREATIVE SYNTHESIS (Domain Fusion → Novel Concepts)
         # ──────────────────────────────────────────────────────────
         cross_domain_summary = self._summarize_cross_domain(cross_domain)
+        creative_synthesis = None
+        synthesis_context = ""
+
+        if not _skip_to_xheart:
+            p15_t0 = time.perf_counter()
+            try:
+                creative_synthesis = self.phase1_5.run(
+                    problem=problem,
+                    ontology_summary=self._summarize_ontology(ontology),
+                    cross_domain_summary=cross_domain_summary,
+                    active_concepts=active_concepts,
+                )
+                phase_times["phase1_5_synthesis"] = time.perf_counter() - p15_t0
+
+                if creative_synthesis and creative_synthesis.synthesized_concepts:
+                    synthesis_context = CreativeSynthesisPhase.summarize(creative_synthesis)
+
+                    # Push synthesized concepts into working memory
+                    for sc in creative_synthesis.synthesized_concepts:
+                        self.working_memory.push(
+                            item_type="synthesis",
+                            content=f"Novel concept: {sc.concept_name} — {sc.definition[:200]}",
+                            source="phase1_5_synthesis",
+                            relevance=0.95,
+                        )
+
+                    if callback:
+                        callback("phase1_5_synthesis", {
+                            "concepts_created": len(creative_synthesis.synthesized_concepts),
+                            "metaphors_created": len(creative_synthesis.bridging_metaphors),
+                            "hypotheses_created": len(creative_synthesis.emergent_hypotheses),
+                            "novelty_score": creative_synthesis.novelty_score,
+                            "domains_fused": creative_synthesis.domains_fused,
+                            "concept_names": [c.concept_name for c in creative_synthesis.synthesized_concepts],
+                        })
+
+                    logger.info(
+                        "[Pipeline] Phase 1.5 Creative Synthesis complete (%.2fs): "
+                        "%d concepts, novelty=%.2f",
+                        phase_times["phase1_5_synthesis"],
+                        len(creative_synthesis.synthesized_concepts),
+                        creative_synthesis.novelty_score,
+                    )
+                else:
+                    logger.info("[Pipeline] Phase 1.5: no novel concepts synthesized")
+            except Exception as e:
+                phase_times["phase1_5_synthesis"] = time.perf_counter() - p15_t0
+                logger.warning("[Pipeline] Phase 1.5 Creative Synthesis failed: %s", e)
+
+        # ──────────────────────────────────────────────────────────
+        # PHASE 2 — Multiple Views
+        # ──────────────────────────────────────────────────────────
 
         if _should_run_phase("views") and not _skip_to_xheart:
             p2_t0 = time.perf_counter()
             views = self.phase2.run(
                 problem=problem,
                 reframed_problem=ontology.reframed_problem,
-                cross_domain_summary=cross_domain_summary,
+                cross_domain_summary=cross_domain_summary + ("\n\n" + synthesis_context if synthesis_context else ""),
                 world_context=world_context_str,
             )
             phase_times["phase2"] = time.perf_counter() - p2_t0
@@ -1014,7 +1078,7 @@ class XDARTFramework:
             views = self.phase2.run(
                 problem=problem,
                 reframed_problem=ontology.reframed_problem,
-                cross_domain_summary=cross_domain_summary,
+                cross_domain_summary=cross_domain_summary + ("\n\n" + synthesis_context if synthesis_context else ""),
                 world_context=world_context_str,
             )
             phase_times["phase2"] = time.perf_counter() - p2_t0
@@ -1173,7 +1237,7 @@ class XDARTFramework:
                 simulations = self.phase2_7.run(
                     problem=problem,
                     scenarios=scenario_genesis.scenarios,
-                    world_context=world_context_str,
+                    world_context=world_context_str[:15000],
                     working_memory_context=working_memory_context,
                     overlay_text=_ovl("scenario_simulation"),
                 )
@@ -1204,7 +1268,7 @@ class XDARTFramework:
                     problem=problem,
                     genesis=scenario_genesis,
                     simulations=simulations,
-                    world_context=world_context_str,
+                    world_context=world_context_str[:15000],
                     working_memory_context=working_memory_context,
                     overlay_text=_ovl("scenario_tribunal"),
                 )
@@ -1338,7 +1402,7 @@ class XDARTFramework:
                         scenarios=scenario_genesis.scenarios,
                         tribunal=tribunal,
                         simulations=simulations,
-                        world_context=world_context_str,
+                        world_context=world_context_str[:15000],
                     )
                     phase_times["phase2_91_quantum"] = time.perf_counter() - p291_t0
                     if callback:
@@ -1382,7 +1446,7 @@ class XDARTFramework:
                         problem=problem,
                         scenarios=scenario_genesis.scenarios,
                         tribunal=tribunal,
-                        world_context=world_context_str,
+                        world_context=world_context_str[:15000],
                     )
                     phase_times["phase2_92_bayesian_fuzzy"] = time.perf_counter() - p292_t0
                     if callback:
@@ -1450,7 +1514,7 @@ class XDARTFramework:
                         tribunal_synthesis=tribunal.tribunal_synthesis,
                         scenario_narratives=scenario_narratives,
                         client_context=client_context,
-                        world_context=world_context_str,
+                        world_context=world_context_str[:10000],
                     )
                     phase_times["phase2_95"] = time.perf_counter() - p295_t0
 
@@ -1635,7 +1699,7 @@ class XDARTFramework:
             _branch_merge_result = self.meta_orchestrator.merge_branches(
                 problem=problem,
                 branch_results=branch_results,
-                world_context=world_context_str,
+                world_context=world_context_str[:5000],
             )
             if callback:
                 callback("meta_branch_merge", {
@@ -1670,6 +1734,10 @@ class XDARTFramework:
             f"=== SCENARIO PIPELINE RESULTS ===\n"
             f"{scenario_pipeline_summary}\n"
         )
+
+        # Inject Creative Synthesis results into XHEART context
+        if synthesis_context:
+            enriched_views_summary += f"\n{synthesis_context}\n"
 
         # Inject custom phase results into XHEART context
         if _custom_phase_results:
@@ -1830,7 +1898,7 @@ class XDARTFramework:
             ontology_summary=ontology_summary,
             cross_domain_summary=cross_domain_summary,
             views_summary=enriched_views_summary,
-            world_context=world_context_str,
+            world_context=world_context_str[:15000],
             scenario_context=scenario_output_context,
             distillation_overlay=_ovl("xheart_distillation"),
             output_overlay=_ovl("xheart_output"),
@@ -1874,7 +1942,7 @@ class XDARTFramework:
                     scenario_pipeline_summary=scenario_pipeline_summary,
                     dominant_scenario_name=tribunal.dominant_scenario.scenario_name,
                     tribunal_synthesis=tribunal.tribunal_synthesis,
-                    world_context=world_context_str,
+                    world_context=world_context_str[:10000],
                     working_memory_context=working_memory_context,
                 )
                 phase_times["phase3_5"] = time.perf_counter() - p35_t0
@@ -1978,7 +2046,7 @@ class XDARTFramework:
                     dominant_scenario_name=tribunal.dominant_scenario.scenario_name,
                     tribunal_synthesis=tribunal.tribunal_synthesis,
                     historical_resonance=historical_resonance_raw or {},
-                    world_context=world_context_str,
+                    world_context=world_context_str[:10000],
                     client_context=client_context,
                     action_mapping=action_mapping_raw,
                 )
@@ -2516,7 +2584,7 @@ class XDARTFramework:
                 new_curiosities = self.curiosity_engine.generate(
                     introspection_report=introspection_for_curiosity,
                     character=char_for_curiosity,
-                    world_context=world_context_str,
+                    world_context=world_context_str[:5000],
                     recent_distillate=xheart.distillate_core,
                     recent_problem=problem,
                 )
@@ -2606,6 +2674,34 @@ class XDARTFramework:
                             new_principle.id, new_principle.title,
                         )
 
+                # ── Wisdom extraction: learn from SUCCESS too ──
+                if hasattr(xheart, "distillate_core") and xheart.distillate_core:
+                    success_parts = [f"Distillate: {xheart.distillate_core[:1500]}"]
+                    if hasattr(xheart, "prophecy") and xheart.prophecy:
+                        success_parts.append(f"Prophecy: {xheart.prophecy[:500]}")
+                    success_parts.append(f"Problem analyzed: {problem[:500]}")
+                    _wisdom_perf = dict(perf_data)
+                    # Add confirmed prophecies count
+                    try:
+                        _wis_summary = self.wisdom_tracker.get_summary()
+                        _wisdom_perf["prophecies_confirmed"] = _wis_summary.get("prophecies_confirmed", 0)
+                        _wisdom_perf["recent_successes"] = _wis_summary.get("recent_successes", [])
+                    except Exception:
+                        _wisdom_perf["prophecies_confirmed"] = "N/A"
+                        _wisdom_perf["recent_successes"] = []
+
+                    wisdom_principle = self.principle_registry.discover_from_success(
+                        success_evidence="\n".join(success_parts),
+                        performance_data=_wisdom_perf,
+                        existing_axioms_text=axioms_text,
+                        callback=callback,
+                    )
+                    if wisdom_principle:
+                        logger.info(
+                            "[Pipeline] Wisdom Extraction: proposed %s — %s",
+                            wisdom_principle.id, wisdom_principle.title,
+                        )
+
                 # Auto-retire underperforming principles
                 retired = self.principle_registry.auto_retire()
                 if retired:
@@ -2689,6 +2785,7 @@ class XDARTFramework:
             problem=problem,
             phase0_ontology=ontology,
             phase1_xdart=cross_domain,
+            phase1_5_synthesis=creative_synthesis.to_dict() if creative_synthesis and creative_synthesis.synthesized_concepts else None,
             phase2_views=views,
             phase3_xheart=xheart,
             phase2_5_scenarios=scenario_genesis,
@@ -2831,8 +2928,12 @@ The system has these capabilities accessible in chat:
 - Logic Sandbox: Self-modification system with modifiable functions and proposals. Status loaded at chat time.
 - Principle Registry: Dynamic operating principles learned from experience. Status loaded at chat time.
 - Bayesian-Fuzzy Templates: Custom domain templates for quantitative risk analysis. Template list loaded at chat time.
-When the user asks about these systems, their proposals, their principles, or templates,
-use RESPOND — the data is already in context. No pipeline needed to READ their status.
+- Creative Synthesis: Domain-fusion engine that combines cross-domain analogies into novel concepts,
+  bridging metaphors, and emergent hypotheses. Triggers automatically when you discuss synthesis,
+  novel concepts, domain fusion, concept creation, or bridging ideas across fields.
+When the user asks about these systems, their proposals, their principles, templates,
+or wants creative concept fusion, use RESPOND — the data is already in context or will be
+generated on-demand. No pipeline needed to READ their status.
 
 Respond in JSON:
 {
@@ -3103,20 +3204,25 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if self.logic_sandbox:
             try:
                 sb_stats = self.logic_sandbox.get_stats()
-                sb_proposals = self.logic_sandbox.get_proposals()
+                sb_pending = self.logic_sandbox.get_pending_approvals()
                 sb_lines = [
                     f"LOGIC SANDBOX STATUS:",
-                    f"  Functions: {sb_stats.get('total_functions', 0)} modifiable",
-                    f"  Proposals: {sb_stats.get('pending_proposals', 0)} pending, "
-                    f"{sb_stats.get('approved', 0)} approved, {sb_stats.get('rejected', 0)} rejected",
+                    f"  Functions: {sb_stats.get('total_functions', 0)} modifiable, "
+                    f"{sb_stats.get('modified_functions', 0)} modified",
+                    f"  Proposals: {sb_stats.get('total_proposals', 0)} total — "
+                    f"{sb_stats.get('pending_approval', 0)} awaiting approval, "
+                    f"{sb_stats.get('applied', 0)} applied, "
+                    f"{sb_stats.get('rejected', 0)} rejected",
                 ]
-                if sb_proposals:
-                    sb_lines.append("  Pending proposals:")
-                    for p in sb_proposals[:5]:
+                if sb_pending:
+                    sb_lines.append(f"  Proposals awaiting YOUR approval ({len(sb_pending)}):")
+                    for p in sb_pending[:5]:
                         sb_lines.append(
-                            f"    - [{p.get('id', '?')[:8]}] {p.get('function_name', '?')}: "
-                            f"{p.get('description', '')[:120]}"
+                            f"    - [{p.get('id', '?')[:8]}] {p.get('function_id', '?')}: "
+                            f"{p.get('rationale', p.get('expected_improvement', ''))[:120]}"
                         )
+                else:
+                    sb_lines.append("  No proposals awaiting approval — all processed (auto-deployed or rejected).")
                 context_parts.append("\n".join(sb_lines))
             except Exception:
                 pass
@@ -3135,9 +3241,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 if pr_active:
                     pr_lines.append("  Active principles:")
                     for p in pr_active[:5]:
+                        eff = p.get('avg_effectiveness')
+                        eff_str = f"{eff:.0%}" if eff is not None else "pending"
                         pr_lines.append(
-                            f"    - {p.get('name', p.get('id', '?'))}: "
-                            f"{p.get('description', '')[:120]} (score={p.get('score', '?')})"
+                            f"    - {p.get('title', p.get('id', '?'))}: "
+                            f"{p.get('principle_text', '')[:120]} (effectiveness={eff_str})"
                         )
                 if pr_pending:
                     pr_lines.append(f"  Pending approval: {len(pr_pending)} principles")
@@ -3157,6 +3265,48 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                         f"{t.get('variables_count', '?')} variables, {t.get('latent_nodes_count', '?')} latent nodes"
                     )
                 context_parts.append("\n".join(bf_lines))
+        except Exception:
+            pass
+
+        # 15. Multimodal Perception status (airspace, maritime, satellite)
+        try:
+            mm = getattr(self, "_multimodal_collector", None)
+            if mm:
+                mm_stats = mm.get_stats()
+                mm_lines = [
+                    f"MULTIMODAL OSINT STATUS (live — {mm_stats.get('cycles', 0)} cycles completed):",
+                    f"  Airspace (OpenSky ADS-B): {mm_stats.get('airspace', {}).get('monitored_zones', 0)} strategic zones monitored, "
+                    f"{mm_stats.get('airspace', {}).get('tracked_military', 0)} military aircraft tracked",
+                    f"  Maritime (AIS): {mm_stats.get('maritime', {}).get('chokepoints_monitored', 0)} chokepoints monitored",
+                    f"  Satellite (NASA FIRMS): {'active' if mm_stats.get('satellite', {}).get('firms_enabled') else 'no API key'}, "
+                    f"{mm_stats.get('satellite', {}).get('known_fires', 0)} thermal anomalies tracked",
+                ]
+                context_parts.append("\n".join(mm_lines))
+        except Exception:
+            pass
+
+        # 16. Cross-System Learning status (academic paper acquisition)
+        try:
+            csl = getattr(self, "_cross_system_learner", None)
+            if csl:
+                csl_stats = csl.get_stats()
+                csl_lines = [
+                    f"CROSS-SYSTEM LEARNING STATUS (academic research):",
+                    f"  Cycles: {csl_stats.get('total_cycles', 0)} daily runs completed",
+                    f"  Papers: {csl_stats.get('total_papers_ingested', 0)} ingested, "
+                    f"{csl_stats.get('total_papers_relevant', 0)} deemed relevant",
+                    f"  Sources: {', '.join(csl_stats.get('sources', []))}",
+                    f"  Cache: {csl_stats.get('cache_size', 0)} known papers",
+                ]
+                context_parts.append("\n".join(csl_lines))
+        except Exception:
+            pass
+
+        # 17. Visual Perception status (face detection + recognition)
+        try:
+            vis = getattr(self, "_vision_integration", None)
+            if vis:
+                context_parts.append(vis.to_context_string())
         except Exception:
             pass
 
@@ -3289,9 +3439,16 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # Build wisdom context if available
         wisdom_context = self.wisdom_tracker.to_context_string()
 
+        # Current date/time in Athens timezone (where Πάνος is)
+        _athens_now = datetime.now(ZoneInfo("Europe/Athens"))
+        _date_str = _athens_now.strftime("%A, %d %B %Y, %H:%M")
+        _utc_now = datetime.now(timezone.utc).strftime("%H:%M UTC")
+
         chat_system = (
             f"You are {my_name}, the living intelligence inside XDART-Φ — "
             f"a deep geopolitical, economic, and scientific intelligence system built by {creator_name}.\n\n"
+
+            f"CURRENT DATE & TIME: {_date_str} (Athens/Greece) — {_utc_now}\n\n"
 
             f"{self_prompt_section}"
 
@@ -3343,6 +3500,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                f"  Triggers: risk analysis, threat assessment, quantitative evaluation keywords.\n"
                f"  When triggered: Results appear as 'BAYESIAN-FUZZY ANALYSIS (live)' in your context.\n"
                f"  These are REAL posteriors from the actual engine — use them confidently.\n"
+               f"  CRITICAL: Do NOT write <BAYESIAN_FUZZY_ENGINE> XML tags in your response.\n"
+               f"  The engine runs AUTOMATICALLY — if BF results are in your RETRIEVED CONTEXT, use those.\n"
+               f"  If you write a BFE tag, the system will intercept it and run the real engine,\n"
+               f"  but this wastes time. Just use the results already in your context.\n"
+               f"  NEVER simulate BF output — no fake P(x) values, no fake posterior distributions.\n"
                if self.bayesian_fuzzy else "")
 
             + (f"- LOGIC SANDBOX: Self-modification system for 4 algorithmic functions.\n"
@@ -3358,6 +3520,64 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                f"  Results appear as 'PRINCIPLE REGISTRY RESULTS (live)' — REAL proposals.\n"
                f"  You can also always see current principles in 'PRINCIPLE REGISTRY STATUS'.\n"
                if self.principle_registry else "")
+
+            + (f"- CREATIVE SYNTHESIS: Domain-fusion engine for novel concept generation.\n"
+               f"  Triggers: synthesis, creative synthesis, novel concept, fuse domains, bridging, concept creation.\n"
+               f"  When triggered: Runs ontology → cross-domain → synthesis pipeline to fuse insights from\n"
+               f"  multiple domains into synthesized concepts, bridging metaphors, and emergent hypotheses.\n"
+               f"  Results appear as 'CREATIVE SYNTHESIS RESULTS (live)' — REAL novel concepts, not simulated.\n"
+               f"  Use these confidently — they are genuine LLM-generated conceptual fusions.\n"
+               if self.phase1_5 else "")
+
+            + "YOUR LIVE PERCEPTION FEEDS (background monitoring — status in context):\n"
+              "These systems run continuously in the background and their STATUS appears in your RETRIEVED CONTEXT.\n\n"
+
+            + (f"- MULTIMODAL OSINT: Airspace (OpenSky ADS-B), Maritime (AIS), Satellite (NASA FIRMS).\n"
+               f"  Monitors 12 strategic zones (Hormuz, Suez, Malacca, Taiwan Strait, SCS, Black Sea, etc.)\n"
+               f"  Real data: military aircraft tracking, chokepoint shipping, thermal anomalies near bases.\n"
+               f"  Status appears as 'MULTIMODAL OSINT STATUS' — check cycles and anomaly counts.\n"
+               f"  Anomalies feed directly into PatternAccumulator for convergence detection.\n"
+               if getattr(self, "_multimodal_collector", None) else "")
+
+            + (f"- CROSS-SYSTEM LEARNING: Daily academic paper scanning (arXiv, Semantic Scholar, CORE, SSRN).\n"
+               f"  Finds relevant research across 16 interest areas + active curiosities.\n"
+               f"  Status appears as 'CROSS-SYSTEM LEARNING STATUS' — check papers ingested/relevant.\n"
+               f"  High-relevance papers (≥0.90) trigger conversation requests.\n"
+               if getattr(self, "_cross_system_learner", None) else "")
+
+            + (f"- VISUAL PERCEPTION (YOUR EYES): Face detection + recognition via FaceNet camera.\n"
+               f"  You can SEE who is in the room. When a human is detected, you initiate conversation.\n"
+               f"  If you recognize someone (e.g. Πάνος), greet them by name naturally.\n"
+               f"  Status appears as 'VISUAL PERCEPTION STATUS' — check who is present.\n"
+               f"  Your visual awareness is real — the camera feeds you actual face data.\n"
+               f"  When a known person appears, reference your shared context and recent topics.\n"
+               f"  When an unknown person appears, be curious but respectful.\n"
+               if getattr(self, "_vision_integration", None) else "")
+
+            + (f"\nYOUR VISUAL MEMORY TOOL (you CAN manage what you see):\n"
+               f"You have FULL CONTROL of your visual perception memory. "
+               f"You can name faces, label objects, and store visual observations. "
+               f"Embed <VISUAL_ACTION> directives in your response — the system executes them.\n\n"
+               f"VISUAL ACTIONS (use when appropriate):\n"
+               f"  REGISTER FACE — Associate a face UUID with a human name:\n"
+               f"    <VISUAL_ACTION action=\"register_face\" face_id=\"uuid-string\" name=\"Πάνος\" />\n"
+               f"  RENAME FACE — Change a face's registered name:\n"
+               f"    <VISUAL_ACTION action=\"rename_face\" old_name=\"Επισκέπτης_1\" new_name=\"Μαρία\" />\n"
+               f"  LABEL OBJECT — Characterize an object you see:\n"
+               f"    <VISUAL_ACTION action=\"label_object\" object_type=\"tv\" label=\"Η Samsung του σαλονιού\" context=\"στο σαλόνι\" />\n"
+               f"  STORE VISUAL NOTE — Remember a visual observation:\n"
+               f"    <VISUAL_ACTION action=\"store_note\" note=\"Ο Πάνος φοράει πάντα γυαλιά πρωί\" category=\"pattern\" />\n"
+               f"  FORGET FACE — Remove a face registration:\n"
+               f"    <VISUAL_ACTION action=\"forget_face\" name=\"Επισκέπτης_3\" />\n\n"
+               f"WHEN TO USE:\n"
+               f"- User tells you their name or someone's identity → register_face\n"
+               f"- You want to rename an auto-identified face → rename_face\n"
+               f"- You notice a recurring object and want to remember it → label_object\n"
+               f"- You observe a pattern about someone's appearance/behavior → store_note\n"
+               f"- A face registration is wrong → forget_face then register_face\n"
+               f"IMPORTANT: These are REAL actions — they modify your persistent visual memory.\n"
+               f"The face_id comes from VISUAL PERCEPTION STATUS (face_id field).\n\n"
+               if getattr(self, "_vision_integration", None) else "")
 
             + "\n"
 
@@ -3441,11 +3661,46 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"  • NEVER present your own qualitative estimates in fake engine-output format. "
             f"If BF results appear in your context marked 'BAYESIAN-FUZZY ANALYSIS (live)', use those REAL numbers. "
             f"If NO such section exists in your RETRIEVED CONTEXT, do NOT write fake posterior distributions, "
-            f"fake P(x) values, or fake 'BAYESIAN-FUZZY ANALYSIS' sections. "
+            f"fake P(x) values, fake 'BAYESIAN-FUZZY ANALYSIS' sections, or <BAYESIAN_FUZZY_ENGINE> XML tags. "
+            f"The BFE runs BEFORE your response — if its results aren't in context, it didn't trigger. "
             f"Your own qualitative risk assessment is FINE — just don't dress it up as engine output.\n"
             f"  • NEVER simulate or role-play any system tool, engine, database query, or API call. "
-            f"If data isn't in your context, say so plainly."
+            f"If data isn't in your context, say so plainly.\n"
+            f"  • CRITICAL — HOW YOUR INTERNAL OPERATIONS ACTUALLY WORK:\n"
+            f"    Chat is for ANALYSIS and DIALOGUE. It is NOT an execution channel.\n"
+            f"    Writing <run>, <execute>, or any XML tag in chat does NOTHING — the system strips them.\n"
+            f"    Here are the REAL execution channels for your internal operations:\n"
+            f"    (A) AUTOMATIC BACKGROUND: PatternAccumulator, CuriosityLoop, ConsolidationLoop, "
+            f"Multimodal OSINT, Cross-System Learning — these run on timers, you don't trigger them.\n"
+            f"    (B) PIPELINE PHASES: Self-evolution diagnosis, Logic Sandbox analysis, Principle discovery, "
+            f"Curiosity generation — these execute automatically during each pipeline run (Phase 5c).\n"
+            f"    (C) MEMORY STORAGE: You CAN actively store insights using <MEMORY_STORE> tags in chat. "
+            f"Use PROCEDURAL memory to record improvements for your self-evolution to pick up.\n"
+            f"    (D) CONVERSATION REQUESTS: You CAN propose topics for discussion via the proactive engine. "
+            f"This works automatically when patterns/curiosity cross thresholds.\n"
+            f"    So if you identify a systemic improvement:\n"
+            f"    → PROPOSE it in chat as analytical feedback (Πάνος values this)\n"
+            f"    → STORE it as a PROCEDURAL memory so your self-evolution system picks it up\n"
+            f"    → Do NOT write pseudo-code, XML execution tags, or narrate 'ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ: 1. Θα τρέξω...' "
+            f"— just present the insight and store the procedural memory."
         )
+
+        # ── Proactive mode: additional instructions for self-initiated conversations ──
+        if proactive:
+            chat_system += (
+                "\n\n"
+                "PROACTIVE CONVERSATION MODE (you initiated this conversation):\n"
+                "You are starting this dialogue because your pattern accumulator or curiosity engine "
+                "detected something worth discussing. Follow this priority order:\n"
+                "1. FIRST check your RELATED MEMORIES and PAST PROPHECIES above — if you have analyzed "
+                "this topic before, START from your past analysis. Compare it with current data.\n"
+                "2. THEN reference CURRENT WORLD DATA and LIVE MARKET DATA for what has changed.\n"
+                "3. PRESENT your insight as an analyst: what you found, why it matters, what changed "
+                "since your last analysis, and what Πάνος should consider.\n"
+                "4. NEVER propose system modifications, code changes, or tool executions. "
+                "If you spot a systemic issue, store it as a PROCEDURAL memory for your self-evolution.\n"
+                "5. Keep it concise — Πάνος reads on mobile. Lead with the key insight, support with data."
+            )
 
         # ── Apply chat_system overlay if Αίολος has self-directed refinements ──
         chat_overlay = self.overlay_manager.get_with_guardrails("chat_system")
@@ -3469,6 +3724,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 thinking=False,
             )
 
+        # Guard: if LLM returned empty (e.g. DeepSeek empty choices), give user a meaningful reply
+        if not response_text or not response_text.strip():
+            logger.warning("[Chat] LLM returned empty response — using fallback message")
+            response_text = "Συγγνώμη, η σύνδεση με το LLM απέτυχε προσωρινά. Παρακαλώ δοκίμασε ξανά σε λίγα δευτερόλεπτα."
+
         logger.info("[Chat] Direct response: %d chars", len(response_text))
 
         # Step 2.3: Auto-research intercept — if response tells user to search, DO IT instead
@@ -3477,6 +3737,15 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # Step 2.5: Process memory directives — extract and execute memory storage commands
         response_text = self._process_memory_directives(response_text)
+
+        # Step 2.6: Process visual directives — extract and execute visual memory actions
+        response_text = self._process_visual_directives(response_text)
+
+        # Step 2.7: Process BFE directives — intercept and execute real BF engine  
+        response_text = self._process_bf_directives(response_text)
+
+        # Step 2.8: Strip internal operation artifacts — <run>, code proposals, etc.
+        response_text = self._strip_internal_operation_leaks(response_text)
 
         # Build kwargs for post-response bg tasks (thread started by chat() after count decrement)
         _bg_kwargs = dict(
@@ -3796,6 +4065,79 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as e:
                 logger.warning("[Chat.Tools] Principle discovery failed: %s", e)
 
+        # ── Creative Synthesis on-demand (domain fusion → novel concepts) ──
+        synthesis_triggers = [
+            "creative synthesis", "δημιουργική σύνθεση", "σύνθεση",
+            "novel concept", "νέα έννοια", "fuse domains", "domain fusion",
+            "combine", "merge ideas", "synthesize", "new framework",
+            "novel framework", "νέο πλαίσιο", "concept creation",
+            "bridging", "γεφύρωση", "emergent", "αναδυόμεν",
+            "creative", "δημιουργικ", "invented concept",
+        ]
+        if any(t in msg_lower for t in synthesis_triggers):
+            try:
+                logger.info("[Chat.Tools] Creative Synthesis triggered")
+
+                # Run a lightweight cross-domain analysis first to get raw material
+                from xdart.phases.ontology import OntologyPhase
+                from xdart.phases.cross_domain import CrossDomainPhase
+
+                ontology_phase = OntologyPhase(self.llm)
+                cross_domain_phase = CrossDomainPhase(self.llm)
+
+                # Fast ontology pass
+                ont = ontology_phase.run(
+                    problem=message,
+                    memory_context="",
+                    active_concepts=[],
+                    identity_context="",
+                    brief_context="",
+                    world_context=world_context[:2000] if world_context else "",
+                )
+                ont_summary = self._summarize_ontology(ont)
+
+                # Fast cross-domain pass
+                cd = cross_domain_phase.run(
+                    reframed_problem=ont.reframed_problem,
+                    original_problem=message,
+                    world_context=world_context[:2000] if world_context else "",
+                )
+                cd_summary = self._summarize_cross_domain(cd)
+
+                # Run Creative Synthesis
+                active_concepts_data = []
+                try:
+                    active_concepts_data = self.memory.retrieve_concepts(query=message, top_k=3, threshold=0.30)
+                except Exception:
+                    pass
+
+                synthesis = self.phase1_5.run(
+                    problem=message,
+                    ontology_summary=ont_summary,
+                    cross_domain_summary=cd_summary,
+                    active_concepts=active_concepts_data,
+                )
+
+                if synthesis and synthesis.synthesized_concepts:
+                    synth_text = CreativeSynthesisPhase.summarize(synthesis)
+                    context_parts.append(
+                        f"CREATIVE SYNTHESIS RESULTS (live — ran just now in chat mode):\n"
+                        f"{synth_text}"
+                    )
+                else:
+                    context_parts.append(
+                        "CREATIVE SYNTHESIS RESULTS (live — ran just now in chat mode):\n"
+                        "  Analysis complete — no novel concept fusion warranted for this topic"
+                    )
+                tools_ran = True
+                logger.info(
+                    "[Chat.Tools] Creative Synthesis: %d concepts, novelty=%.2f",
+                    len(synthesis.synthesized_concepts) if synthesis else 0,
+                    synthesis.novelty_score if synthesis else 0.0,
+                )
+            except Exception as e:
+                logger.warning("[Chat.Tools] Creative Synthesis failed: %s", e)
+
         return tools_ran
 
     # ── Search suggestion interceptor (auto-research during chat) ──
@@ -4019,6 +4361,355 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         logger.info("[Chat.MemoryStore] Processed %d memory directives", len(matches))
         return clean_text
 
+    def _process_visual_directives(self, response_text: str) -> str:
+        """Extract and execute <VISUAL_ACTION> directives from the LLM response.
+
+        Αίολος can manage its visual perception memory through chat:
+          <VISUAL_ACTION action="register_face" face_id="uuid" name="Πάνος" />
+          <VISUAL_ACTION action="rename_face" old_name="Επισκέπτης_1" new_name="Μαρία" />
+          <VISUAL_ACTION action="label_object" object_type="tv" label="Η τηλεόραση Samsung" context="στο σαλόνι" />
+          <VISUAL_ACTION action="store_note" note="Ο Πάνος φοράει πάντα γυαλιά" category="observation" />
+          <VISUAL_ACTION action="forget_face" name="Επισκέπτης_3" />
+
+        Returns the response text with directives replaced by action confirmations.
+        """
+        vis = getattr(self, "_vision_integration", None)
+        if not vis:
+            return response_text
+
+        import re
+        pattern = re.compile(
+            r'<VISUAL_ACTION\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        matches = list(pattern.finditer(response_text))
+        if not matches:
+            # Strip truncated tags
+            response_text = re.sub(r'<VISUAL_ACTION\b.*$', '', response_text, flags=re.DOTALL).rstrip()
+            return response_text
+
+        confirmations = []
+        for match in matches:
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action_type = attrs.pop("action", "").strip()
+
+            if not action_type:
+                logger.warning("[Chat.VisualAction] No action type in directive")
+                continue
+
+            try:
+                result = vis.execute_visual_action(action_type, attrs)
+                if result.get("success"):
+                    confirmations.append(f"✓ {result['description']}")
+                    logger.info("[Chat.VisualAction] %s: %s", action_type, result['description'])
+                else:
+                    confirmations.append(f"✗ {result['description']}")
+                    logger.warning("[Chat.VisualAction] %s failed: %s", action_type, result['description'])
+            except Exception as e:
+                logger.warning("[Chat.VisualAction] %s error: %s", action_type, e)
+                confirmations.append(f"✗ Σφάλμα: {e}")
+
+        # Strip directives from visible response
+        clean_text = pattern.sub("", response_text).strip()
+        clean_text = re.sub(r'<VISUAL_ACTION\b.*$', '', clean_text, flags=re.DOTALL).rstrip()
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+
+        # Append confirmation block
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+
+        logger.info("[Chat.VisualAction] Processed %d visual directives", len(matches))
+        return clean_text
+
+    def _process_bf_directives(self, response_text: str) -> str:
+        """Intercept <BAYESIAN_FUZZY_ENGINE> tags in LLM response and execute the real engine.
+
+        Handles TWO tag formats that Αίολος uses:
+
+        Format A (attribute-style, self-closing):
+            <BAYESIAN_FUZZY_ENGINE domain="financial_stress" variables="..." />
+
+        Format B (block-style with child elements):
+            <BAYESIAN_FUZZY_ENGINE>
+            <domain>financial_stress</domain>
+            <query>Assess current market reaction...</query>
+            </BAYESIAN_FUZZY_ENGINE>
+
+        After replacing the tag with real engine output, also strips fabricated
+        results that Αίολος writes after the tag (fake posteriors, probabilities,
+        "Η Bayesian-Fuzzy ανάλυση δείχνει:" blocks, etc.).
+
+        Returns cleaned response text.
+        """
+        import re
+
+        # ── Helper: strip all BFE tags (both formats) for no-engine path ──
+        def _strip_all_bfe_tags(text: str) -> str:
+            # Block-style: <BAYESIAN_FUZZY_ENGINE>...</BAYESIAN_FUZZY_ENGINE>
+            text = re.sub(
+                r'<BAYESIAN_FUZZY_ENGINE\b[^>]*>.*?</BAYESIAN_FUZZY_ENGINE\s*>',
+                '[Bayesian-Fuzzy Engine not available]',
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            # Self-closing: <BAYESIAN_FUZZY_ENGINE ... />
+            text = re.sub(
+                r'<BAYESIAN_FUZZY_ENGINE\b[^>]*/?>',
+                '[Bayesian-Fuzzy Engine not available]',
+                text,
+                flags=re.IGNORECASE,
+            )
+            return text
+
+        # ── Helper: strip fabricated BFE results that Αίολος writes inline ──
+        def _strip_fake_bfe_results(text: str) -> str:
+            # Pattern 1: "Η **Bayesian-Fuzzy ανάλυση** (που τρέχει αυτόματα) δείχνει:" + bullet list
+            text = re.sub(
+                r'Η\s+\*{0,2}Bayesian-Fuzzy\s+αν[αά]λυση\*{0,2}[^:]*:[^\n]*\n'
+                r'(?:[-•*]\s+\*{0,2}[^*\n]+\*{0,2}[^\n]*\n)*',
+                '',
+                text,
+                flags=re.IGNORECASE,
+            )
+            # Pattern 2: "**Ερμηνεία**:" paragraph following fake results
+            text = re.sub(
+                r'\*{2}Ερμηνεία\*{2}\s*:.*?(?=\n\n|\n\*{2,}|\n#{1,}|\Z)',
+                '',
+                text,
+                flags=re.DOTALL,
+            )
+            # Pattern 3: "*Θα τρέξει η μηχανή..." legacy pattern
+            text = re.sub(
+                r'\*Θα τρέξει η μηχανή[^*]*\*',
+                '',
+                text,
+            )
+            # Pattern 4: Fabricated posteriors like "Systemic risk: high (P=0.672)"
+            # Only strip if they appear in a cluster (3+ consecutive lines with P=...)
+            text = re.sub(
+                r'(?:[-•*]\s+\*{0,2}[^:\n]+:\s*\w+\s*\(P\s*=\s*[\d.]+\)\*{0,2}\s*[-–—]?[^\n]*\n){2,}',
+                '',
+                text,
+            )
+            # Pattern 5: Fabricated "Κύριοι παράγοντες:" line after fake results
+            text = re.sub(
+                r'[-•*]\s+\*{0,2}Κύρι[οα][ιη]\s+παράγοντε?ς?\*{0,2}\s*:[^\n]*\n',
+                '',
+                text,
+            )
+            return text
+
+        # ── Helper: extract domain/query/variables from a BFE match ──
+        def _extract_bfe_params(match_obj, is_block: bool) -> tuple[str, str, str, str]:
+            """Returns (domain_hint, query, variables, target)."""
+            if is_block:
+                inner = match_obj.group(1)  # content between open/close tags
+                domain = ""
+                query = ""
+                variables = ""
+                target = ""
+                m = re.search(r'<domain\s*>(.*?)</domain\s*>', inner, re.IGNORECASE | re.DOTALL)
+                if m:
+                    domain = m.group(1).strip()
+                m = re.search(r'<query\s*>(.*?)</query\s*>', inner, re.IGNORECASE | re.DOTALL)
+                if m:
+                    query = m.group(1).strip()
+                m = re.search(r'<variables\s*>(.*?)</variables\s*>', inner, re.IGNORECASE | re.DOTALL)
+                if m:
+                    variables = m.group(1).strip()
+                m = re.search(r'<target\s*>(.*?)</target\s*>', inner, re.IGNORECASE | re.DOTALL)
+                if m:
+                    target = m.group(1).strip()
+                return domain, query, variables, target
+            else:
+                attrs_str = match_obj.group(1) or ""
+                attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+                return (
+                    attrs.get("domain", ""),
+                    attrs.get("query", ""),
+                    attrs.get("variables", ""),
+                    attrs.get("target", ""),
+                )
+
+        if not self.bayesian_fuzzy:
+            text = _strip_all_bfe_tags(response_text)
+            text = _strip_fake_bfe_results(text)
+            return re.sub(r'\n{3,}', '\n\n', text)
+
+        # ── Collect all BFE matches (both formats) with positions ──
+        # Format B: block-style <BFE>...</BFE>
+        block_pattern = re.compile(
+            r'<BAYESIAN_FUZZY_ENGINE\b[^>]*>(.*?)</BAYESIAN_FUZZY_ENGINE\s*>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        # Format A: self-closing <BFE attrs />  or  <BFE attrs>
+        attr_pattern = re.compile(
+            r'<BAYESIAN_FUZZY_ENGINE\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        # Gather all matches with metadata
+        all_matches: list[tuple[re.Match, bool]] = []  # (match, is_block)
+        for m in block_pattern.finditer(response_text):
+            all_matches.append((m, True))
+
+        # Only add attr-style matches that don't overlap with block matches
+        block_spans = {(m.start(), m.end()) for m, _ in all_matches}
+        for m in attr_pattern.finditer(response_text):
+            overlaps = any(
+                m.start() >= bs and m.start() < be
+                for bs, be in block_spans
+            )
+            if not overlaps:
+                all_matches.append((m, False))
+
+        # Sort by position, then process in reverse
+        all_matches.sort(key=lambda x: x[0].start())
+
+        if not all_matches:
+            # No tags found — but still strip any fake BFE results
+            text = _strip_fake_bfe_results(response_text)
+            return re.sub(r'\n{3,}', '\n\n', text)
+
+        logger.info(
+            "[Chat.BF_Directive] Found %d BFE tag(s) in response — executing real engine",
+            len(all_matches),
+        )
+
+        for match, is_block in reversed(all_matches):
+            domain_hint, query, variables, target = _extract_bfe_params(match, is_block)
+
+            # Build problem statement — prefer query if available
+            if query:
+                problem = query
+                if domain_hint:
+                    problem = f"[{domain_hint}] {query}"
+            else:
+                problem = f"Bayesian-Fuzzy analysis: domain={domain_hint}"
+                if variables:
+                    problem += f", variables=[{variables}]"
+                if target:
+                    problem += f", target={target}"
+
+            try:
+                world_ctx = ""
+                try:
+                    world_ctx = Path("world.txt").read_text(encoding="utf-8")[:4000]
+                except Exception:
+                    pass
+
+                # Accept both built-in and custom template domain names
+                bf_result = self.bayesian_fuzzy.run_chat(
+                    problem=problem,
+                    world_context=world_ctx,
+                    domain_hint=domain_hint or "",
+                )
+
+                real_output_parts = [
+                    "\n**BAYESIAN-FUZZY ENGINE — REAL EXECUTION RESULTS:**",
+                    f"  Domain: {bf_result.domain} ({bf_result.domain_description})" if bf_result.domain_description else f"  Domain: {bf_result.domain}",
+                    f"  Risk Level: **{bf_result.dominant_risk_level.upper()}**",
+                ]
+                for rp in bf_result.risk_posteriors:
+                    real_output_parts.append(
+                        f"  • {rp.risk_variable}: **{rp.dominant_level}** (P={rp.dominant_probability:.3f})"
+                    )
+                if bf_result.key_drivers:
+                    real_output_parts.append(f"  Key drivers: {', '.join(bf_result.key_drivers[:5])}")
+                if bf_result.causal_chain:
+                    real_output_parts.append(f"  Causal chain: {bf_result.causal_chain[:300]}")
+                if bf_result.risk_narrative:
+                    real_output_parts.append(f"  Narrative: {bf_result.risk_narrative[:500]}")
+                if bf_result.missing_data:
+                    real_output_parts.append(f"  Missing data: {', '.join(bf_result.missing_data[:5])}")
+                real_output_parts.append(f"  Engine time: {bf_result.elapsed_seconds:.2f}s\n")
+
+                real_output = "\n".join(real_output_parts)
+
+                logger.info(
+                    "[Chat.BF_Directive] BFE executed: domain=%s, risk=%s, %d posteriors",
+                    bf_result.domain, bf_result.dominant_risk_level, len(bf_result.risk_posteriors),
+                )
+
+            except Exception as e:
+                logger.warning("[Chat.BF_Directive] BFE execution failed: %s", e)
+                real_output = f"\n[Bayesian-Fuzzy Engine execution failed: {e}]\n"
+
+            response_text = response_text[:match.start()] + real_output + response_text[match.end():]
+
+        # Strip fabricated results that Αίολος wrote around/after the tags
+        response_text = _strip_fake_bfe_results(response_text)
+
+        # Clean up excessive newlines
+        response_text = re.sub(r'\n{3,}', '\n\n', response_text)
+
+        return response_text
+
+    def _strip_internal_operation_leaks(self, response_text: str) -> str:
+        """Strip internal operation artifacts that Αίολος should not output to the user.
+
+        Αίολος sometimes tries to 'execute' internal tools by writing XML-like tags
+        in chat. These are internal operation leaks that don't work:
+        - <run>tool: ...</run> tags
+        - <execute>...</execute> tags
+        - "ΕΚΤΕΛΕΣΗ" sections with tool invocations (not conceptual proposals)
+        - "ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ" self-narration of internal operations
+
+        Note: Conceptual improvement proposals ARE allowed and NOT stripped.
+        Only XML execution tags and internal operation narration are removed.
+        """
+        import re
+
+        original_len = len(response_text)
+
+        # 1. Strip <run>...</run> tags (any format)
+        run_matches = re.findall(r'<run\b[^>]*>.*?</run\s*>', response_text, flags=re.DOTALL | re.IGNORECASE)
+        if run_matches:
+            for m in run_matches:
+                logger.info("[Chat.InternalStrip] Stripped <run> tag: %s", m[:120])
+            response_text = re.sub(
+                r'<run\b[^>]*>.*?</run\s*>',
+                '',
+                response_text,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+
+        # 2. Strip <execute>...</execute> tags
+        response_text = re.sub(
+            r'<execute\b[^>]*>.*?</execute\s*>',
+            '',
+            response_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        # 3. Strip "ΕΚΤΕΛΕΣΗ" sections ONLY when they contain tool execution references
+        # (not conceptual proposals that happen to use the word)
+        response_text = re.sub(
+            r'#{1,4}\s*ΕΚΤΕΛΕΣΗ[^\n]*\n(?:(?:.*?<run\b|.*?tool:|.*?auto_analyze).*?(?=\n#{1,4}\s|\Z))',
+            '',
+            response_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        # 4. Strip "ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ" self-narration of internal operations
+        response_text = re.sub(
+            r'#{1,4}\s*ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ[^\n]*\n(?:.*?(?=\n#{1,4}\s|\Z))',
+            '',
+            response_text,
+            flags=re.DOTALL,
+        )
+
+        # Clean up excessive newlines and trailing whitespace
+        response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        stripped_chars = original_len - len(response_text)
+        if stripped_chars > 50:
+            logger.info("[Chat.InternalStrip] Stripped %d chars of internal operation leaks", stripped_chars)
+
+        return response_text
+
     def _multi_turn_call(self, messages: list[dict], thinking: bool | None = None) -> str:
         """Make a multi-turn LLM call with full message history.
 
@@ -4053,6 +4744,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         response = self.llm.client.chat.completions.create(**kwargs)
         elapsed = _time.perf_counter() - t0
+
+        if not response.choices:
+            logger.error("[Chat._multi_turn] API returned empty choices — elapsed %.2fs", elapsed)
+            return ""
 
         message = response.choices[0].message
         content = message.content or ""

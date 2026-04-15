@@ -1753,7 +1753,943 @@
     cursor: pointer;
     font-size: 14px;
   }
+
+  /* ══════════════════════════════════════════════════════════════
+     PROPHECY COMMAND CENTER
+  ══════════════════════════════════════════════════════════════ */
+  .prophecy-btn {
+    background: rgba(124,77,255,0.08);
+    border: 1px solid rgba(124,77,255,0.3);
+    border-radius: 20px;
+    padding: 6px 16px;
+    color: #7c4dff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 6px;
+  }
+  .prophecy-btn:hover { background: rgba(124,77,255,0.15); border-color: #7c4dff; }
+  .prophecy-btn .prop-badge {
+    background: #7c4dff;
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .prophecy-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 1003;
+    display: none;
+    backdrop-filter: blur(2px);
+  }
+  .prophecy-overlay.visible { display: block; }
+
+  .prophecy-panel {
+    position: fixed;
+    top: 0; right: -640px;
+    width: 620px;
+    height: 100vh;
+    background: linear-gradient(180deg, #0a080f 0%, #0c0a14 100%);
+    border-left: 1px solid rgba(124,77,255,0.2);
+    z-index: 1004;
+    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .prophecy-panel.open { right: 0; }
+
+  .prophecy-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    background: linear-gradient(90deg, rgba(124,77,255,0.08), transparent);
+    border-bottom: 1px solid rgba(124,77,255,0.15);
+    flex-shrink: 0;
+  }
+  .prophecy-header h2 {
+    font-size: 14px; color: #7c4dff; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .prophecy-close {
+    background: none; border: 1px solid rgba(124,77,255,0.2);
+    color: var(--text-dim); font-size: 14px; cursor: pointer;
+    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
+  }
+  .prophecy-close:hover { color: #7c4dff; border-color: #7c4dff; }
+
+  .prophecy-tabs {
+    display: flex; border-bottom: 1px solid rgba(124,77,255,0.1);
+    background: rgba(124,77,255,0.03); flex-shrink: 0;
+  }
+  .prophecy-tab {
+    flex: 1; padding: 10px 16px; font-size: 12px;
+    color: var(--text-dim); cursor: pointer;
+    border: none; border-bottom: 2px solid transparent;
+    background: none; font-weight: 600; transition: all 0.2s;
+    text-align: center;
+  }
+  .prophecy-tab:hover { color: var(--text-bright); }
+  .prophecy-tab.active { color: #7c4dff; border-bottom-color: #7c4dff; }
+  .prophecy-tab .ptab-count {
+    margin-left: 4px; font-size: 10px; opacity: 0.7;
+  }
+
+  .prophecy-body {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+
+  .prop-card {
+    background: rgba(124,77,255,0.04);
+    border: 1px solid rgba(124,77,255,0.1);
+    border-radius: 10px;
+    padding: 14px 16px;
+    transition: border-color 0.2s;
+  }
+  .prop-card:hover { border-color: rgba(124,77,255,0.25); }
+
+  .prop-card-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 8px;
+  }
+  .prop-name {
+    font-size: 14px; font-weight: 600; color: var(--text-bright);
+    line-height: 1.3; flex: 1; margin-right: 10px;
+  }
+  .prop-status {
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; padding: 3px 8px; border-radius: 4px;
+    white-space: nowrap;
+  }
+  .prop-status.active { background: rgba(124,77,255,0.15); color: #7c4dff; }
+  .prop-status.tracking { background: rgba(255,152,0,0.15); color: #ff9800; }
+  .prop-status.confirmed { background: rgba(76,175,80,0.15); color: #4caf50; }
+  .prop-status.disconfirmed { background: rgba(244,67,54,0.15); color: #f44336; }
+  .prop-status.expired { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+  .prop-status.autonomous_proposed { background: rgba(255,215,64,0.15); color: #ffd740; }
+
+  .prop-narrative {
+    font-size: 12px; color: var(--text); line-height: 1.5;
+    margin-bottom: 8px; max-height: 80px; overflow-y: auto;
+  }
+  .prop-meta-row {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-dim); margin-bottom: 6px;
+  }
+  .prop-meta-row span { display: flex; align-items: center; gap: 3px; }
+  .prop-confidence {
+    font-family: var(--mono); font-weight: 700;
+  }
+  .prop-confidence.high { color: #4caf50; }
+  .prop-confidence.med { color: #ff9800; }
+  .prop-confidence.low { color: #f44336; }
+
+  .prop-markers {
+    display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
+  }
+  .prop-marker {
+    font-size: 10px; padding: 2px 8px; border-radius: 4px;
+    background: rgba(124,77,255,0.08); color: #b388ff;
+    border: 1px solid rgba(124,77,255,0.15);
+  }
+
+  .prop-actions {
+    display: flex; gap: 8px; margin-top: 10px;
+  }
+  .prop-action-btn {
+    padding: 5px 14px; border-radius: 6px; font-size: 11px;
+    font-weight: 600; cursor: pointer; transition: all 0.2s;
+    border: 1px solid transparent;
+  }
+  .prop-action-btn.approve {
+    background: rgba(76,175,80,0.12); color: #4caf50;
+    border-color: rgba(76,175,80,0.3);
+  }
+  .prop-action-btn.approve:hover { background: rgba(76,175,80,0.25); }
+  .prop-action-btn.reject {
+    background: rgba(244,67,54,0.08); color: #f44336;
+    border-color: rgba(244,67,54,0.2);
+  }
+  .prop-action-btn.reject:hover { background: rgba(244,67,54,0.2); }
+
+  /* Accuracy gauge */
+  .accuracy-gauge {
+    text-align: center; padding: 24px;
+    background: rgba(124,77,255,0.04);
+    border: 1px solid rgba(124,77,255,0.1);
+    border-radius: 12px; margin-bottom: 16px;
+  }
+  .accuracy-gauge .ag-score {
+    font-size: 48px; font-weight: 800; font-family: var(--mono); line-height: 1;
+  }
+  .accuracy-gauge .ag-label {
+    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 2px; margin-top: 4px;
+  }
+  .accuracy-gauge .ag-rating {
+    font-size: 13px; font-weight: 600; margin-top: 8px;
+  }
+
+  .prop-empty {
+    text-align: center; padding: 32px; color: var(--text-dim);
+    font-size: 12px; font-style: italic;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     GOVERNANCE HUB
+  ══════════════════════════════════════════════════════════════ */
+  .gov-btn {
+    background: rgba(255,152,0,0.08);
+    border: 1px solid rgba(255,152,0,0.3);
+    border-radius: 20px;
+    padding: 6px 16px;
+    color: #ff9800;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 6px;
+  }
+  .gov-btn:hover { background: rgba(255,152,0,0.15); border-color: #ff9800; }
+  .gov-btn .gov-badge {
+    background: #ff9800;
+    color: #000;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .gov-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 1005;
+    display: none;
+    backdrop-filter: blur(2px);
+  }
+  .gov-overlay.visible { display: block; }
+
+  .gov-panel {
+    position: fixed;
+    top: 0; right: -640px;
+    width: 620px;
+    height: 100vh;
+    background: linear-gradient(180deg, #0f0a08 0%, #120c0a 100%);
+    border-left: 1px solid rgba(255,152,0,0.2);
+    z-index: 1006;
+    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .gov-panel.open { right: 0; }
+
+  .gov-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    background: linear-gradient(90deg, rgba(255,152,0,0.08), transparent);
+    border-bottom: 1px solid rgba(255,152,0,0.15);
+    flex-shrink: 0;
+  }
+  .gov-header h2 {
+    font-size: 14px; color: #ff9800; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .gov-close {
+    background: none; border: 1px solid rgba(255,152,0,0.2);
+    color: var(--text-dim); font-size: 14px; cursor: pointer;
+    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
+  }
+  .gov-close:hover { color: #ff9800; border-color: #ff9800; }
+
+  .gov-tabs {
+    display: flex; border-bottom: 1px solid rgba(255,152,0,0.1);
+    background: rgba(255,152,0,0.03); flex-shrink: 0;
+  }
+  .gov-tab {
+    flex: 1; padding: 10px 12px; font-size: 11px;
+    color: var(--text-dim); cursor: pointer;
+    border: none; border-bottom: 2px solid transparent;
+    background: none; font-weight: 600; transition: all 0.2s;
+    text-align: center;
+  }
+  .gov-tab:hover { color: var(--text-bright); }
+  .gov-tab.active { color: #ff9800; border-bottom-color: #ff9800; }
+
+  .gov-body {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+
+  .gov-card {
+    background: rgba(255,152,0,0.03);
+    border: 1px solid rgba(255,152,0,0.1);
+    border-radius: 8px;
+    padding: 12px 14px;
+    transition: border-color 0.2s;
+  }
+  .gov-card:hover { border-color: rgba(255,152,0,0.25); }
+
+  .gov-card-title {
+    font-size: 13px; font-weight: 600; color: var(--text-bright);
+    margin-bottom: 4px;
+  }
+  .gov-card-desc {
+    font-size: 11px; color: var(--text-dim); line-height: 1.5;
+    margin-bottom: 6px;
+  }
+  .gov-card-meta {
+    font-size: 10px; color: var(--text-dim);
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+
+  .gov-section-title {
+    font-size: 10px; color: #ff9800; text-transform: uppercase;
+    letter-spacing: 1.5px; font-weight: 700; margin-bottom: 8px;
+    padding-bottom: 4px; border-bottom: 1px solid rgba(255,152,0,0.1);
+  }
+
+  .gov-empty {
+    text-align: center; padding: 32px; color: var(--text-dim);
+    font-size: 12px; font-style: italic;
+  }
+
+  .philosophy-switcher {
+    display: flex; gap: 8px; margin-bottom: 16px;
+  }
+  .philosophy-mode {
+    flex: 1; padding: 10px 12px; border-radius: 8px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    cursor: pointer; text-align: center; transition: all 0.2s;
+  }
+  .philosophy-mode:hover { border-color: rgba(255,152,0,0.3); }
+  .philosophy-mode.active-mode {
+    border-color: #ff9800;
+    background: rgba(255,152,0,0.08);
+  }
+  .philosophy-mode .pm-icon { font-size: 20px; display: block; margin-bottom: 4px; }
+  .philosophy-mode .pm-name {
+    font-size: 11px; font-weight: 600; color: var(--text-bright);
+  }
+  .philosophy-mode .pm-desc {
+    font-size: 9px; color: var(--text-dim); margin-top: 2px;
+  }
+
+  .sandbox-func {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .sandbox-func-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+  }
+  .sandbox-func-name {
+    font-family: var(--mono); font-size: 12px; color: #ff9800; font-weight: 600;
+  }
+  .sandbox-func-version {
+    font-size: 10px; color: var(--text-dim); font-family: var(--mono);
+  }
+  .sandbox-func-desc {
+    font-size: 11px; color: var(--text-dim); line-height: 1.4;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     KNOWLEDGE INJECTOR
+  ══════════════════════════════════════════════════════════════ */
+  .inject-btn {
+    background: rgba(0,230,118,0.08);
+    border: 1px solid rgba(0,230,118,0.3);
+    border-radius: 20px;
+    padding: 6px 16px;
+    color: #00e676;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 6px;
+  }
+  .inject-btn:hover { background: rgba(0,230,118,0.15); border-color: #00e676; }
+  .inject-btn .inject-badge {
+    background: #00e676;
+    color: #000;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .inject-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 1007;
+    display: none;
+    backdrop-filter: blur(2px);
+  }
+  .inject-overlay.visible { display: block; }
+
+  .inject-panel {
+    position: fixed;
+    top: 0; right: -520px;
+    width: 500px;
+    height: 100vh;
+    background: linear-gradient(180deg, #080f0a 0%, #0a120c 100%);
+    border-left: 1px solid rgba(0,230,118,0.2);
+    z-index: 1008;
+    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .inject-panel.open { right: 0; }
+
+  .inject-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    background: linear-gradient(90deg, rgba(0,230,118,0.08), transparent);
+    border-bottom: 1px solid rgba(0,230,118,0.15);
+    flex-shrink: 0;
+  }
+  .inject-header h2 {
+    font-size: 14px; color: #00e676; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .inject-close {
+    background: none; border: 1px solid rgba(0,230,118,0.2);
+    color: var(--text-dim); font-size: 14px; cursor: pointer;
+    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
+  }
+  .inject-close:hover { color: #00e676; border-color: #00e676; }
+
+  .inject-body {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+
+  .inject-form {
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .inject-form label {
+    font-size: 11px; color: #00e676; text-transform: uppercase;
+    letter-spacing: 0.5px; font-weight: 600;
+  }
+  .inject-form input,
+  .inject-form textarea {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(0,230,118,0.15);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .inject-form input:focus,
+  .inject-form textarea:focus { border-color: #00e676; }
+  .inject-form textarea {
+    resize: vertical; min-height: 120px; line-height: 1.6;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .inject-submit {
+    align-self: flex-start;
+    padding: 8px 20px; border-radius: 8px;
+    background: rgba(0,230,118,0.12); color: #00e676;
+    border: 1px solid rgba(0,230,118,0.3);
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .inject-submit:hover { background: rgba(0,230,118,0.25); }
+  .inject-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .inject-entry {
+    background: rgba(0,230,118,0.03);
+    border: 1px solid rgba(0,230,118,0.1);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .inject-entry-source {
+    font-size: 10px; color: #00e676; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .inject-entry-content {
+    font-size: 12px; color: var(--text); line-height: 1.5;
+    max-height: 80px; overflow-y: auto;
+  }
+  .inject-entry-time {
+    font-size: 10px; color: var(--text-dim); margin-top: 4px;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     LEFT-SIDE DRAWERS — Dashboard (JARVIS) + Entity Graph
+     ══════════════════════════════════════════════════════════════════ */
+
+  /* ── Left Drawer Base ── */
+  .left-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 1099;
+    display: none;
+    backdrop-filter: blur(2px);
+  }
+  .left-overlay.visible { display: block; }
+
+  .left-drawer {
+    position: fixed;
+    top: 0;
+    height: 100vh;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    z-index: 1100;
+    transition: left 0.35s cubic-bezier(0.16,1,0.3,1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Dashboard Drawer ── */
+  .dash-drawer {
+    left: -640px;
+    width: 620px;
+  }
+  .dash-drawer.open { left: 0; }
+
+  /* ── Entity Graph Drawer ── */
+  .egraph-drawer {
+    left: -740px;
+    width: 720px;
+  }
+  .egraph-drawer.open { left: 0; }
+
+  /* ── Vision Camera Drawer ── */
+  .vision-drawer {
+    left: -520px;
+    width: 500px;
+  }
+  .vision-drawer.open { left: 0; }
+
+  .vision-feed {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #000;
+    min-height: 300px;
+  }
+  .vision-feed.offline {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 1.1rem; min-height: 300px;
+  }
+  .vision-status-bar {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    padding: 10px 0; font-size: 0.85rem; color: var(--text-dim);
+  }
+  .vision-status-bar .v-stat { display: flex; align-items: center; gap: 4px; }
+  .vision-status-bar .v-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block;
+  }
+  .vision-status-bar .v-dot.on { background: #0f0; }
+  .vision-status-bar .v-dot.off { background: #f44; }
+  .vision-identities {
+    margin-top: 10px; padding: 10px 14px;
+    background: var(--surface2); border-radius: 8px;
+  }
+  .vision-identities h4 { margin: 0 0 6px; color: var(--accent); font-size: 0.9rem; }
+  .vision-identity-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0; font-size: 0.85rem; color: var(--text);
+    border-bottom: 1px solid var(--border);
+  }
+  .vision-identity-item:last-child { border-bottom: none; }
+  .vision-controls {
+    display: flex; gap: 8px; margin-top: 12px;
+  }
+  .vision-controls button {
+    flex: 1; padding: 8px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); border-radius: 6px;
+    cursor: pointer; font-size: 0.85rem; transition: all 0.2s;
+  }
+  .vision-controls button:hover { background: var(--accent); color: #000; }
+  .vision-controls button.active { background: var(--accent); color: #000; }
+  .left-drawer-header .vision-title { color: #7cfc00; }
+
+  /* ── Drawer Header ── */
+  .left-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, #0d0d15, #15152a);
+    flex-shrink: 0;
+  }
+  .left-drawer-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  .left-drawer-header .dash-title { color: #00d4ff; }
+  .left-drawer-header .egraph-title { color: #4A90D9; }
+  .left-drawer-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all 0.2s;
+  }
+  .left-drawer-close:hover { color: var(--text); background: var(--surface2); }
+
+  /* ── Drawer Body ── */
+  .left-drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 14px;
+  }
+
+  /* ── Dashboard KPIs ── */
+  .dash-kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .dash-kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: center;
+  }
+  .dash-kpi-val {
+    font-size: 20px;
+    font-weight: 700;
+    font-family: var(--mono);
+  }
+  .dash-kpi-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+  .dash-kpi-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  /* ── Dashboard Sections ── */
+  .dash-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .dash-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #00d4ff;
+    padding: 10px 14px 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .dash-section-title:hover { background: var(--surface2); }
+  .dash-section-title .toggle-icon {
+    font-size: 10px;
+    transition: transform 0.2s;
+    margin-left: auto;
+  }
+  .dash-section-title .toggle-icon.collapsed { transform: rotate(-90deg); }
+  .dash-section-body {
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+  .dash-section-body.collapsed { display: none; }
+
+  /* ── World Feed Items ── */
+  .dash-feed-item {
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(42,42,58,0.5);
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 12px;
+  }
+  .dash-feed-item:last-child { border-bottom: none; }
+  .dash-domain-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 4px;
+  }
+  .dash-feed-headline {
+    flex: 1;
+    color: var(--text);
+    line-height: 1.4;
+  }
+  .dash-feed-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── Prophecy Items ── */
+  .dash-prophecy {
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(42,42,58,0.5);
+  }
+  .dash-prophecy:last-child { border-bottom: none; }
+  .dash-prophecy-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+  .dash-prophecy-meta {
+    display: flex;
+    gap: 10px;
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 3px;
+  }
+  .dash-conf-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface2);
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .dash-conf-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+
+  /* ── Intel Metric Bars ── */
+  .dash-metric-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 12px;
+  }
+  .dash-metric-label {
+    width: 100px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  .dash-metric-bar {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface2);
+    overflow: hidden;
+  }
+  .dash-metric-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .dash-metric-val {
+    width: 45px;
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+
+  /* ── Evolution Timeline Items ── */
+  .dash-evo-item {
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(42,42,58,0.5);
+  }
+  .dash-evo-item:last-child { border-bottom: none; }
+  .dash-evo-type {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+  .dash-evo-desc {
+    font-size: 12px;
+    color: var(--text);
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .dash-evo-time {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  /* ── Entity Graph Drawer ── */
+  .egraph-controls {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .egraph-stat {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .egraph-search {
+    flex: 1;
+    min-width: 140px;
+    padding: 5px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+  }
+  .egraph-search:focus { border-color: #4A90D9; }
+  .egraph-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .egraph-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .egraph-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .egraph-container {
+    flex: 1;
+    min-height: 0;
+  }
+  .egraph-tooltip {
+    position: fixed;
+    display: none;
+    z-index: 1200;
+    background: rgba(10,10,15,0.95);
+    border: 1px solid #4A90D9;
+    border-radius: 6px;
+    padding: 10px 14px;
+    max-width: 320px;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .egraph-tooltip h3 { color: #4A90D9; font-size: 13px; margin-bottom: 3px; }
+  .egraph-tooltip .kv { color: var(--text-dim); margin: 1px 0; }
+
+  /* ── Left Drawer Header Buttons ── */
+  .left-drawer-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .left-drawer-btn:hover { background: var(--surface2); }
+  .dash-btn { color: #00d4ff; border-color: rgba(0,212,255,0.3); background: rgba(0,212,255,0.06); }
+  .dash-btn:hover { border-color: #00d4ff; }
+  .egraph-btn { color: #4A90D9; border-color: rgba(74,144,217,0.3); background: rgba(74,144,217,0.06); }
+  .egraph-btn:hover { border-color: #4A90D9; }
+
+  /* ── Loading Spinner ── */
+  .left-drawer-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-size: 13px;
+    gap: 12px;
+  }
+
+  /* ── Vision Canvas Overlay ── */
+  #visionFeedWrap { position: relative; }
+  #visionVideo {
+    width: 100%; border-radius: 8px; background: #000;
+    display: block; min-height: 300px;
+  }
+  #visionCanvas {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; pointer-events: none;
+    border-radius: 8px;
+  }
+  .vision-scene-objects {
+    margin-top: 10px; padding: 10px 14px;
+    background: var(--surface2); border-radius: 8px;
+  }
+  .vision-scene-objects h4 { margin: 0 0 6px; color: #7cfc00; font-size: 0.9rem; }
+  .vision-obj-list { font-size: 0.85rem; color: var(--text); }
+  .vision-obj-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 3px 0; border-bottom: 1px solid var(--border);
+  }
+  .vision-obj-item:last-child { border-bottom: none; }
+  .vision-obj-badge {
+    padding: 1px 8px; border-radius: 10px; font-size: 0.75rem;
+    background: rgba(124,252,0,0.15); color: #7cfc00;
+  }
+
 </style>
+<!-- TensorFlow.js + COCO-SSD for browser-side object detection (80 object classes) -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 </head>
 <body>
 
@@ -1780,13 +2716,100 @@
     INTEL
     <span class="intel-score" id="intelScoreBadge">—</span>
   </button>
-  <a href="/dashboard" class="kb-toggle" style="margin-left:6px;background:rgba(0,212,255,0.08);border-color:#00d4ff;color:#00d4ff;text-decoration:none;display:inline-flex;align-items:center;gap:6px;">
+  <button class="prophecy-btn" id="prophecyToggle" onclick="toggleProphecy()">
+    🔮 Prophecies <span class="prop-badge" id="propCountBadge">—</span>
+  </button>
+  <button class="gov-btn" id="govToggle" onclick="toggleGovernance()">
+    ⚙ Governance <span class="gov-badge" id="govCountBadge">—</span>
+  </button>
+  <button class="inject-btn" id="injectToggle" onclick="toggleInject()">
+    📚 Inject <span class="inject-badge" id="injectCountBadge">0</span>
+  </button>
+  <button class="left-drawer-btn egraph-btn" id="egraphToggle" onclick="toggleEgraph()">
+    🕸 Graph
+  </button>
+  <button class="left-drawer-btn dash-btn" id="dashToggle" onclick="toggleDash()">
     Φ JARVIS
-  </a>
+  </button>
+  <button class="left-drawer-btn" id="visionToggle" onclick="toggleVision()" style="color:#7cfc00">
+    👁 Vision
+  </button>
   <button class="notif-btn" id="notifToggle" onclick="toggleNotifications()">
     🔔 <span class="notif-badge hidden" id="notifBadge">0</span>
   </button>
 </header>
+
+<!-- ══════ LEFT-SIDE DRAWERS ══════ -->
+
+<!-- Dashboard (JARVIS) Overlay -->
+<div class="left-overlay" id="dashOverlay" onclick="toggleDash()"></div>
+
+<!-- Dashboard (JARVIS) Drawer -->
+<div class="left-drawer dash-drawer" id="dashDrawer">
+  <div class="left-drawer-header">
+    <h2 class="dash-title">Φ JARVIS — System Dashboard</h2>
+    <button class="left-drawer-close" onclick="toggleDash()">✕</button>
+  </div>
+  <div class="left-drawer-body" id="dashBody">
+    <div class="left-drawer-loading"><div class="spinner"></div><br>Loading dashboard...</div>
+  </div>
+</div>
+
+<!-- Entity Graph Overlay -->
+<div class="left-overlay" id="egraphOverlay" onclick="toggleEgraph()"></div>
+
+<!-- Entity Graph Drawer -->
+<div class="left-drawer egraph-drawer" id="egraphDrawer">
+  <div class="left-drawer-header">
+    <h2 class="egraph-title">🕸 Entity Knowledge Graph</h2>
+    <button class="left-drawer-close" onclick="toggleEgraph()">✕</button>
+  </div>
+  <div class="egraph-controls" id="egraphControls">
+    <span class="egraph-stat" id="egraphStats">—</span>
+    <input class="egraph-search" id="egraphSearch" type="text" placeholder="Search entities..." />
+  </div>
+  <div class="egraph-legend" id="egraphLegend"></div>
+  <div class="egraph-container" id="egraphContainer"></div>
+  <div class="egraph-tooltip" id="egraphTooltip"></div>
+</div>
+
+<!-- Vision Camera Overlay -->
+<div class="left-overlay" id="visionOverlay" onclick="toggleVision()"></div>
+
+<!-- Vision Camera Drawer -->
+<div class="left-drawer vision-drawer" id="visionDrawer">
+  <div class="left-drawer-header">
+    <h2 class="vision-title">👁 Αίολος Vision</h2>
+    <button class="left-drawer-close" onclick="toggleVision()">✕</button>
+  </div>
+  <div class="left-drawer-body" id="visionBody">
+    <div id="visionFeedWrap">
+      <video id="visionVideo" autoplay playsinline muted></video>
+      <canvas id="visionCanvas"></canvas>
+    </div>
+    <div class="vision-status-bar" id="visionStatusBar">
+      <span class="v-stat"><span class="v-dot off" id="visionDot"></span> <span id="visionCamLabel">Offline</span></span>
+      <span class="v-stat">Objects: <b id="visionObjCount">0</b></span>
+      <span class="v-stat">Faces: <b id="visionFaceCount">0</b></span>
+      <span class="v-stat">FPS: <b id="visionFPS">0</b></span>
+    </div>
+    <div class="vision-scene-objects" id="visionSceneWrap">
+      <h4>🔍 Αντικείμενα στη σκηνή</h4>
+      <div class="vision-obj-list" id="visionObjList"><em style="color:var(--text-dim)">Η κάμερα δεν είναι ενεργή</em></div>
+    </div>
+    <div class="vision-identities" id="visionIdentities">
+      <h4>👤 Αναγνωρισμένα πρόσωπα</h4>
+      <div id="visionIdentityList"><em style="color:var(--text-dim)">Δεν έχουν εντοπιστεί πρόσωπα ακόμα</em></div>
+    </div>
+    <div class="vision-controls">
+      <button id="visionStartBtn" onclick="visionStart()">▶ Start</button>
+      <button id="visionStopBtn" onclick="visionStop()">⏹ Stop</button>
+      <button id="visionSnapshotBtn" onclick="visionSnapshot()">📷 Snapshot</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ RIGHT-SIDE PANELS ══════ -->
 
 <!-- Notification Panel Overlay -->
 <div class="notif-overlay" id="notifOverlay" onclick="toggleNotifications()"></div>
@@ -1869,6 +2892,82 @@
   </div>
   <div class="intel-body" id="intelBody">
     <div class="intel-empty">Awaiting intelligence data…</div>
+  </div>
+</div>
+
+<!-- Prophecy Command Center Overlay -->
+<div class="prophecy-overlay" id="prophecyOverlay" onclick="toggleProphecy()"></div>
+
+<!-- Prophecy Command Center Panel -->
+<div class="prophecy-panel" id="prophecyPanel">
+  <div class="prophecy-header">
+    <h2>🔮 PROPHECY COMMAND CENTER</h2>
+    <button class="prophecy-close" onclick="toggleProphecy()">✕</button>
+  </div>
+  <div class="prophecy-tabs">
+    <button class="prophecy-tab active" onclick="switchProphecyTab('active', this)">
+      Active <span class="ptab-count" id="ptabActive"></span>
+    </button>
+    <button class="prophecy-tab" onclick="switchProphecyTab('autonomous', this)">
+      🤖 Autonomous <span class="ptab-count" id="ptabAutonomous"></span>
+    </button>
+    <button class="prophecy-tab" onclick="switchProphecyTab('accuracy', this)">
+      📊 Accuracy
+    </button>
+    <button class="prophecy-tab" onclick="switchProphecyTab('resolved', this)">
+      ✅ Resolved <span class="ptab-count" id="ptabResolved"></span>
+    </button>
+  </div>
+  <div class="prophecy-body" id="prophecyBody">
+    <div class="prop-empty">Loading prophecies…</div>
+  </div>
+</div>
+
+<!-- Governance Hub Overlay -->
+<div class="gov-overlay" id="govOverlay" onclick="toggleGovernance()"></div>
+
+<!-- Governance Hub Panel -->
+<div class="gov-panel" id="govPanel">
+  <div class="gov-header">
+    <h2>⚙ GOVERNANCE HUB</h2>
+    <button class="gov-close" onclick="toggleGovernance()">✕</button>
+  </div>
+  <div class="gov-tabs">
+    <button class="gov-tab active" onclick="switchGovTab('principles', this)">
+      📜 Principles
+    </button>
+    <button class="gov-tab" onclick="switchGovTab('sandbox', this)">
+      🧪 Logic Sandbox
+    </button>
+    <button class="gov-tab" onclick="switchGovTab('strategies', this)">
+      🧠 Strategies
+    </button>
+  </div>
+  <div class="gov-body" id="govBody">
+    <div class="gov-empty">Loading governance data…</div>
+  </div>
+</div>
+
+<!-- Knowledge Injector Overlay -->
+<div class="inject-overlay" id="injectOverlay" onclick="toggleInject()"></div>
+
+<!-- Knowledge Injector Panel -->
+<div class="inject-panel" id="injectPanel">
+  <div class="inject-header">
+    <h2>📚 KNOWLEDGE INJECTOR</h2>
+    <button class="inject-close" onclick="toggleInject()">✕</button>
+  </div>
+  <div class="inject-body" id="injectBody">
+    <div class="inject-form">
+      <label>Source</label>
+      <input type="text" id="injectSource" placeholder="e.g. academic_paper, expert_briefing, classified" />
+      <label>Knowledge Content</label>
+      <textarea id="injectContent" placeholder="Paste the knowledge text here... (academic papers, expert analysis, domain insights)"></textarea>
+      <button class="inject-submit" id="injectSubmitBtn" onclick="submitKnowledgeInjection()">
+        Inject Knowledge
+      </button>
+    </div>
+    <div id="injectExistingList"></div>
   </div>
 </div>
 
@@ -2020,7 +3119,7 @@
 </main>
 
 <footer>
-  © Panos Skouras — Salimov MON IKE, 2026 &nbsp;|&nbsp; XDART-Φ × XHEART v1.0
+  © Panos Skouras  &nbsp;|&nbsp; XDART-Φ × XHEART v1.0
 </footer>
 
 <script>
@@ -5507,6 +6606,1286 @@ function requestBrowserNotification(notif) {
     }
   }).catch(() => {});
 })();
+
+// ══════════════════════════════════════════════════════════════════════════
+//  PROPHECY COMMAND CENTER
+// ══════════════════════════════════════════════════════════════════════════
+
+let prophecyOpen = false;
+let prophecyData = null;
+let autonomousData = null;
+let accuracyData = null;
+let activeProphecyTab = 'active';
+
+function toggleProphecy() {
+  prophecyOpen = !prophecyOpen;
+  document.getElementById('prophecyPanel').classList.toggle('open', prophecyOpen);
+  document.getElementById('prophecyOverlay').classList.toggle('visible', prophecyOpen);
+  if (prophecyOpen) loadProphecyData();
+}
+
+async function loadProphecyData() {
+  const body = document.getElementById('prophecyBody');
+  if (!prophecyData) body.innerHTML = '<div class="prop-empty">Loading prophecies…</div>';
+  try {
+    const [propRes, autoRes, accRes] = await Promise.all([
+      fetch(`${API_BASE}/xdart/prophecies?limit=100`),
+      fetch(`${API_BASE}/xdart/prophecies/autonomous`),
+      fetch(`${API_BASE}/xdart/accuracy`),
+    ]);
+    if (propRes.ok) prophecyData = await propRes.json();
+    if (autoRes.ok) autonomousData = await autoRes.json();
+    if (accRes.ok) accuracyData = await accRes.json();
+    updateProphecyBadge();
+    renderProphecyTab(activeProphecyTab);
+  } catch (err) {
+    body.innerHTML = `<div class="prop-empty">Failed to load prophecy data<br><span style="font-size:10px;opacity:0.5">${esc(err.message)}</span></div>`;
+  }
+}
+
+function updateProphecyBadge() {
+  const badge = document.getElementById('propCountBadge');
+  const total = (prophecyData?.total || 0);
+  const pending = (autonomousData?.count || 0);
+  badge.textContent = pending > 0 ? `${pending}!` : (total || '—');
+  if (pending > 0) badge.style.background = '#ffd740';
+
+  const ptabActive = document.getElementById('ptabActive');
+  const ptabAuto = document.getElementById('ptabAutonomous');
+  const ptabResolved = document.getElementById('ptabResolved');
+  const prophecies = prophecyData?.prophecies || [];
+  const activeCount = prophecies.filter(p => p.tracking_status === 'active' || p.tracking_status === 'tracking').length;
+  const resolvedCount = prophecies.filter(p => ['confirmed', 'disconfirmed', 'expired'].includes(p.tracking_status)).length;
+  if (ptabActive) ptabActive.textContent = activeCount ? ` (${activeCount})` : '';
+  if (ptabAuto) ptabAuto.textContent = pending ? ` (${pending})` : '';
+  if (ptabResolved) ptabResolved.textContent = resolvedCount ? ` (${resolvedCount})` : '';
+}
+
+function switchProphecyTab(tab, btn) {
+  activeProphecyTab = tab;
+  document.querySelectorAll('.prophecy-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderProphecyTab(tab);
+}
+
+function renderProphecyTab(tab) {
+  const body = document.getElementById('prophecyBody');
+  switch (tab) {
+    case 'active': body.innerHTML = renderActiveProphecies(); break;
+    case 'autonomous': body.innerHTML = renderAutonomousProphecies(); break;
+    case 'accuracy': body.innerHTML = renderAccuracyTab(); break;
+    case 'resolved': body.innerHTML = renderResolvedProphecies(); break;
+  }
+}
+
+function renderActiveProphecies() {
+  const prophecies = (prophecyData?.prophecies || [])
+    .filter(p => p.tracking_status === 'active' || p.tracking_status === 'tracking')
+    .sort((a, b) => (b.scenario?.confidence || 0) - (a.scenario?.confidence || 0));
+  if (!prophecies.length) return '<div class="prop-empty">No active prophecies.<br>Run a prophetic analysis to generate predictions.</div>';
+
+  return prophecies.map(p => renderProphecyCard(p)).join('');
+}
+
+function renderResolvedProphecies() {
+  const prophecies = (prophecyData?.prophecies || [])
+    .filter(p => ['confirmed', 'disconfirmed', 'expired'].includes(p.tracking_status))
+    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+  if (!prophecies.length) return '<div class="prop-empty">No resolved prophecies yet.</div>';
+
+  return prophecies.map(p => renderProphecyCard(p)).join('');
+}
+
+function renderProphecyCard(p) {
+  const sc = p.scenario || {};
+  const sim = p.simulation || {};
+  const conf = sc.confidence || 0;
+  const confClass = conf >= 0.7 ? 'high' : conf >= 0.4 ? 'med' : 'low';
+  const markers = (sc.falsifiable_markers || []).slice(0, 5);
+  const checks = (p.reality_checks || []).slice(0, 3);
+  const ts = (p.timestamp || '').substring(0, 16).replace('T', ' ');
+
+  let html = `<div class="prop-card">
+    <div class="prop-card-header">
+      <div class="prop-name">${esc(sc.name || p.problem || 'Untitled')}</div>
+      <span class="prop-status ${esc(p.tracking_status)}">${esc(p.tracking_status)}</span>
+    </div>
+    <div class="prop-narrative">${esc(sc.narrative || sc.predicted_outcome || '')}</div>
+    <div class="prop-meta-row">
+      <span>Confidence: <span class="prop-confidence ${confClass}">${(conf * 100).toFixed(0)}%</span></span>
+      <span>Tribunal: #${p.tribunal_rank || '?'} (${(p.tribunal_score || 0).toFixed(2)})</span>
+      ${sim.robustness_score ? `<span>Robustness: ${(sim.robustness_score * 100).toFixed(0)}%</span>` : ''}
+      ${sc.timeframe ? `<span>⏱ ${esc(sc.timeframe)}</span>` : ''}
+      <span>📅 ${ts}</span>
+    </div>`;
+
+  if (markers.length) {
+    html += `<div class="prop-markers">${markers.map(m => `<span class="prop-marker">${esc(typeof m === 'string' ? m : m.marker || m.description || JSON.stringify(m))}</span>`).join('')}</div>`;
+  }
+
+  if (checks.length) {
+    html += `<div style="margin-top:6px;font-size:11px;color:var(--text-dim)">
+      ${checks.map(c => `<div style="padding:2px 0;border-left:2px solid ${c.result === 'confirmed' ? '#4caf50' : c.result === 'disconfirmed' ? '#f44336' : 'var(--border)'};padding-left:6px;margin-bottom:2px">
+        ${esc(c.check || c.description || JSON.stringify(c))}
+      </div>`).join('')}
+    </div>`;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderAutonomousProphecies() {
+  const pending = autonomousData?.pending || [];
+  if (!pending.length) return '<div class="prop-empty">No autonomous prophecies pending approval.<br>Αίολος generates these from detected patterns.</div>';
+
+  return pending.map(p => {
+    const sc = p.scenario || {};
+    const conf = sc.confidence || 0;
+    const confClass = conf >= 0.7 ? 'high' : conf >= 0.4 ? 'med' : 'low';
+    const ts = (p.timestamp || '').substring(0, 16).replace('T', ' ');
+
+    return `<div class="prop-card" style="border-color:rgba(255,215,64,0.2)">
+      <div class="prop-card-header">
+        <div class="prop-name">${esc(sc.name || 'Autonomous Prophecy')}</div>
+        <span class="prop-status autonomous_proposed">PENDING</span>
+      </div>
+      <div class="prop-narrative">${esc(sc.narrative || sc.predicted_outcome || p.trigger_summary || '')}</div>
+      <div class="prop-meta-row">
+        <span>Confidence: <span class="prop-confidence ${confClass}">${(conf * 100).toFixed(0)}%</span></span>
+        ${sc.timeframe ? `<span>⏱ ${esc(sc.timeframe)}</span>` : ''}
+        <span>📅 ${ts}</span>
+        ${p.source ? `<span>Source: ${esc(p.source)}</span>` : ''}
+      </div>
+      ${(sc.falsifiable_markers || []).length ? `<div class="prop-markers">${sc.falsifiable_markers.slice(0, 5).map(m => `<span class="prop-marker">${esc(typeof m === 'string' ? m : m.marker || '')}</span>`).join('')}</div>` : ''}
+      <div class="prop-actions">
+        <button class="prop-action-btn approve" onclick="approveAutonomousProphecy('${esc(p.id)}')">✓ Approve</button>
+        <button class="prop-action-btn reject" onclick="rejectAutonomousProphecy('${esc(p.id)}')">✕ Reject</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function approveAutonomousProphecy(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/prophecies/autonomous/${id}/approve`, { method: 'POST' });
+    if (res.ok) {
+      await loadProphecyData();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Approval failed: ' + (d.detail || res.statusText));
+    }
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function rejectAutonomousProphecy(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/prophecies/autonomous/${id}/reject`, { method: 'POST' });
+    if (res.ok) {
+      await loadProphecyData();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Rejection failed: ' + (d.detail || res.statusText));
+    }
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+function renderAccuracyTab() {
+  const d = accuracyData;
+  if (!d) return '<div class="prop-empty">No accuracy data available yet.</div>';
+
+  const brier = d.average_brier_score;
+  const rating = d.rating || 'unknown';
+  const brierColor = brier != null ? (brier < 0.1 ? '#4caf50' : brier < 0.25 ? '#ff9800' : '#f44336') : 'var(--text-dim)';
+  const ratingColor = rating === 'excellent' ? '#4caf50' : rating === 'good' ? '#8bc34a' : rating === 'fair' ? '#ff9800' : '#f44336';
+
+  let html = `<div class="accuracy-gauge">
+    <div class="ag-score" style="color:${brierColor}">${brier != null ? brier.toFixed(3) : '—'}</div>
+    <div class="ag-label">Average Brier Score (lower = better)</div>
+    <div class="ag-rating" style="color:${ratingColor}">${rating.toUpperCase()}</div>
+  </div>`;
+
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+    <div style="background:rgba(124,77,255,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#7c4dff;font-family:var(--mono)">${d.total_prophecies || 0}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Total Prophecies</div>
+    </div>
+    <div style="background:rgba(76,175,80,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#4caf50;font-family:var(--mono)">${d.confirmed || 0}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Confirmed</div>
+    </div>
+    <div style="background:rgba(244,67,54,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#f44336;font-family:var(--mono)">${d.disconfirmed || 0}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Disconfirmed</div>
+    </div>
+  </div>`;
+
+  // Per-prophecy scores if available
+  const scores = d.per_prophecy_scores || d.prophecy_scores || [];
+  if (scores.length) {
+    html += `<div style="font-size:10px;color:#7c4dff;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:8px">Individual Scores</div>`;
+    scores.forEach(s => {
+      const sb = s.brier_score ?? s.score;
+      const sc = sb != null ? (sb < 0.1 ? '#4caf50' : sb < 0.25 ? '#ff9800' : '#f44336') : 'var(--text-dim)';
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;margin-bottom:4px;background:rgba(255,255,255,0.02)">
+        <span style="font-family:var(--mono);font-size:13px;font-weight:700;color:${sc};min-width:50px">${sb != null ? sb.toFixed(3) : '—'}</span>
+        <span style="font-size:12px;color:var(--text);flex:1">${esc(s.name || s.problem || 'Unknown')}</span>
+        <span style="font-size:10px;color:var(--text-dim)">${esc(s.status || '')}</span>
+      </div>`;
+    });
+  }
+
+  html += `<div style="text-align:center;margin-top:16px"><button class="prophecy-close" style="font-size:11px;padding:4px 14px" onclick="loadProphecyData()">↻ Refresh</button></div>`;
+  return html;
+}
+
+// Background badge refresh
+async function refreshProphecyBadge() {
+  try {
+    const [propRes, autoRes] = await Promise.all([
+      fetch(`${API_BASE}/xdart/prophecies?limit=1`),
+      fetch(`${API_BASE}/xdart/prophecies/autonomous`),
+    ]);
+    if (propRes.ok) {
+      const d = await propRes.json();
+      const badge = document.getElementById('propCountBadge');
+      const autoD = autoRes.ok ? await autoRes.json() : { count: 0 };
+      const pending = autoD.count || 0;
+      badge.textContent = pending > 0 ? `${pending}!` : (d.total || '—');
+      if (pending > 0) badge.style.background = '#ffd740';
+      else badge.style.background = '#7c4dff';
+    }
+  } catch {}
+}
+refreshProphecyBadge();
+setInterval(refreshProphecyBadge, 60000);
+
+// ══════════════════════════════════════════════════════════════════════════
+//  GOVERNANCE HUB
+// ══════════════════════════════════════════════════════════════════════════
+
+let govOpen = false;
+let govPrinciples = null;
+let govPending = null;
+let govPhilosophy = null;
+let govSandbox = null;
+let govSandboxProposals = null;
+let govStrategies = null;
+let activeGovTab = 'principles';
+
+function toggleGovernance() {
+  govOpen = !govOpen;
+  document.getElementById('govPanel').classList.toggle('open', govOpen);
+  document.getElementById('govOverlay').classList.toggle('visible', govOpen);
+  if (govOpen) loadGovernanceData();
+}
+
+async function loadGovernanceData() {
+  const body = document.getElementById('govBody');
+  if (!govPrinciples) body.innerHTML = '<div class="gov-empty">Loading governance data…</div>';
+  try {
+    const [princRes, pendRes, philRes, sbRes, sbpRes, stratRes] = await Promise.all([
+      fetch(`${API_BASE}/xdart/principles`),
+      fetch(`${API_BASE}/xdart/principles/pending`),
+      fetch(`${API_BASE}/xdart/principles/philosophy`),
+      fetch(`${API_BASE}/xdart/logic-sandbox`),
+      fetch(`${API_BASE}/xdart/logic-sandbox/proposals`),
+      fetch(`${API_BASE}/xdart/strategies`),
+    ]);
+    if (princRes.ok) govPrinciples = await princRes.json();
+    if (pendRes.ok) govPending = await pendRes.json();
+    if (philRes.ok) govPhilosophy = await philRes.json();
+    if (sbRes.ok) govSandbox = await sbRes.json();
+    if (sbpRes.ok) govSandboxProposals = await sbpRes.json();
+    if (stratRes.ok) govStrategies = await stratRes.json();
+    updateGovernanceBadge();
+    renderGovTab(activeGovTab);
+  } catch (err) {
+    body.innerHTML = `<div class="gov-empty">Failed to load governance data<br><span style="font-size:10px;opacity:0.5">${esc(err.message)}</span></div>`;
+  }
+}
+
+function updateGovernanceBadge() {
+  const pendingPrinc = govPending?.pending?.length || 0;
+  const allSbProposals = govSandboxProposals?.proposals || [];
+  const pendingSandbox = allSbProposals.filter(p => p.status === 'pending' || p.status === 'tested').length;
+  const total = pendingPrinc + pendingSandbox;
+  const badge = document.getElementById('govCountBadge');
+  badge.textContent = total > 0 ? `${total}!` : '—';
+  if (total > 0) badge.style.background = '#ffd740';
+  else badge.style.background = '#ff9800';
+}
+
+function switchGovTab(tab, btn) {
+  activeGovTab = tab;
+  document.querySelectorAll('.gov-tab').forEach(t => t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderGovTab(tab);
+}
+
+function renderGovTab(tab) {
+  const body = document.getElementById('govBody');
+  switch (tab) {
+    case 'principles': body.innerHTML = renderPrinciplesTab(); break;
+    case 'sandbox': body.innerHTML = renderSandboxTab(); break;
+    case 'strategies': body.innerHTML = renderStrategiesTab(); break;
+  }
+}
+
+function renderPrinciplesTab() {
+  let html = '';
+
+  // Philosophy mode switcher
+  const currentMode = govPhilosophy?.active_mode || 'balanced';
+  html += `<div class="gov-section-title">Philosophy Mode</div>
+  <div class="philosophy-switcher">
+    <div class="philosophy-mode ${currentMode === 'balanced' ? 'active-mode' : ''}" onclick="switchPhilosophy('balanced')">
+      <span class="pm-icon">⚖</span>
+      <div class="pm-name">Balanced</div>
+      <div class="pm-desc">Default equilibrium</div>
+    </div>
+    <div class="philosophy-mode ${currentMode === 'conservative' ? 'active-mode' : ''}" onclick="switchPhilosophy('conservative')">
+      <span class="pm-icon">🛡</span>
+      <div class="pm-name">Conservative</div>
+      <div class="pm-desc">Strict validation</div>
+    </div>
+    <div class="philosophy-mode ${currentMode === 'exploratory' ? 'active-mode' : ''}" onclick="switchPhilosophy('exploratory')">
+      <span class="pm-icon">🔬</span>
+      <div class="pm-name">Exploratory</div>
+      <div class="pm-desc">Open discovery</div>
+    </div>
+  </div>`;
+
+  // Pending principles
+  const pending = govPending?.pending || [];
+  if (pending.length) {
+    html += `<div class="gov-section-title">Pending Approval (${pending.length})</div>`;
+    pending.forEach(p => {
+      html += `<div class="gov-card" style="border-color:rgba(255,215,64,0.2)">
+        <div class="gov-card-title">${esc(p.name || p.id)}</div>
+        <div class="gov-card-desc">${esc(p.description || p.text || '')}</div>
+        <div class="gov-card-meta">
+          ${p.confidence ? `<span>Confidence: ${(p.confidence * 100).toFixed(0)}%</span>` : ''}
+          ${p.source ? `<span>Source: ${esc(p.source)}</span>` : ''}
+        </div>
+        <div class="prop-actions" style="margin-top:8px">
+          <button class="prop-action-btn approve" onclick="approvePrinciple('${esc(p.id)}')">✓ Approve</button>
+          <button class="prop-action-btn reject" onclick="rejectPrinciple('${esc(p.id)}')">✕ Reject</button>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Active principles
+  const active = govPrinciples?.principles || [];
+  html += `<div class="gov-section-title" style="margin-top:16px">Active Principles (${active.length})</div>`;
+  if (!active.length) {
+    html += '<div class="gov-empty">No active principles yet.</div>';
+  } else {
+    active.forEach(p => {
+      html += `<div class="gov-card">
+        <div class="gov-card-title">${esc(p.name || p.id)}</div>
+        <div class="gov-card-desc">${esc(p.description || p.text || '')}</div>
+        <div class="gov-card-meta">
+          ${p.confidence ? `<span>Confidence: ${(p.confidence * 100).toFixed(0)}%</span>` : ''}
+          ${p.usage_count != null ? `<span>Uses: ${p.usage_count}</span>` : ''}
+          ${p.source ? `<span>Source: ${esc(p.source)}</span>` : ''}
+        </div>
+      </div>`;
+    });
+  }
+
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  return html;
+}
+
+async function switchPhilosophy(mode) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/principles/philosophy/${mode}`, { method: 'POST' });
+    if (res.ok) {
+      govPhilosophy = await res.json();
+      renderGovTab('principles');
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Switch failed: ' + (d.detail || res.statusText));
+    }
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function approvePrinciple(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/principles/${id}/approve`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function rejectPrinciple(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/principles/${id}/reject`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+function renderSandboxTab() {
+  let html = '';
+
+  // Pending proposals — only show actionable ones (pending/tested)
+  const allProposals = govSandboxProposals?.proposals || [];
+  const pendingProposals = allProposals.filter(p => p.status === 'pending' || p.status === 'tested');
+  const completedProposals = allProposals.filter(p => p.status === 'applied' || p.status === 'rejected' || p.status === 'approved');
+  if (pendingProposals.length) {
+    html += `<div class="gov-section-title">Pending Proposals (${pendingProposals.length})</div>`;
+    pendingProposals.forEach(p => {
+      html += `<div class="gov-card" style="border-color:rgba(255,215,64,0.2)">
+        <div class="gov-card-title">${esc(p.function_name || p.target || p.id)}</div>
+        <div class="gov-card-desc">${esc(p.description || p.rationale || '')}</div>
+        <div class="gov-card-meta">
+          ${p.confidence ? `<span>Confidence: ${(p.confidence * 100).toFixed(0)}%</span>` : ''}
+          ${p.status ? `<span>Status: ${esc(p.status)}</span>` : ''}
+          ${p.pattern ? `<span>Pattern: ${esc(p.pattern)}</span>` : ''}
+        </div>
+        <div class="prop-actions" style="margin-top:8px">
+          <button class="prop-action-btn approve" onclick="approveSandboxProposal('${esc(p.id)}')">✓ Approve</button>
+          <button class="prop-action-btn reject" onclick="rejectSandboxProposal('${esc(p.id)}')">✕ Reject</button>
+        </div>
+      </div>`;
+    });
+  }
+  if (completedProposals.length) {
+    html += `<div class="gov-section-title" style="margin-top:12px">Completed Proposals (${completedProposals.length})</div>`;
+    completedProposals.forEach(p => {
+      const statusColor = p.status === 'applied' ? '#2ecc71' : p.status === 'rejected' ? '#e74c3c' : '#f39c12';
+      html += `<div class="gov-card" style="border-color:${statusColor}33; opacity:0.7">
+        <div class="gov-card-title" style="display:flex;justify-content:space-between;align-items:center">
+          ${esc(p.function_name || p.target || p.id)}
+          <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:${statusColor}22;color:${statusColor}">${esc(p.status.toUpperCase())}</span>
+        </div>
+        <div class="gov-card-desc" style="font-size:11px">${esc((p.description || p.rationale || '').slice(0, 150))}${(p.description || p.rationale || '').length > 150 ? '...' : ''}</div>
+      </div>`;
+    });
+  }
+
+  // Functions
+  const functions = govSandbox?.functions || {};
+  const funcList = Object.entries(functions);
+  html += `<div class="gov-section-title" style="margin-top:16px">Registered Functions (${funcList.length})</div>`;
+  if (!funcList.length) {
+    html += '<div class="gov-empty">No sandbox functions registered.</div>';
+  } else {
+    funcList.forEach(([name, f]) => {
+      const modified = f.version > 1 || f.current_code !== f.original_code;
+      html += `<div class="sandbox-func" ${modified ? 'style="border-color:rgba(255,152,0,0.3)"' : ''}>
+        <div class="sandbox-func-header">
+          <span class="sandbox-func-name">${esc(name)}</span>
+          <span class="sandbox-func-version">v${f.version || 1}${modified ? ' ⚡' : ''}</span>
+        </div>
+        <div class="sandbox-func-desc">${esc(f.description || '')}</div>
+        ${modified ? `<div style="margin-top:6px"><button class="prop-action-btn reject" style="font-size:10px;padding:3px 10px" onclick="rollbackSandboxFunc('${esc(name)}')">↶ Rollback</button></div>` : ''}
+      </div>`;
+    });
+  }
+
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  return html;
+}
+
+async function approveSandboxProposal(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/logic-sandbox/proposals/${id}/approve`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function rejectSandboxProposal(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/logic-sandbox/proposals/${id}/reject`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function rollbackSandboxFunc(name) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/logic-sandbox/functions/${name}/rollback`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+function renderStrategiesTab() {
+  const strategies = govStrategies?.strategies || [];
+  const stats = govStrategies?.stats || {};
+  let html = '';
+
+  html += `<div style="display:flex;gap:12px;margin-bottom:16px">
+    <div style="flex:1;background:rgba(255,152,0,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#ff9800;font-family:var(--mono)">${stats.total || strategies.length}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Total</div>
+    </div>
+    <div style="flex:1;background:rgba(76,175,80,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#4caf50;font-family:var(--mono)">${stats.active || strategies.filter(s => s.active !== false).length}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Active</div>
+    </div>
+    <div style="flex:1;background:rgba(244,67,54,0.04);border-radius:8px;padding:12px;text-align:center">
+      <div style="font-size:22px;font-weight:700;color:#f44336;font-family:var(--mono)">${stats.inactive || strategies.filter(s => s.active === false).length}</div>
+      <div style="font-size:10px;color:var(--text-dim)">Inactive</div>
+    </div>
+  </div>`;
+
+  if (!strategies.length) {
+    html += '<div class="gov-empty">No cognitive strategies registered.</div>';
+  } else {
+    html += `<div class="gov-section-title">Cognitive Strategies</div>`;
+    strategies.forEach(s => {
+      const isActive = s.active !== false;
+      html += `<div class="gov-card" style="opacity:${isActive ? 1 : 0.5}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="gov-card-title">${esc(s.name || s.id)}</div>
+          <span style="font-size:9px;font-weight:700;padding:2px 8px;border-radius:4px;${isActive ? 'background:rgba(76,175,80,0.12);color:#4caf50' : 'background:rgba(244,67,54,0.12);color:#f44336'}">${isActive ? 'ACTIVE' : 'INACTIVE'}</span>
+        </div>
+        <div class="gov-card-desc">${esc(s.description || '')}</div>
+        <div class="gov-card-meta">
+          ${s.success_rate != null ? `<span>Success: ${(s.success_rate * 100).toFixed(0)}%</span>` : ''}
+          ${s.uses != null ? `<span>Uses: ${s.uses}</span>` : ''}
+          ${s.deactivation_reason ? `<span>Reason: ${esc(s.deactivation_reason)}</span>` : ''}
+        </div>
+        ${isActive ? `<div style="margin-top:6px"><button class="prop-action-btn reject" style="font-size:10px;padding:3px 10px" onclick="deactivateStrategy('${esc(s.id)}')">Deactivate</button></div>` : ''}
+      </div>`;
+    });
+  }
+
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  return html;
+}
+
+async function deactivateStrategy(id) {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/strategies/${id}/deactivate`, { method: 'POST' });
+    if (res.ok) await loadGovernanceData();
+    else alert('Failed: ' + (await res.json().catch(() => ({}))).detail);
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+// Background governance badge refresh
+async function refreshGovBadge() {
+  try {
+    const [pendRes, sbpRes] = await Promise.all([
+      fetch(`${API_BASE}/xdart/principles/pending`),
+      fetch(`${API_BASE}/xdart/logic-sandbox/proposals`),
+    ]);
+    let total = 0;
+    if (pendRes.ok) { const d = await pendRes.json(); total += (d.pending?.length || 0); }
+    if (sbpRes.ok) { const d = await sbpRes.json(); total += (d.proposals?.length || 0); }
+    const badge = document.getElementById('govCountBadge');
+    badge.textContent = total > 0 ? `${total}!` : '—';
+    if (total > 0) badge.style.background = '#ffd740';
+    else badge.style.background = '#ff9800';
+  } catch {}
+}
+refreshGovBadge();
+setInterval(refreshGovBadge, 90000);
+
+// ══════════════════════════════════════════════════════════════════════════
+//  KNOWLEDGE INJECTOR
+// ══════════════════════════════════════════════════════════════════════════
+
+let injectOpen = false;
+let injectKnowledgeData = null;
+
+function toggleInject() {
+  injectOpen = !injectOpen;
+  document.getElementById('injectPanel').classList.toggle('open', injectOpen);
+  document.getElementById('injectOverlay').classList.toggle('visible', injectOpen);
+  if (injectOpen) loadInjectedKnowledge();
+}
+
+async function loadInjectedKnowledge() {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/knowledge/external`);
+    if (res.ok) {
+      injectKnowledgeData = await res.json();
+      renderInjectedKnowledge();
+      updateInjectBadge();
+    }
+  } catch {}
+}
+
+function updateInjectBadge() {
+  const badge = document.getElementById('injectCountBadge');
+  badge.textContent = injectKnowledgeData?.count || 0;
+}
+
+function renderInjectedKnowledge() {
+  const container = document.getElementById('injectExistingList');
+  const entries = injectKnowledgeData?.entries || [];
+  if (!entries.length) {
+    container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:12px;font-style:italic">
+      No knowledge injected yet. Use the form above to add external knowledge.
+    </div>`;
+    return;
+  }
+
+  let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <span style="font-size:10px;color:#00e676;text-transform:uppercase;letter-spacing:1.5px;font-weight:700">
+      Injected Knowledge (${entries.length})
+    </span>
+    <button class="inject-close" style="font-size:10px;padding:3px 10px;color:#f44336;border-color:rgba(244,67,54,0.2)" onclick="clearAllKnowledge()">Clear All</button>
+  </div>`;
+
+  entries.forEach(e => {
+    html += `<div class="inject-entry">
+      <div class="inject-entry-source">${esc(e.source || 'unknown')}</div>
+      <div class="inject-entry-content">${esc((e.content || '').substring(0, 300))}${(e.content || '').length > 300 ? '…' : ''}</div>
+      ${e.injected_at ? `<div class="inject-entry-time">${esc(e.injected_at)}</div>` : ''}
+    </div>`;
+  });
+
+  container.innerHTML = html;
+}
+
+async function submitKnowledgeInjection() {
+  const source = document.getElementById('injectSource').value.trim();
+  const content = document.getElementById('injectContent').value.trim();
+  if (!source || !content) {
+    alert('Both Source and Content are required.');
+    return;
+  }
+
+  const btn = document.getElementById('injectSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Injecting…';
+
+  try {
+    const res = await fetch(`${API_BASE}/xdart/knowledge/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, content }),
+    });
+    if (res.ok) {
+      document.getElementById('injectSource').value = '';
+      document.getElementById('injectContent').value = '';
+      await loadInjectedKnowledge();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Injection failed: ' + (d.detail || res.statusText));
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Inject Knowledge';
+  }
+}
+
+async function clearAllKnowledge() {
+  if (!confirm('Clear all injected knowledge?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/xdart/knowledge/external`, { method: 'DELETE' });
+    if (res.ok) await loadInjectedKnowledge();
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  LEFT DRAWER — DASHBOARD (Φ JARVIS)
+// ══════════════════════════════════════════════════════════════════════════
+
+let dashOpen = false;
+let dashData = null;
+let dashRefreshTimer = null;
+
+function toggleDash() {
+  dashOpen = !dashOpen;
+  document.getElementById('dashDrawer').classList.toggle('open', dashOpen);
+  document.getElementById('dashOverlay').classList.toggle('visible', dashOpen);
+  if (dashOpen) {
+    loadDashData();
+    dashRefreshTimer = setInterval(loadDashData, 30000);
+  } else {
+    if (dashRefreshTimer) { clearInterval(dashRefreshTimer); dashRefreshTimer = null; }
+  }
+}
+
+async function loadDashData() {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/dashboard/data`, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    dashData = await res.json();
+    renderDashDrawer();
+  } catch (e) {
+    document.getElementById('dashBody').innerHTML = '<div class="left-drawer-loading">Failed to load: ' + esc(e.message) + '</div>';
+  }
+}
+
+function _dashTimeAgo(dateStr) {
+  if (!dateStr) return '';
+  const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+function _dashDomainColor(d) {
+  const m = { geopolitical: '#c44040', economy: '#40a060', economic: '#40a060', security: '#ff9800',
+    energy: '#d4a843', technology: '#9B59B6', climate: '#00bcd4', market: '#4A90D9', social: '#e91e63' };
+  return m[(d || '').toLowerCase()] || '#808090';
+}
+
+function _dashConfColor(c) {
+  if (c >= 0.7) return 'var(--green)';
+  if (c >= 0.4) return 'var(--gold)';
+  return 'var(--red)';
+}
+
+function _dashRiskColor(s) {
+  if (s >= 70) return 'var(--red)';
+  if (s >= 45) return 'var(--gold)';
+  return 'var(--green)';
+}
+
+function renderDashDrawer() {
+  if (!dashData) return;
+  const d = dashData;
+  let html = '';
+
+  // ── KPI Strip ──
+  const wc = d.world_context || {};
+  const events = wc.events || [];
+  const proph = d.prophecies || {};
+  const acc = d.accuracy?.accuracy || {};
+  const health = d.health || {};
+  const char = d.character || {};
+  const wis = d.wisdom || {};
+
+  html += '<div class="dash-kpi-strip">';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:#4A90D9">' + events.length + '</div><div class="dash-kpi-label">Events</div><div class="dash-kpi-sub">' + events.filter(e => (e.salience || 0) >= 0.6).length + ' high-salience</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--gold)">' + (proph.total || 0) + '</div><div class="dash-kpi-label">Prophecies</div><div class="dash-kpi-sub">' + (proph.active || 0) + ' active · ' + (proph.confirmed || 0) + ' confirmed</div></div>';
+  const brier = acc.brier_score;
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:' + (brier !== undefined && brier <= 0.25 ? 'var(--green)' : 'var(--gold)') + '">' + (brier !== undefined ? brier.toFixed(3) : '—') + '</div><div class="dash-kpi-label">Brier Score</div><div class="dash-kpi-sub">' + (acc.rating || '') + '</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:#80cbc4">' + (health.memories || '—') + '</div><div class="dash-kpi-label">Memories</div><div class="dash-kpi-sub">' + (health.concepts || 0) + ' concepts</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--text)">' + (char.version || '—') + '</div><div class="dash-kpi-label">Version</div><div class="dash-kpi-sub">' + esc(char.name || '') + '</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:' + _dashRiskColor((wis.wisdom_index || 0) * 100) + '">' + ((wis.wisdom_index || 0) * 100).toFixed(1) + '</div><div class="dash-kpi-label">Wisdom</div><div class="dash-kpi-sub">' + (wis.calibration_report || '') + '</div></div>';
+  html += '</div>';
+
+  // ── World Feed ──
+  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">📡 Live World Feed (' + events.length + ')<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+  if (events.length === 0) {
+    html += '<div style="color:var(--text-dim);padding:12px;text-align:center">No events loaded</div>';
+  } else {
+    events.slice(0, 50).forEach(ev => {
+      const domain = ev.domain || ev.event_domain || '';
+      const sal = (ev.salience || 0);
+      html += '<div class="dash-feed-item">';
+      html += '<div class="dash-domain-dot" style="background:' + _dashDomainColor(domain) + '" title="' + esc(domain) + '"></div>';
+      html += '<div class="dash-feed-headline">' + esc(ev.headline || ev.title || '') + '</div>';
+      html += '<div class="dash-feed-meta">' + (sal * 100).toFixed(0) + '% · ' + _dashTimeAgo(ev.collected_at || ev.timestamp) + '</div>';
+      html += '</div>';
+    });
+  }
+  html += '</div></div>';
+
+  // ── Prophecies ──
+  const prophList = (d.prophecies?.items || d.prophecies?.prophecies || []).slice(0, 15);
+  if (prophList.length > 0) {
+    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">🔮 Active Prophecies (' + prophList.length + ')<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+    prophList.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    prophList.forEach(p => {
+      const conf = p.confidence || 0;
+      html += '<div class="dash-prophecy">';
+      html += '<div class="dash-prophecy-name">' + esc(p.name || p.scenario_name || '') + '</div>';
+      html += '<div class="dash-prophecy-meta"><span>⏱ ' + esc(p.timeframe || '') + '</span><span style="color:' + _dashConfColor(conf) + '">' + (conf * 100).toFixed(0) + '% conf</span><span>' + esc(p.tracking_status || '') + '</span></div>';
+      html += '<div class="dash-conf-bar"><div class="dash-conf-fill" style="width:' + (conf * 100) + '%;background:' + _dashConfColor(conf) + '"></div></div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // ── Intelligence ──
+  const intro = d.introspection || {};
+  const evoChanges = (d.core_changes?.recent || []).slice(0, 10);
+  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">📊 System Intelligence<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+
+  const metrics = [
+    { label: 'Wisdom Index', val: (wis.wisdom_index || 0), color: _dashRiskColor((wis.wisdom_index || 0) * 100) },
+    { label: 'Avg Integrity', val: (intro.avg_integrity || 0), color: _dashConfColor(intro.avg_integrity || 0) },
+    { label: 'Brier (inv)', val: brier !== undefined ? 1 - brier : 0, color: brier !== undefined && brier <= 0.25 ? 'var(--green)' : 'var(--gold)' },
+  ];
+  metrics.forEach(m => {
+    html += '<div class="dash-metric-row"><div class="dash-metric-label">' + m.label + '</div><div class="dash-metric-bar"><div class="dash-metric-fill" style="width:' + (m.val * 100) + '%;background:' + m.color + '"></div></div><div class="dash-metric-val">' + (m.val * 100).toFixed(1) + '%</div></div>';
+  });
+
+  // Failure patterns
+  const failures = intro.failure_patterns || [];
+  if (failures.length > 0) {
+    html += '<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Failure patterns:</div>';
+    failures.slice(0, 5).forEach(f => {
+      html += '<div style="font-size:11px;color:var(--red);padding:2px 0">• ' + esc(typeof f === 'string' ? f : f.pattern || JSON.stringify(f)) + '</div>';
+    });
+  }
+  html += '</div></div>';
+
+  // ── Evolution Timeline ──
+  if (evoChanges.length > 0) {
+    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">🧬 Evolution Timeline<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+    evoChanges.reverse().forEach(c => {
+      const typeColor = c.change_type === 'principle' ? '#9B59B6' : c.change_type === 'belief' ? '#4A90D9' : 'var(--gold)';
+      html += '<div class="dash-evo-item">';
+      html += '<span class="dash-evo-type" style="background:' + typeColor + '22;color:' + typeColor + '">' + esc(c.change_type || '') + '</span>';
+      html += '<div class="dash-evo-desc">' + esc((c.description || '').slice(0, 200)) + '</div>';
+      html += '<div class="dash-evo-time">' + _dashTimeAgo(c.timestamp) + '</div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  document.getElementById('dashBody').innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  LEFT DRAWER — ENTITY KNOWLEDGE GRAPH
+// ══════════════════════════════════════════════════════════════════════════
+
+let egraphOpen = false;
+let egraphNetwork = null;
+let egraphNodes = null;
+let egraphEdges = null;
+let egraphRawNodes = [];
+let _visJsLoaded = false;
+
+function toggleEgraph() {
+  egraphOpen = !egraphOpen;
+  document.getElementById('egraphDrawer').classList.toggle('open', egraphOpen);
+  document.getElementById('egraphOverlay').classList.toggle('visible', egraphOpen);
+  if (egraphOpen) {
+    _ensureVisJs().then(() => loadEgraphData());
+  } else {
+    if (egraphNetwork) { egraphNetwork.destroy(); egraphNetwork = null; }
+  }
+}
+
+function _ensureVisJs() {
+  return new Promise((resolve, reject) => {
+    if (_visJsLoaded) { resolve(); return; }
+    if (typeof vis !== 'undefined' && vis.Network) { _visJsLoaded = true; resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/vis-network/standalone/umd/vis-network.min.js';
+    s.onload = () => { _visJsLoaded = true; resolve(); };
+    s.onerror = () => reject(new Error('Failed to load vis.js'));
+    document.head.appendChild(s);
+  });
+}
+
+async function loadEgraphData() {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/entity-graph/data?max_nodes=150&min_mentions=2`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) {
+      document.getElementById('egraphContainer').innerHTML = '<div class="left-drawer-loading">Entity graph not available (HTTP ' + res.status + ')</div>';
+      return;
+    }
+    const data = await res.json();
+    renderEgraph(data);
+  } catch (e) {
+    document.getElementById('egraphContainer').innerHTML = '<div class="left-drawer-loading">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderEgraph(data) {
+  const meta = data.meta || {};
+  const rawNodes = data.nodes || [];
+  const rawEdges = data.edges || [];
+  egraphRawNodes = rawNodes;
+
+  // Stats
+  document.getElementById('egraphStats').innerHTML =
+    'Nodes: ' + meta.displayed_nodes + '/' + meta.total_nodes +
+    ' · Edges: ' + meta.displayed_edges + '/' + meta.total_edges +
+    ' · ' + (meta.headlines_ingested || 0).toLocaleString() + ' headlines';
+
+  // Legend
+  const legend = meta.type_legend || {};
+  let legendHtml = '';
+  Object.entries(legend).forEach(([type, color]) => {
+    legendHtml += '<span class="egraph-legend-item"><span class="egraph-legend-dot" style="background:' + color + '"></span>' + type + '</span>';
+  });
+  document.getElementById('egraphLegend').innerHTML = legendHtml;
+
+  // Build vis.js datasets
+  const visNodes = rawNodes.map(n => ({
+    id: n.id, label: n.label,
+    color: { background: n.color, border: n.color, highlight: { background: '#fff', border: n.color } },
+    size: n.size,
+    font: { color: '#c0c8d8', size: Math.max(10, n.size * 0.65) },
+    title: n.type + ' | ' + n.mentions + ' mentions',
+    _raw: n,
+  }));
+
+  const visEdges = rawEdges.map((e, i) => ({
+    id: i, from: e.source, to: e.target, width: e.width,
+    color: { color: 'rgba(100,140,200,0.25)', highlight: '#4A90D9' },
+    _raw: e,
+  }));
+
+  egraphNodes = new vis.DataSet(visNodes);
+  egraphEdges = new vis.DataSet(visEdges);
+
+  // Destroy previous if any
+  if (egraphNetwork) { egraphNetwork.destroy(); }
+
+  const container = document.getElementById('egraphContainer');
+  egraphNetwork = new vis.Network(container, { nodes: egraphNodes, edges: egraphEdges }, {
+    physics: {
+      solver: 'forceAtlas2Based',
+      forceAtlas2Based: {
+        gravitationalConstant: -350,
+        centralGravity: 0.004,
+        springLength: 280,
+        springConstant: 0.035,
+        damping: 0.42,
+        avoidOverlap: 0.6,
+      },
+      stabilization: { iterations: 350, updateInterval: 25 },
+      maxVelocity: 40,
+      minVelocity: 0.75,
+    },
+    interaction: { hover: true, tooltipDelay: 100, zoomView: true, dragView: true, keyboard: false },
+    nodes: { shape: 'dot', borderWidth: 2 },
+    edges: { smooth: { type: 'continuous', roundness: 0.15 }, arrows: { to: false } },
+  });
+
+  // Tooltip
+  const tooltip = document.getElementById('egraphTooltip');
+  egraphNetwork.on('hoverNode', function(params) {
+    const nd = egraphNodes.get(params.node)._raw;
+    tooltip.innerHTML = '<h3>' + esc(nd.label) + '</h3>'
+      + '<div class="kv">Type: ' + nd.type + '</div>'
+      + '<div class="kv">Mentions: ' + nd.mentions + '</div>'
+      + '<div class="kv">Activity: ' + nd.activity_score + '</div>'
+      + (nd.last_seen_iso ? '<div class="kv">Last: ' + new Date(nd.last_seen_iso).toLocaleString() + '</div>' : '');
+    tooltip.style.display = 'block';
+    tooltip.style.left = (params.event.center.x + 15) + 'px';
+    tooltip.style.top = (params.event.center.y + 15) + 'px';
+  });
+  egraphNetwork.on('blurNode', () => { tooltip.style.display = 'none'; });
+
+  // Click → headlines
+  egraphNetwork.on('click', function(params) {
+    if (params.nodes.length === 1) {
+      const nid = params.nodes[0];
+      const connected = egraphNetwork.getConnectedEdges(nid);
+      let headlines = [];
+      connected.forEach(eid => {
+        const ed = egraphEdges.get(eid)?._raw;
+        if (ed?.recent_headlines) headlines = headlines.concat(ed.recent_headlines);
+      });
+      if (headlines.length) {
+        tooltip.innerHTML = '<h3>' + esc(nid) + ' — Recent Headlines</h3>'
+          + headlines.slice(0, 8).map(h => '<div class="kv">• ' + esc(h) + '</div>').join('');
+        tooltip.style.display = 'block';
+        tooltip.style.left = (params.event.center.x + 15) + 'px';
+        tooltip.style.top = (params.event.center.y + 15) + 'px';
+      }
+    }
+  });
+
+  // Search
+  document.getElementById('egraphSearch').oninput = function(e) {
+    const q = e.target.value.toLowerCase();
+    if (!q) {
+      egraphNodes.forEach(n => egraphNodes.update({ id: n.id, hidden: false }));
+      return;
+    }
+    egraphNodes.forEach(n => {
+      const match = n.label.toLowerCase().includes(q);
+      egraphNodes.update({ id: n.id, hidden: !match, opacity: match ? 1 : 0.1 });
+    });
+    const match = egraphRawNodes.find(n => n.label.toLowerCase().includes(q));
+    if (match) egraphNetwork.focus(match.id, { scale: 1.2, animation: true });
+  };
+}
+
+// Badge init
+(async function() {
+  try {
+    const res = await fetch(`${API_BASE}/xdart/knowledge/external`);
+    if (res.ok) {
+      const d = await res.json();
+      document.getElementById('injectCountBadge').textContent = d.count || 0;
+    }
+  } catch {}
+})();
+
+/* ══════════════════════════════════════════════════════════════
+   VISION — Browser COCO-SSD (80 objects) + Server FaceNet (face ID)
+   ══════════════════════════════════════════════════════════════ */
+
+const VISION_BASE = 'http://localhost:8100';
+const XDART_API = 'http://localhost:8000';
+let visionOpen = false;
+let _cocoModel = null;
+let _visionStream = null;
+let _visionRunning = false;
+let _visionAnimId = null;
+let _visionFrameCount = 0;
+let _visionLastFpsTime = 0;
+let _visionFps = 0;
+let _visionLastSceneReport = 0;
+const SCENE_REPORT_INTERVAL = 3000;
+const FACE_CROP_INTERVAL = 2000;
+let _visionLastFaceCrop = 0;
+let _visionKnownIdentities = [];
+
+const OBJ_EMOJI = {
+  person:'\u{1F464}', bicycle:'\u{1F6B2}', car:'\u{1F697}', motorcycle:'\u{1F3CD}', airplane:'\u2708',
+  bus:'\u{1F68C}', train:'\u{1F686}', truck:'\u{1F6DB}', boat:'\u26F5', 'traffic light':'\u{1F6A6}',
+  'stop sign':'\u{1F6D1}', bench:'\u{1FA91}', bird:'\u{1F426}', cat:'\u{1F431}', dog:'\u{1F436}',
+  horse:'\u{1F434}', cow:'\u{1F404}', elephant:'\u{1F418}', bear:'\u{1F43B}', zebra:'\u{1F993}',
+  giraffe:'\u{1F992}', backpack:'\u{1F392}', umbrella:'\u2602', handbag:'\u{1F45C}', tie:'\u{1F454}',
+  suitcase:'\u{1F9F3}', bottle:'\u{1F37E}', 'wine glass':'\u{1F377}', cup:'\u2615', fork:'\u{1F374}',
+  knife:'\u{1F52A}', spoon:'\u{1F944}', bowl:'\u{1F963}', banana:'\u{1F34C}', apple:'\u{1F34E}',
+  sandwich:'\u{1F96A}', orange:'\u{1F34A}', pizza:'\u{1F355}', donut:'\u{1F369}', cake:'\u{1F382}',
+  chair:'\u{1FA91}', couch:'\u{1F6CB}', 'potted plant':'\u{1FAB4}', bed:'\u{1F6CF}',
+  'dining table':'\u{1F37D}', tv:'\u{1F4FA}', laptop:'\u{1F4BB}', mouse:'\u{1F5B1}',
+  remote:'\u{1F4F1}', keyboard:'\u2328', 'cell phone':'\u{1F4F1}',
+  oven:'\u{1F525}', sink:'\u{1F6B0}', refrigerator:'\u{1F9CA}', book:'\u{1F4D6}',
+  clock:'\u{1F550}', vase:'\u{1F3FA}', scissors:'\u2702', 'teddy bear':'\u{1F9F8}',
+  toothbrush:'\u{1FAA5}',
+};
+
+function toggleVision() {
+  visionOpen = !visionOpen;
+  document.getElementById('visionDrawer').classList.toggle('open', visionOpen);
+  document.getElementById('visionOverlay').classList.toggle('visible', visionOpen);
+  if (visionOpen && _visionRunning && !_visionAnimId) _visionDetectLoop();
+  if (!visionOpen && !_visionRunning && _visionAnimId) {
+    cancelAnimationFrame(_visionAnimId); _visionAnimId = null;
+  }
+}
+
+async function visionStart() {
+  if (_visionRunning) return;
+  const video = document.getElementById('visionVideo');
+  const btn = document.getElementById('visionStartBtn');
+  btn.textContent = '\u23F3 Loading...'; btn.disabled = true;
+
+  try {
+    _visionStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false,
+    });
+    video.srcObject = _visionStream;
+    await video.play();
+
+    if (!_cocoModel) {
+      console.log('[Vision] Loading COCO-SSD...');
+      _cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+      console.log('[Vision] COCO-SSD ready \u2014 80 object classes');
+    }
+
+    _visionRunning = true;
+    _visionFrameCount = 0;
+    _visionLastFpsTime = performance.now();
+    document.getElementById('visionDot').className = 'v-dot on';
+    document.getElementById('visionCamLabel').textContent = 'Active';
+    btn.textContent = '\u25B6 Start'; btn.disabled = false;
+
+    _visionDetectLoop();
+
+    fetch(XDART_API + '/xdart/vision/event', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_type: 'vision_started', timestamp: new Date().toISOString() }),
+    }).catch(() => {});
+
+  } catch (err) {
+    console.error('[Vision] Error:', err);
+    btn.textContent = '\u25B6 Start'; btn.disabled = false;
+    document.getElementById('visionCamLabel').textContent = 'Error: ' + err.message;
+  }
+}
+
+function visionStop() {
+  _visionRunning = false;
+  if (_visionAnimId) { cancelAnimationFrame(_visionAnimId); _visionAnimId = null; }
+  if (_visionStream) { _visionStream.getTracks().forEach(t => t.stop()); _visionStream = null; }
+  document.getElementById('visionVideo').srcObject = null;
+  const c = document.getElementById('visionCanvas');
+  c.getContext('2d').clearRect(0, 0, c.width, c.height);
+
+  document.getElementById('visionDot').className = 'v-dot off';
+  document.getElementById('visionCamLabel').textContent = 'Offline';
+  document.getElementById('visionObjCount').textContent = '0';
+  document.getElementById('visionFaceCount').textContent = '0';
+  document.getElementById('visionFPS').textContent = '0';
+  document.getElementById('visionObjList').innerHTML = '<em style="color:var(--text-dim)">\u0397 \u03ba\u03ac\u03bc\u03b5\u03c1\u03b1 \u03b4\u03b5\u03bd \u03b5\u03af\u03bd\u03b1\u03b9 \u03b5\u03bd\u03b5\u03c1\u03b3\u03ae</em>';
+
+  fetch(XDART_API + '/xdart/vision/event', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event_type: 'human_departed', timestamp: new Date().toISOString() }),
+  }).catch(() => {});
+}
+
+async function _visionDetectLoop() {
+  if (!_visionRunning || !_cocoModel) return;
+  const video = document.getElementById('visionVideo');
+  const canvas = document.getElementById('visionCanvas');
+  const ctx = canvas.getContext('2d');
+
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  }
+
+  try {
+    const predictions = await _cocoModel.detect(video);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    let faceCount = 0;
+    const objectCounts = {};
+
+    for (const pred of predictions) {
+      const [x, y, w, h] = pred.bbox;
+      const label = pred.class;
+      const score = pred.score;
+      objectCounts[label] = (objectCounts[label] || 0) + 1;
+      if (label === 'person') faceCount++;
+
+      const color = label === 'person' ? '#00ff00' : '#00ddff';
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+
+      const text = label + ' ' + (score * 100).toFixed(0) + '%';
+      ctx.font = '14px sans-serif';
+      const tm = ctx.measureText(text);
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y - 20, tm.width + 8, 20);
+      ctx.fillStyle = '#000';
+      ctx.fillText(text, x + 4, y - 5);
+    }
+
+    _visionFrameCount++;
+    const now = performance.now();
+    if (now - _visionLastFpsTime >= 1000) {
+      _visionFps = _visionFrameCount; _visionFrameCount = 0; _visionLastFpsTime = now;
+      document.getElementById('visionFPS').textContent = _visionFps;
+    }
+    document.getElementById('visionObjCount').textContent = predictions.length;
+    document.getElementById('visionFaceCount').textContent = faceCount;
+    _updateVisionObjList(objectCounts);
+
+    const nowMs = Date.now();
+    if (nowMs - _visionLastSceneReport >= SCENE_REPORT_INTERVAL && predictions.length > 0) {
+      _visionLastSceneReport = nowMs;
+      _reportScene(predictions);
+    }
+    if (nowMs - _visionLastFaceCrop >= FACE_CROP_INTERVAL && faceCount > 0) {
+      _visionLastFaceCrop = nowMs;
+      _sendFaceCrops(video, predictions.filter(p => p.class === 'person'));
+    }
+  } catch (err) {
+    console.warn('[Vision] Detection error:', err);
+  }
+
+  _visionAnimId = requestAnimationFrame(_visionDetectLoop);
+}
+
+function _updateVisionObjList(objectCounts) {
+  const el = document.getElementById('visionObjList');
+  const entries = Object.entries(objectCounts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) { el.innerHTML = '<em style="color:var(--text-dim)">\u0394\u03b5\u03bd \u03b5\u03bd\u03c4\u03bf\u03c0\u03af\u03c3\u03c4\u03b7\u03ba\u03b1\u03bd \u03b1\u03bd\u03c4\u03b9\u03ba\u03b5\u03af\u03bc\u03b5\u03bd\u03b1</em>'; return; }
+  el.innerHTML = entries.map(([cls, count]) => {
+    const emoji = OBJ_EMOJI[cls] || '\u{1F4E6}';
+    return '<div class="vision-obj-item"><span>' + emoji + ' ' + cls + '</span><span class="vision-obj-badge">' + count + '</span></div>';
+  }).join('');
+}
+
+async function _reportScene(predictions) {
+  const objects = {};
+  for (const p of predictions) {
+    if (!objects[p.class]) objects[p.class] = { count: 0, max_conf: 0 };
+    objects[p.class].count++;
+    objects[p.class].max_conf = Math.max(objects[p.class].max_conf, p.score);
+  }
+  try {
+    await fetch(XDART_API + '/xdart/vision/scene', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timestamp: new Date().toISOString(), objects, total_detections: predictions.length, source: 'browser_coco_ssd' }),
+    });
+  } catch (e) { /* XDART may not be running */ }
+}
+
+async function _sendFaceCrops(video, personDetections) {
+  if (!personDetections.length) return;
+
+  // Send the FULL video frame — MTCNN is designed to find faces in full images.
+  // Cropping person bboxes loses resolution and context, making MTCNN fail.
+  const tc = document.createElement('canvas');
+  const tctx = tc.getContext('2d');
+  tc.width = video.videoWidth;
+  tc.height = video.videoHeight;
+  tctx.drawImage(video, 0, 0);
+
+  try {
+    const blob = await new Promise(r => tc.toBlob(r, 'image/jpeg', 0.92));
+    const fd = new FormData(); fd.append('image', blob, 'full_frame.jpg');
+    const res = await fetch(VISION_BASE + '/detect', { method: 'POST', body: fd });
+    if (res.ok) {
+      const data = await res.json();
+      console.log('[Vision] /detect response:', data.faces_count, 'faces', data.faces);
+      if (data.faces && data.faces.length > 0) {
+        const identified = data.faces.filter(f => f.identity);
+        const unknown = data.faces.filter(f => !f.identity);
+
+        // Show all detected faces (identified + unknown)
+        _visionKnownIdentities = [
+          ...identified.map(f => ({ name: f.identity, confidence: f.recognition_confidence })),
+          ...unknown.map(f => ({ name: 'Άγνωστο πρόσωπο', confidence: f.detection_confidence })),
+        ];
+        _updateIdentityList();
+
+        // Report event to XDART
+        fetch(XDART_API + '/xdart/vision/event', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event_type: 'human_detected', timestamp: new Date().toISOString(),
+            faces_count: data.faces.length,
+            identified: identified.map(f => f.identity),
+            unknown_count: unknown.length,
+            details: data.faces,
+          }),
+        }).catch(() => {});
+      } else {
+        // No faces found in this frame — clear identity list
+        _visionKnownIdentities = [];
+        _updateIdentityList();
+      }
+    } else {
+      console.warn('[Vision] /detect error:', res.status, await res.text());
+    }
+  } catch (e) {
+    console.warn('[Vision] FaceNet request failed:', e.message);
+  }
+}
+
+function _updateIdentityList() {
+  const el = document.getElementById('visionIdentityList');
+  if (_visionKnownIdentities.length > 0) {
+    el.innerHTML = _visionKnownIdentities.map(id =>
+      '<div class="vision-identity-item"><span>\u{1F464} ' + id.name + '</span><span style="color:var(--accent)">' + (id.confidence * 100).toFixed(0) + '%</span></div>'
+    ).join('');
+  } else {
+    el.innerHTML = '<em style="color:var(--text-dim)">\u0394\u03b5\u03bd \u03ad\u03c7\u03bf\u03c5\u03bd \u03b5\u03bd\u03c4\u03bf\u03c0\u03b9\u03c3\u03c4\u03b5\u03af \u03c0\u03c1\u03cc\u03c3\u03c9\u03c0\u03b1 \u03b1\u03ba\u03cc\u03bc\u03b1</em>';
+  }
+}
+
+function visionSnapshot() {
+  const video = document.getElementById('visionVideo');
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(video, 0, 0);
+  ctx.drawImage(document.getElementById('visionCanvas'), 0, 0);
+  c.toBlob(blob => { window.open(URL.createObjectURL(blob), '_blank'); }, 'image/jpeg', 0.92);
+}
 
 </script>
 </body>

@@ -65,6 +65,66 @@ MAX_HISTORY_PER_PRINCIPLE = 30   # Application history entries
 
 
 # ══════════════════════════════════════════════════════════════
+#  PRINCIPLE PHILOSOPHY — configurable discovery stance
+# ══════════════════════════════════════════════════════════════
+
+PHILOSOPHY_PRESETS: dict[str, dict[str, Any]] = {
+    # BALANCED (default) — error prevention AND pattern discovery
+    "balanced": {
+        "description": "Ισορροπία μεταξύ αποφυγής λάθους και ανακάλυψης νέων μοτίβων",
+        "min_evidence_events": 2,            # Πόσα events χρειάζονται για να θεωρηθεί "pattern"
+        "discovery_temperature": 0.3,        # LLM temperature for genesis
+        "retirement_threshold": 0.25,        # Avg effectiveness for auto-retire
+        "min_uses_for_eval": 5,              # Μετρήσεις πριν το κρίνουμε
+        "auto_approve": False,               # Πάντα χρειάζεται ανθρώπινη έγκριση
+        "max_active": 30,
+        "genesis_directive": (
+            "Balance error prevention with pattern discovery. "
+            "Propose a principle if the evidence shows a RECURRING pattern (2+ events) "
+            "that is both actionable and falsifiable. "
+            "Prefer concrete procedures over vague caution."
+        ),
+    },
+    # CONSERVATIVE — focus on preventing known errors
+    "conservative": {
+        "description": "Υπερ-συντηρητική: εστίαση στην αποφυγή λάθους, ελάχιστες νέες αρχές",
+        "min_evidence_events": 3,            # Χρειάζονται 3+ παρόμοια events
+        "discovery_temperature": 0.15,       # Πιο ντετερμινιστική γένεση
+        "retirement_threshold": 0.35,        # Αυστηρότερο — αποσύρονται πιο εύκολα
+        "min_uses_for_eval": 3,              # Γρηγορότερη αξιολόγηση
+        "auto_approve": False,
+        "max_active": 20,
+        "genesis_directive": (
+            "Be VERY conservative. Only propose a principle if there is OVERWHELMING evidence "
+            "of a REPEATED, SYSTEMATIC error pattern (3+ events, clear causal mechanism). "
+            "The principle must PREVENT a known failure mode. Do NOT propose speculative or "
+            "exploratory principles. If in doubt, do NOT propose."
+        ),
+    },
+    # EXPLORATORY — actively seek new patterns, tolerate false positives
+    "exploratory": {
+        "description": "Επιθετική ανακάλυψη: ενεργή αναζήτηση νέων μοτίβων, ανοχή σε ψευδή θετικά",
+        "min_evidence_events": 1,            # Ακόμα και 1 event μπορεί να γεννήσει αρχή
+        "discovery_temperature": 0.5,        # Πιο δημιουργική γένεση
+        "retirement_threshold": 0.20,        # Πιο επιεικές — δίνει χρόνο
+        "min_uses_for_eval": 7,              # Περισσότερος χρόνος δοκιμής
+        "auto_approve": True,                # Νέες αρχές ενεργοποιούνται αυτόματα σε δοκιμαστική περίοδο
+        "max_active": 40,
+        "genesis_directive": (
+            "Be EXPLORATORY and CREATIVE. Actively seek new reasoning patterns, "
+            "even from a SINGLE interesting event if the insight is non-obvious. "
+            "The goal is to discover useful heuristics, not just prevent errors. "
+            "Propose principles that might improve analysis quality through novel "
+            "pattern recognition, cross-domain transfer, or counter-intuitive insights. "
+            "False positives are acceptable — weak principles will be auto-retired."
+        ),
+    },
+}
+
+PHILOSOPHY_PATH = BASE_DIR / "principle_philosophy.json"
+
+
+# ══════════════════════════════════════════════════════════════
 #  DATA MODEL
 # ══════════════════════════════════════════════════════════════
 
@@ -138,12 +198,84 @@ class DynamicPrinciple:
 #  PRINCIPLE GENESIS — LLM creates principles from evidence
 # ══════════════════════════════════════════════════════════════
 
+WISDOM_PROMPT = """\
+You are the WISDOM EXTRACTION engine of Αίολος, an AI intelligence analyst.
+
+Your job is DIFFERENT from error detection. You analyze SUCCESSFUL analyses \
+and extract the underlying principle that MADE THEM WORK — so the system \
+can consciously replicate that success.
+
+Most systems only learn from failure. You learn from SUCCESS.
+
+=== CURRENT DISCOVERY PHILOSOPHY ===
+{philosophy_directive}
+
+=== EVIDENCE OF SUCCESS ===
+{evidence}
+
+=== EXISTING STATIC AXIOMS (do NOT duplicate these) ===
+{existing_axioms}
+
+=== EXISTING DYNAMIC PRINCIPLES (do NOT duplicate these) ===
+{existing_principles}
+
+=== PERFORMANCE DATA ===
+- Brier Score: {brier_score}
+- Avg Epistemic Integrity: {avg_integrity}
+- Prophecies Confirmed: {prophecies_confirmed}
+- Recent Successes: {recent_successes}
+
+=== YOUR TASK ===
+1. What analytical PATTERN led to this success?
+2. Is this a generalizable approach (not just luck)?
+3. Can you formulate it as a REUSABLE principle?
+
+A good success-born principle:
+  ✓ Captures WHY the analysis worked (the mechanism, not the topic)
+  ✓ Is generalizable across domains (not just "Iran analysis should use X")
+  ✓ Has clear trigger conditions (when this approach is appropriate)
+  ✓ Includes a concrete PROCEDURE
+  ✓ Can be applied to NEW problems (not only the same kind)
+
+Examples of good wisdom-principles:
+  - "When signals come from 3+ independent domains, treat convergence as stronger \
+evidence than any single high-confidence signal" (born from cross-domain success)
+  - "When historical parallels diverge from current trajectory, the divergence \
+itself is more informative than the parallel" (born from scenario success)
+
+Respond ONLY with valid JSON:
+{{
+    "principle_needed": true|false,
+    "reasoning": "Why this success pattern is/isn't worth codifying",
+    "principle": {{
+        "title": "Short memorable name (3-5 words)",
+        "principle_text": "The principle statement (1-2 sentences, max 200 chars)",
+        "procedure": "Step-by-step procedure to follow (max 500 chars)",
+        "domain": "GEOPOLITICAL|ECONOMIC|MARKET|TECHNOLOGY|META|EPISTEMIC",
+        "trigger_conditions": ["condition1", "condition2"],
+        "non_applicable_conditions": ["exception1", "exception2"],
+        "applies_to_phases": ["phase names"],
+        "expected_effect": "What measurable improvement when applied elsewhere",
+        "measurement_metric": "How to measure",
+        "born_from": "success_extraction",
+        "born_from_pattern": "The specific success pattern that triggered this",
+        "related_axiom": "AX-XX if related, else empty string"
+    }},
+    "confidence": 0.0-1.0
+}}
+
+If no principle needed, set principle_needed to false and principle to null."""
+
+
 GENESIS_PROMPT = """\
 You are the principle discovery engine of Αίολος, an AI intelligence analyst.
 
 Your job: analyze patterns of error, bias, or suboptimal reasoning and \
 PROPOSE a new operating principle that would prevent the same mistake \
-from repeating.
+from repeating — OR discover useful new heuristics.
+
+=== CURRENT DISCOVERY PHILOSOPHY ===
+{philosophy_directive}
 
 === EVIDENCE OF PATTERN ===
 {evidence}
@@ -238,13 +370,102 @@ class PrincipleRegistry:
     """Manages the lifecycle of dynamic principles.
 
     Handles: creation, approval, activation, tracking, retirement.
+
+    Philosophy modes control how aggressively the registry discovers new principles:
+      - "balanced"     — default, requires 2+ evidence events, human approval
+      - "conservative" — ultra-conservative, 3+ evidence events, higher retire threshold
+      - "exploratory"  — aggressive discovery, even 1 event suffices, auto-approve with probation
     """
 
     def __init__(self, llm: LLMClient):
         self.llm = llm
         self._principles: dict[str, DynamicPrinciple] = {}
         self._next_id: int = 1
+        self._philosophy: dict[str, Any] = dict(PHILOSOPHY_PRESETS["balanced"])
+        self._philosophy_mode: str = "balanced"
+        self._load_philosophy()
         self._load()
+
+    # ──────────────────────────────────────────────────────────
+    #  PHILOSOPHY — configurable discovery stance
+    # ──────────────────────────────────────────────────────────
+
+    def _load_philosophy(self) -> None:
+        """Load philosophy from disk or use default balanced."""
+        if PHILOSOPHY_PATH.exists():
+            try:
+                data = json.loads(PHILOSOPHY_PATH.read_text(encoding="utf-8"))
+                mode = data.get("mode", "balanced")
+                if mode in PHILOSOPHY_PRESETS:
+                    self._philosophy_mode = mode
+                    self._philosophy = dict(PHILOSOPHY_PRESETS[mode])
+                    # Apply any custom overrides saved alongside
+                    for key in ("min_evidence_events", "discovery_temperature",
+                                "retirement_threshold", "min_uses_for_eval",
+                                "auto_approve", "max_active"):
+                        if key in data.get("overrides", {}):
+                            self._philosophy[key] = data["overrides"][key]
+                    logger.info("[PrincipleRegistry] Philosophy loaded: %s", mode)
+                else:
+                    logger.warning("[PrincipleRegistry] Unknown philosophy '%s', using balanced", mode)
+            except Exception as e:
+                logger.warning("[PrincipleRegistry] Philosophy load failed: %s", e)
+
+    def _save_philosophy(self) -> None:
+        """Persist current philosophy to disk."""
+        data = {
+            "mode": self._philosophy_mode,
+            "overrides": {},
+            "changed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            PHILOSOPHY_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.error("[PrincipleRegistry] Philosophy save failed: %s", e)
+
+    def set_philosophy(self, mode: str) -> dict:
+        """Switch principle discovery philosophy.
+
+        Args:
+            mode: "balanced", "conservative", or "exploratory"
+
+        Returns:
+            Dict with new mode and description, or error
+        """
+        if mode not in PHILOSOPHY_PRESETS:
+            return {"error": f"Unknown mode '{mode}'. Options: balanced, conservative, exploratory"}
+
+        old_mode = self._philosophy_mode
+        self._philosophy_mode = mode
+        self._philosophy = dict(PHILOSOPHY_PRESETS[mode])
+        self._save_philosophy()
+
+        self._journal({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "philosophy_change",
+            "from": old_mode,
+            "to": mode,
+        })
+
+        logger.info("[PrincipleRegistry] Philosophy changed: %s → %s", old_mode, mode)
+        return {
+            "mode": mode,
+            "description": self._philosophy["description"],
+            "previous_mode": old_mode,
+            "settings": {k: v for k, v in self._philosophy.items() if k != "description"},
+        }
+
+    def get_philosophy(self) -> dict:
+        """Return current philosophy mode and settings."""
+        return {
+            "mode": self._philosophy_mode,
+            "description": self._philosophy["description"],
+            "settings": {k: v for k, v in self._philosophy.items() if k != "description"},
+            "available_modes": list(PHILOSOPHY_PRESETS.keys()),
+        }
 
     def _load(self) -> None:
         """Load from disk."""
@@ -276,6 +497,7 @@ class PrincipleRegistry:
             "principles": {pid: p.to_dict() for pid, p in self._principles.items()},
             "next_id": self._next_id,
             "last_updated": datetime.now(timezone.utc).isoformat(),
+            "philosophy_mode": self._philosophy_mode,
             "stats": {
                 "total": len(self._principles),
                 "active": sum(1 for p in self._principles.values() if p.status == "active"),
@@ -323,14 +545,18 @@ class PrincipleRegistry:
         """
         t0 = time.perf_counter()
 
-        # Guard: max active principles
-        active_count = sum(1 for p in self._principles.values() if p.status == "active")
-        if active_count >= MAX_ACTIVE_PRINCIPLES:
-            logger.info("[PrincipleRegistry] Max active principles reached (%d), skipping", active_count)
+        # Guard: max active principles (philosophy-aware)
+        max_active = self._philosophy.get("max_active", MAX_ACTIVE_PRINCIPLES)
+        active_count = sum(1 for p in self._principles.values() if p.status in ("active", "strengthened", "probation"))
+        if active_count >= max_active:
+            logger.info("[PrincipleRegistry] Max active principles reached (%d/%d), skipping", active_count, max_active)
             return None
 
         # Build existing principles text for dedup
         existing_text = self._format_existing_principles()
+
+        # Build philosophy-specific genesis directive
+        philosophy_directive = self._philosophy.get("genesis_directive", "")
 
         prompt = GENESIS_PROMPT.format(
             evidence=evidence[:3000],
@@ -343,14 +569,18 @@ class PrincipleRegistry:
                 performance_data.get("failure_patterns", [])[:5],
                 ensure_ascii=False,
             ),
+            philosophy_directive=philosophy_directive,
         )
+
+        # Use philosophy-specific temperature
+        discovery_temp = self._philosophy.get("discovery_temperature", 0.3)
 
         try:
             result = self.llm.call_json(
                 system_prompt=prompt,
                 user_prompt="Analyze the evidence and decide whether a new operating principle is warranted.",
                 max_tokens=4096,
-                temperature=0.3,
+                temperature=discovery_temp,
                 thinking=False,
             )
         except Exception as e:
@@ -391,6 +621,10 @@ class PrincipleRegistry:
         principle_id = f"DP-{self._next_id:03d}"
         self._next_id += 1
 
+        # Philosophy determines initial status
+        auto_approve = self._philosophy.get("auto_approve", False)
+        initial_status = "probation" if auto_approve else "proposed"
+
         principle = DynamicPrinciple(
             id=principle_id,
             title=p_data.get("title", "Untitled"),
@@ -407,8 +641,10 @@ class PrincipleRegistry:
             }],
             expected_effect=p_data.get("expected_effect", ""),
             measurement_metric=p_data.get("measurement_metric", ""),
-            status="proposed",
+            status=initial_status,
             created_at=datetime.now(timezone.utc).isoformat(),
+            activated_at=datetime.now(timezone.utc).isoformat() if auto_approve else None,
+            approved_by="auto_philosophy_exploratory" if auto_approve else "",
             born_from=p_data.get("born_from", "introspection"),
             born_from_pattern=p_data.get("born_from_pattern", ""),
             related_axiom=p_data.get("related_axiom", ""),
@@ -426,20 +662,174 @@ class PrincipleRegistry:
             "principle_text": principle.principle_text,
             "confidence": result.get("confidence", 0),
             "elapsed": round(elapsed, 2),
+            "philosophy_mode": self._philosophy_mode,
+            "initial_status": initial_status,
         })
 
         logger.info(
-            "[PrincipleRegistry] NEW PRINCIPLE proposed: %s — %s (%.2fs)",
-            principle_id, principle.title, elapsed,
+            "[PrincipleRegistry] NEW PRINCIPLE %s: %s — %s (%.2fs, philosophy=%s)",
+            initial_status, principle_id, principle.title, elapsed, self._philosophy_mode,
         )
 
         if callback:
+            status_msg = "probation — auto-activated (exploratory)" if auto_approve else "proposed — awaiting approval"
             callback("principle_proposed", {
                 "id": principle_id,
                 "title": principle.title,
                 "principle_text": principle.principle_text,
                 "domain": principle.domain,
-                "status": "proposed — awaiting approval",
+                "status": status_msg,
+                "philosophy_mode": self._philosophy_mode,
+            })
+
+        return principle
+
+    def discover_from_success(
+        self,
+        success_evidence: str,
+        performance_data: dict,
+        existing_axioms_text: str = "",
+        callback=None,
+    ) -> "DynamicPrinciple | None":
+        """Extract a principle from SUCCESSFUL analysis — learn from what WORKED.
+
+        Unlike discover() which learns from errors, this learns from success:
+        confirmed prophecies, high-integrity analyses, accurate predictions.
+
+        Args:
+            success_evidence: What succeeded and how (distillate, confirmed prophecy, etc.)
+            performance_data: Brier, integrity, confirmed count, etc.
+            existing_axioms_text: Static axioms (to avoid duplication)
+            callback: SSE callback
+
+        Returns:
+            New DynamicPrinciple if wisdom extracted, else None
+        """
+        t0 = time.perf_counter()
+
+        # Guard: max active principles
+        max_active = self._philosophy.get("max_active", MAX_ACTIVE_PRINCIPLES)
+        active_count = sum(1 for p in self._principles.values()
+                          if p.status in ("active", "strengthened", "probation"))
+        if active_count >= max_active:
+            return None
+
+        existing_text = self._format_existing_principles()
+        philosophy_directive = self._philosophy.get("genesis_directive", "")
+
+        prompt = WISDOM_PROMPT.format(
+            evidence=success_evidence[:3000],
+            existing_axioms=existing_axioms_text[:2000] or "(not provided)",
+            existing_principles=existing_text[:2000] or "(none yet)",
+            brier_score=performance_data.get("brier_score", "N/A"),
+            avg_integrity=performance_data.get("avg_integrity", "N/A"),
+            prophecies_confirmed=performance_data.get("prophecies_confirmed", "N/A"),
+            recent_successes=json.dumps(
+                performance_data.get("recent_successes", [])[:5],
+                ensure_ascii=False,
+            ),
+            philosophy_directive=philosophy_directive,
+        )
+
+        discovery_temp = self._philosophy.get("discovery_temperature", 0.3)
+
+        try:
+            result = self.llm.call_json(
+                system_prompt=prompt,
+                user_prompt="Analyze this successful analysis and extract a reusable operating principle.",
+                max_tokens=4096,
+                temperature=discovery_temp,
+                thinking=False,
+            )
+        except Exception as e:
+            logger.warning("[PrincipleRegistry] Wisdom extraction LLM call failed: %s", e)
+            return None
+
+        elapsed = time.perf_counter() - t0
+
+        if not result.get("principle_needed"):
+            logger.info(
+                "[PrincipleRegistry] No wisdom principle needed (%.2fs): %s",
+                elapsed, result.get("reasoning", ""),
+            )
+            self._journal({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "wisdom_extraction_skip",
+                "reasoning": result.get("reasoning", ""),
+                "elapsed": round(elapsed, 2),
+            })
+            return None
+
+        p_data = result.get("principle", {})
+        if not p_data:
+            return None
+
+        principle_text = p_data.get("principle_text", "")
+        if not principle_text or len(principle_text) > MAX_PRINCIPLE_CHARS:
+            return None
+
+        if self._is_duplicate(principle_text):
+            logger.info("[PrincipleRegistry] Duplicate wisdom principle detected, skipping")
+            return None
+
+        principle_id = f"DP-{self._next_id:03d}"
+        self._next_id += 1
+
+        auto_approve = self._philosophy.get("auto_approve", False)
+        initial_status = "probation" if auto_approve else "proposed"
+
+        principle = DynamicPrinciple(
+            id=principle_id,
+            title=p_data.get("title", "Untitled"),
+            principle_text=principle_text,
+            procedure=p_data.get("procedure", "")[:500],
+            domain=p_data.get("domain", "META"),
+            trigger_conditions=p_data.get("trigger_conditions", []),
+            non_applicable_conditions=p_data.get("non_applicable_conditions", []),
+            applies_to_phases=p_data.get("applies_to_phases", []),
+            evidence=[{
+                "source": "success_extraction",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "summary": success_evidence[:500],
+            }],
+            expected_effect=p_data.get("expected_effect", ""),
+            measurement_metric=p_data.get("measurement_metric", ""),
+            status=initial_status,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            activated_at=datetime.now(timezone.utc).isoformat() if auto_approve else None,
+            approved_by="auto_philosophy_exploratory" if auto_approve else "",
+            born_from="success_extraction",
+            born_from_pattern=p_data.get("born_from_pattern", ""),
+            related_axiom=p_data.get("related_axiom", ""),
+        )
+
+        self._principles[principle_id] = principle
+        self._save()
+
+        self._journal({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "wisdom_extraction",
+            "principle_id": principle_id,
+            "title": principle.title,
+            "domain": principle.domain,
+            "principle_text": principle.principle_text,
+            "confidence": result.get("confidence", 0),
+            "elapsed": round(elapsed, 2),
+            "philosophy_mode": self._philosophy_mode,
+        })
+
+        logger.info(
+            "[PrincipleRegistry] WISDOM PRINCIPLE %s: %s — %s (%.2fs)",
+            principle_id, principle.title, principle.principle_text[:80], elapsed,
+        )
+
+        if callback:
+            callback("wisdom_principle_proposed", {
+                "id": principle_id,
+                "title": principle.title,
+                "principle_text": principle.principle_text,
+                "domain": principle.domain,
+                "born_from": "success_extraction",
             })
 
         return principle
@@ -449,13 +839,13 @@ class PrincipleRegistry:
     # ──────────────────────────────────────────────────────────
 
     def approve(self, principle_id: str, approved_by: str = "human") -> dict:
-        """Approve a proposed principle — makes it active."""
+        """Approve a proposed or probation principle — makes it fully active."""
         if principle_id not in self._principles:
             return {"error": "Principle not found"}
 
         p = self._principles[principle_id]
-        if p.status != "proposed":
-            return {"error": f"Principle must be 'proposed', is '{p.status}'"}
+        if p.status not in ("proposed", "probation"):
+            return {"error": f"Principle must be 'proposed' or 'probation', is '{p.status}'"}
 
         p.status = "active"
         p.activated_at = datetime.now(timezone.utc).isoformat()
@@ -513,7 +903,7 @@ class PrincipleRegistry:
             return None
 
         p = self._principles[principle_id]
-        if p.status not in ("active", "strengthened"):
+        if p.status not in ("active", "strengthened", "probation"):
             return None
 
         p.application_count += 1
@@ -580,27 +970,43 @@ class PrincipleRegistry:
     def auto_retire(self) -> list[str]:
         """Auto-retire principles that consistently underperform.
 
+        Uses philosophy-aware retirement threshold.
         Returns list of retired principle IDs.
         """
+        retire_threshold = self._philosophy.get("retirement_threshold", RETIREMENT_THRESHOLD)
+        min_uses = self._philosophy.get("min_uses_for_eval", MIN_USES_FOR_EVAL)
+
         retired = []
         for pid, p in self._principles.items():
-            if p.status in ("active", "weakened") and p.should_retire:
+            if p.status not in ("active", "weakened", "probation"):
+                continue
+            avg = p.avg_effectiveness
+            if avg is None:
+                continue
+            if len(p.effectiveness_scores) < min_uses:
+                continue
+            if avg < retire_threshold:
                 p.status = "retired"
                 p.retired_at = datetime.now(timezone.utc).isoformat()
-                p.retirement_reason = f"Auto-retired: avg effectiveness {p.avg_effectiveness:.2f} < {RETIREMENT_THRESHOLD}"
+                p.retirement_reason = (
+                    f"Auto-retired: avg effectiveness {avg:.2f} < {retire_threshold} "
+                    f"(philosophy={self._philosophy_mode})"
+                )
                 retired.append(pid)
 
                 self._journal({
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "type": "auto_retirement",
                     "principle_id": pid,
-                    "avg_effectiveness": p.avg_effectiveness,
+                    "avg_effectiveness": avg,
                     "application_count": p.application_count,
+                    "philosophy_mode": self._philosophy_mode,
+                    "retirement_threshold": retire_threshold,
                 })
 
                 logger.info(
-                    "[PrincipleRegistry] AUTO-RETIRED %s: %s (avg=%.2f, uses=%d)",
-                    pid, p.title, p.avg_effectiveness, p.application_count,
+                    "[PrincipleRegistry] AUTO-RETIRED %s: %s (avg=%.2f, uses=%d, threshold=%.2f)",
+                    pid, p.title, avg, p.application_count, retire_threshold,
                 )
 
         if retired:
@@ -623,7 +1029,7 @@ class PrincipleRegistry:
         """
         results = []
         for p in self._principles.values():
-            if p.status not in ("active", "strengthened"):
+            if p.status not in ("active", "strengthened", "probation"):
                 continue
             if phase in p.applies_to_phases:
                 if domain and p.domain != domain and p.domain != "META" and p.domain != "EPISTEMIC":
@@ -651,7 +1057,7 @@ class PrincipleRegistry:
         lines = ["\n=== DYNAMIC OPERATING PRINCIPLES (learned from experience) ===\n"]
 
         for p in principles:
-            strength = "★" if p.status == "strengthened" else ""
+            strength = "★" if p.status == "strengthened" else "⟐" if p.status == "probation" else ""
             avg = f" (effectiveness: {p.avg_effectiveness:.0%})" if p.avg_effectiveness is not None else ""
             lines.append(f"[{p.id}] {strength}{p.title}{avg}")
             lines.append(f"  Principle: {p.principle_text}")
@@ -672,17 +1078,18 @@ class PrincipleRegistry:
         return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
 
     def get_stats(self) -> dict:
-        """Summary statistics."""
+        """Summary statistics including philosophy mode."""
         total = len(self._principles)
         active = sum(1 for p in self._principles.values() if p.status == "active")
         strengthened = sum(1 for p in self._principles.values() if p.status == "strengthened")
         proposed = sum(1 for p in self._principles.values() if p.status == "proposed")
         retired = sum(1 for p in self._principles.values() if p.status == "retired")
         weakened = sum(1 for p in self._principles.values() if p.status == "weakened")
+        probation = sum(1 for p in self._principles.values() if p.status == "probation")
 
         avg_effectiveness_all = None
         scored = [p.avg_effectiveness for p in self._principles.values()
-                  if p.avg_effectiveness is not None and p.status in ("active", "strengthened")]
+                  if p.avg_effectiveness is not None and p.status in ("active", "strengthened", "probation")]
         if scored:
             avg_effectiveness_all = sum(scored) / len(scored)
 
@@ -693,8 +1100,11 @@ class PrincipleRegistry:
             "proposed": proposed,
             "weakened": weakened,
             "retired": retired,
+            "probation": probation,
             "avg_effectiveness": avg_effectiveness_all,
             "pending_approval": proposed,
+            "philosophy_mode": self._philosophy_mode,
+            "philosophy_description": self._philosophy.get("description", ""),
         }
 
     def get_pending_approvals(self) -> list[dict]:
@@ -750,7 +1160,9 @@ class PrincipleRegistry:
         stats = self.get_stats()
         lines = [
             f"Dynamic Principle Registry: {stats['active']} active, "
-            f"{stats['strengthened']} strengthened, {stats['proposed']} proposed",
+            f"{stats['strengthened']} strengthened, {stats['proposed']} proposed, "
+            f"{stats.get('probation', 0)} probation",
+            f"  Philosophy mode: {self._philosophy_mode} — {self._philosophy.get('description', '')}",
         ]
 
         for p in self._principles.values():

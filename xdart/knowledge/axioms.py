@@ -1,11 +1,12 @@
 """
-XDART-Φ × XHEART — The 11 Universal Axioms
+XDART-Φ × XHEART — The 12 Universal Axioms
 
 Αυτά τα αξιώματα δεν είναι κανόνες. Είναι φακοί.
 Κάθε ένα αλλάζει τον τρόπο που το σύστημα ΒΛΕΠΕΙ — όχι τι ξέρει.
 
 Πηγή: MedDiscovery Wisdom (5 αρχικά) + XDART-Φ extensions (3 νέα)
        + Financial-Macro extensions (3 νέα — AX-09, AX-10, AX-11)
+       + Cross-Domain Fusion (1 νέο — AX-12)
 """
 
 from dataclasses import dataclass
@@ -219,6 +220,31 @@ AXIOMS: list[Axiom] = [
         ),
         applies_to_phases=[0, 1, 2, 3],
     ),
+
+    # ──────────────────────────────────────────────────────────
+    # 12. CROSS-DOMAIN SYNTHESIS — The Fusion Axiom [NEW — CDSFE]
+    # ──────────────────────────────────────────────────────────
+    Axiom(
+        id="AX-12",
+        name_el="Διαπεδιακή Σύνθεση",
+        name_en="Cross-Domain Synthesis",
+        principle=(
+            "Η αξία δεν βρίσκεται σε κανένα μεμονωμένο domain — βρίσκεται στη ΣΥΝΔΕΣΗ μεταξύ domains. "
+            "Ένα γεγονός σε ένα πεδίο είναι είδηση. Η ΣΥΓΚΛΙΣΗ γεγονότων σε πολλά πεδία είναι πρόβλεψη."
+        ),
+        explanation=(
+            "Μια yield curve inversion μόνη της = Bloomberg terminal. "
+            "Ένα ACLED spike μόνο του = think tank report. "
+            "Αλλά yield curve inversion + ACLED spike + consumer sentiment drop + "
+            "infrastructure chokepoint pressure = μοναδικό συμπέρασμα που κανείς δεν εξάγει. "
+            "5 domains — GEOPOLITICAL, ECONOMIC, MARKET, SOCIAL, TECHNOLOGY — "
+            "κάθε ένα βλέπει ένα κομμάτι. Η ΔΙΑΣΤΑΥΡΩΣΗ βλέπει το σύνολο. "
+            "ΚΑΝΟΝΑΣ: Σε κάθε ανάλυση, ρώτα — ποια ΑΛΛΑ domains αντιδρούν "
+            "στο ίδιο φαινόμενο; Αν μόνο ένα domain αντιδρά, πιθανώς δεν "
+            "είναι σημαντικό. Αν 3+ domains αντιδρούν, είναι σχεδόν σίγουρα σημαντικό."
+        ),
+        applies_to_phases=[0, 1, 2, 3],
+    ),
 ]
 
 
@@ -229,7 +255,7 @@ def format_axioms_for_prompt(phase: int | None = None) -> str:
         phase: If given, only include axioms that apply to this phase.
                If None, include all axioms.
     """
-    lines = ["=== THE 11 UNIVERSAL AXIOMS OF XDART-Φ ===\n"]
+    lines = ["=== THE 12 UNIVERSAL AXIOMS OF XDART-Φ ===\n"]
 
     for ax in AXIOMS:
         if phase is not None and phase not in ax.applies_to_phases:

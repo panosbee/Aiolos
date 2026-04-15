@@ -32,6 +32,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -69,7 +70,7 @@ SIGNAL_WEIGHTS = {
     "curiosity_finding": 0.20,       # Curiosity exploration result
     "prophecy_resolved": 0.40,       # Prediction confirmed/disconfirmed
     "self_evolution": 0.15,          # System self-diagnosis
-    "economic_shift": 0.20,          # Economic indicator change
+    "economic_shift": 0.35,          # Economic indicator change (FRED, ECB, calendar)
     "infrastructure_cascade": 0.35,  # Infrastructure dependency triggered
     "financial_anomaly": 0.45,       # Market anomaly (VIX spike, crash, etc.)
 }
@@ -78,9 +79,11 @@ SIGNAL_WEIGHTS = {
 SIGNAL_HALF_LIFE = 14400  # 4 hours — signal loses half its weight in 4h
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  IMPACT SCORING — determines if a pattern is geopolitically significant
-#  enough to warrant notification. Replaces volume-based alert fatigue
-#  with scope/entity-aware intelligence filtering.
+#  IMPACT SCORING — determines if a pattern is strategically significant
+#  enough to warrant notification. Assesses ALL domains equally:
+#  geopolitical, economic, market, social, technology.
+#  Cross-domain patterns (2+ domains) get a BONUS — that's where unique
+#  insights live.
 # ══════════════════════════════════════════════════════════════════════════════
 
 IMPACT_THRESHOLD = 0.60  # Pattern must score ≥ this to fire notification
@@ -154,6 +157,17 @@ _ECONOMIC_KEYWORDS = frozenset({
     "stock market", "bond yield", "treasury", "deficit",
     "trade war", "tariff", "sanctions", "oil price", "commodity",
     "currency", "devaluation", "stimulus", "quantitative",
+    # Cross-domain bridge terms (geo+econ coupling)
+    "economic sanctions", "trade deficit", "debt crisis",
+    "energy prices", "supply chain", "export ban", "import",
+    "foreign investment", "capital flight", "sovereign debt",
+    "credit rating", "downgrade", "austerity", "fiscal",
+    "monetary policy", "rate decision", "basis points",
+    "economic growth", "economic contraction", "stagflation",
+    "dollar", "yuan", "euro ", "yen ", "ruble",
+    "brent", "crude", "natural gas", "lng",
+    "food prices", "wheat", "grain", "fertilizer",
+    "supply disruption", "shipping", "freight",
 })
 
 # Natural disaster indicators (severe events with humanitarian/economic cascade)
@@ -186,6 +200,130 @@ _NOISE_WORDS = frozenset({
     "what", "which", "who", "whom", "whose", "he", "she", "they", "them",
     "we", "you", "your", "our", "my", "us", "him",
 })
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CROSS-DOMAIN SIGNAL FUSION ENGINE (CDSFE)
+#
+#  The unique value of Aiolos is NOT single-domain analysis — it's the
+#  COMBINATION of domains. A yield curve inversion alone is Bloomberg.
+#  An ACLED spike alone is a think tank. But yield curve inversion +
+#  ACLED spike + consumer sentiment drop + Hormuz chokepoint pressure
+#  = a unique conclusion that nobody else can make.
+#
+#  5 domains, treated equally:
+#    GEOPOLITICAL — conflict, diplomacy, alliances, power shifts
+#    ECONOMIC     — macro indicators, monetary policy, trade, debt
+#    MARKET       — asset prices, sentiment, flows, anomalies
+#    SOCIAL       — protests, unrest, migration, humanitarian, public mood
+#    TECHNOLOGY   — AI, cyber, infrastructure, energy transition, chips
+#
+#  Scoring:
+#    1 domain   = routine observation (no bonus)
+#    2 domains  = cross-domain correlation (+0.12)
+#    3+ domains = high-value multi-domain insight (+0.20)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Domain classification keywords — used to tag each signal/pattern
+_DOMAIN_KEYWORDS: dict[str, frozenset[str]] = {
+    "GEOPOLITICAL": frozenset({
+        "war", "invasion", "military", "troops", "missile", "airstrike",
+        "ceasefire", "peace treaty", "nato", "coup", "assassination",
+        "diplomatic", "embassy", "alliance", "territorial", "border",
+        "occupation", "blockade", "proxy war", "arms deal", "nuclear",
+        "sanction", "sanctions", "espionage", "intelligence",
+        "conflict", "escalation", "de-escalation", "negotiations",
+    }),
+    "ECONOMIC": frozenset({
+        "gdp", "inflation", "deflation", "recession", "rate cut", "rate hike",
+        "central bank", "fed ", "ecb", "monetary policy", "fiscal",
+        "trade deficit", "trade war", "tariff", "export", "import",
+        "debt ceiling", "sovereign debt", "bond yield", "treasury",
+        "quantitative", "stimulus", "austerity", "unemployment",
+        "economic growth", "economic contraction", "cpi", "ppi",
+        "budget", "deficit", "surplus", "credit rating", "downgrade",
+        "interest rate", "basis points", "rate decision",
+        "bailout", "default", "restructuring",
+    }),
+    "MARKET": frozenset({
+        "stock market", "wall street", "dow", "nasdaq", "s&p",
+        "crash", "flash crash", "vix", "volatility", "bear market",
+        "bull market", "ipo", "earnings", "market cap", "index",
+        "bitcoin", "crypto", "commodity", "oil price", "gold price",
+        "brent", "crude", "natural gas", "wheat", "grain",
+        "currency", "dollar", "euro ", "yuan", "yen ", "ruble",
+        "devaluation", "capital flight", "market sentiment",
+        "bond market", "credit spread", "yield curve",
+        "investor", "trading", "liquidity",
+    }),
+    "SOCIAL": frozenset({
+        "protest", "demonstration", "riot", "uprising", "revolution",
+        "civil unrest", "mass protest", "strike", "labor",
+        "refugee", "migration", "asylum", "displaced",
+        "famine", "hunger", "food crisis", "water crisis",
+        "pandemic", "epidemic", "outbreak", "public health",
+        "inequality", "poverty", "cost of living",
+        "election", "vote", "referendum", "democracy",
+        "human rights", "civil liberties", "censorship",
+        "humanitarian", "aid", "relief", "ngo",
+    }),
+    "TECHNOLOGY": frozenset({
+        "cyber attack", "hack", "ransomware", "data breach",
+        "artificial intelligence", "ai ", "machine learning",
+        "semiconductor", "chip", "microchip", "foundry",
+        "quantum", "quantum computing", "encryption",
+        "space", "satellite", "launch", "orbit",
+        "5g", "6g", "infrastructure", "subsea cable",
+        "drone", "autonomous", "robotics",
+        "tech war", "export control", "chip ban",
+        "biotech", "gene", "crispr",
+        "renewable", "solar", "nuclear energy", "fusion",
+        "surveillance", "privacy", "regulation",
+    }),
+}
+
+# Source types that automatically indicate a domain
+_SOURCE_TYPE_DOMAINS: dict[str, str] = {
+    "economic_shift": "ECONOMIC",
+    "financial_anomaly": "MARKET",
+    "infrastructure_cascade": "TECHNOLOGY",
+    "security_event": "GEOPOLITICAL",
+    "perception_event": "GEOPOLITICAL",
+    "social_disruption": "SOCIAL",
+    "tech_disruption": "TECHNOLOGY",
+    "curiosity_finding": "GENERAL",
+    "prophecy_resolved": "GENERAL",
+}
+
+
+def _classify_signal_domain(headline: str, source_type: str) -> set[str]:
+    """Classify a single signal into one or more domains."""
+    domains: set[str] = set()
+    text = headline.lower()
+
+    # Source type gives a strong domain indicator
+    if source_type in _SOURCE_TYPE_DOMAINS:
+        domains.add(_SOURCE_TYPE_DOMAINS[source_type])
+
+    # Keyword matching across all domains
+    for domain, keywords in _DOMAIN_KEYWORDS.items():
+        matches = sum(1 for kw in keywords if kw in text)
+        if matches >= 1:
+            domains.add(domain)
+
+    return domains or {"GENERAL"}  # default fallback — non-matching signals are GENERAL, not GEOPOLITICAL
+
+
+def _classify_pattern_domains(pattern: "EmergentPattern") -> set[str]:
+    """Classify a pattern's domains based on ALL its signals.
+
+    A pattern that contains signals from multiple domains is a
+    cross-domain pattern — these are the most valuable insights.
+    """
+    domains: set[str] = set()
+    for signal in pattern.signals:
+        domains |= _classify_signal_domain(signal.headline, signal.source_type)
+    return domains
+
 
 # ── Topic extraction from text ──
 _TOKEN_RE = re.compile(r"[a-zA-Zα-ωΑ-Ωάέήίόύώΐΰϊϋ]{3,}", re.UNICODE)
@@ -258,7 +396,7 @@ class EmergentPattern:
         self.fired = False          # Has this pattern triggered a notification?
         self.fire_count = 0         # How many times it re-fired (escalation)
         self.convergence_score = 0.0
-        self.impact_score = 0.0     # Geopolitical impact (0.0-1.0), set before fire
+        self.impact_score = 0.0     # Strategic impact (0.0-1.0), set before fire
 
     @property
     def entities(self) -> set[str]:
@@ -357,23 +495,41 @@ class EmergentPattern:
 
         top_topics = sorted(self.topics, key=lambda t: sum(1 for s in self.signals if t in s.topics), reverse=True)[:15]
 
+        # Cross-domain classification
+        domains = _classify_pattern_domains(self)
+        domain_str = ", ".join(sorted(domains))
+        cross_domain_note = ""
+        if len(domains) >= 2:
+            cross_domain_note = (
+                f"\n*** CROSS-DOMAIN PATTERN ({len(domains)} domains) ***\n"
+                f"This pattern spans: {domain_str}\n"
+                f"Cross-domain patterns are HIGH VALUE — the combination of domains\n"
+                f"reveals insights that single-domain analysis cannot.\n"
+            )
+
         return (
             f"PATTERN ID: {self.id}\n"
             f"Convergence: {self.convergence_score:.2f}\n"
             f"Impact: {self.impact_score:.2f}\n"
+            f"Domains: {domain_str}\n"
             f"Signals: {len(self.signals)} from {len(self.source_types)} source types\n"
             f"Source types: {', '.join(sorted(self.source_types))}\n"
             f"Regions: {', '.join(sorted(self.regions))}\n"
             f"Key topics: {', '.join(top_topics)}\n"
             f"Age: {int(time.time() - self.created_at)}s\n"
+            f"{cross_domain_note}"
             f"\nRecent signals:\n{headlines}"
         )
 
     def to_dict(self) -> dict:
+        domains = _classify_pattern_domains(self)
         return {
             "id": self.id,
             "convergence_score": round(self.convergence_score, 3),
             "impact_score": round(self.impact_score, 3),
+            "domains": sorted(domains),
+            "cross_domain": len(domains) >= 2,
+            "domain_count": len(domains),
             "signal_count": len(self.signals),
             "source_types": sorted(self.source_types),
             "regions": sorted(self.regions),
@@ -409,21 +565,23 @@ class PatternAccumulator:
     # ── Impact Scoring ──────────────────────────────────────────────────
 
     def _estimate_impact_score(self, pattern: EmergentPattern) -> float:
-        """Estimate geopolitical/economic impact of a pattern.
+        """Estimate strategic impact of a pattern across ALL domains.
 
-        Scans pattern headlines against scope, entity, breaking-news, and
-        economic indicators. Returns 0.0-1.0.
+        Scans pattern headlines against scope, entity, breaking-news,
+        economic indicators, and cross-domain signals. Returns 0.0-1.0.
 
         Scoring hierarchy:
           Global scope          → base 0.90
           Global figure          → base 0.85
           Continental scope      → base 0.75
           Major power country    → base 0.70
+          Economic pattern       → base 0.65  (financial signals are strategic)
           Unknown/minor scope    → base 0.25
 
         Additive bonuses:
           Breaking news headline → +0.15
-          Economic crisis terms  → +0.10
+          Economic crisis terms  → +0.15
+          Cross-domain signals   → +0.15  (2+ domains in same pattern)
           Source diversity ≥ 3   → +0.05
         """
         # Build searchable text from all headlines in the pattern
@@ -445,13 +603,37 @@ class PatternAccumulator:
         if any(fig in headlines_text for fig in _GLOBAL_FIGURES):
             score = max(score, 0.85)
 
+        # ── Economic pattern base score ──
+        # Financial/economic signals are strategically significant on their own
+        # even without country references (e.g. "yield curve inversion" is global)
+        econ_count = sum(1 for kw in _ECONOMIC_KEYWORDS if kw in headlines_text)
+        has_econ_source = bool(
+            {"economic_shift", "financial_anomaly"} & pattern.source_types
+        )
+        if has_econ_source or econ_count >= 2:
+            score = max(score, 0.65)
+
         # ── Breaking news boost ──
         if any(ind in headlines_text for ind in _BREAKING_INDICATORS):
             score = min(1.0, score + 0.15)
 
         # ── Economic crisis boost ──
         if any(ind in headlines_text for ind in _ECONOMIC_CRISIS):
+            score = min(1.0, score + 0.15)
+
+        # ── General economic content additive boost ──
+        if econ_count >= 3:
             score = min(1.0, score + 0.10)
+        elif econ_count >= 1:
+            score = min(1.0, score + 0.05)
+
+        # ── Cross-domain fusion bonus ──
+        # Patterns spanning multiple domains are MORE valuable than single-domain
+        pattern_domains = _classify_pattern_domains(pattern)
+        if len(pattern_domains) >= 3:
+            score = min(1.0, score + 0.20)  # 3+ domains = high-value insight
+        elif len(pattern_domains) >= 2:
+            score = min(1.0, score + 0.12)  # 2 domains = cross-domain correlation
 
         # ── Natural disaster boost ──
         if any(ind in headlines_text for ind in _NATURAL_DISASTERS):
@@ -462,13 +644,10 @@ class PatternAccumulator:
             score = min(1.0, score + 0.05)
 
         # ── Financial signal corroboration ──
-        # If a financial_anomaly signal appears in the same pattern as text signals
-        # it means the markets are REACTING to the same event → high confidence
         if "financial_anomaly" in pattern.source_types:
             score = min(1.0, score + 0.15)
 
         # ── Entity Graph cascade analysis (if available) ──
-        # Uses the knowledge graph to assess relationship-based impact
         if self.engine.entity_graph:
             try:
                 entities = []
@@ -478,7 +657,6 @@ class PatternAccumulator:
                 if entities:
                     cascade = self.engine.entity_graph.get_cascade_impact(list(set(entities)))
                     graph_impact = cascade.get("impact_score", 0.0)
-                    # Graph impact can boost score (max +0.20) but never lower it
                     if graph_impact > score:
                         graph_boost = min(0.20, (graph_impact - score) * 0.5)
                         score = min(1.0, score + graph_boost)
@@ -521,6 +699,8 @@ class PatternAccumulator:
         headline_lower = headline.lower()
         if any(ind in headline_lower for ind in _BREAKING_INDICATORS):
             weight = max(weight, 0.50)  # Breaking news = high-priority signal
+        elif any(kw in headline_lower for kw in _ECONOMIC_CRISIS):
+            weight = max(weight, 0.45)  # Economic crisis terms = high-priority
         elif any(kw in headline_lower for kw in _ECONOMIC_KEYWORDS):
             weight = max(weight, 0.35)  # Economic news = above-average signal
 
@@ -607,12 +787,35 @@ class PatternAccumulator:
         refire_candidate = target_pattern.should_re_fire()
 
         if fire_candidate or refire_candidate:
-            # ── Impact gate: only fire if geopolitically significant ──
+            # ── Impact gate: only fire if strategically significant ──
             impact = self._estimate_impact_score(target_pattern)
             target_pattern.impact_score = impact
 
             if impact >= IMPACT_THRESHOLD:
                 self._fire_pattern(target_pattern, escalation=refire_candidate)
+
+                # High-impact cross-domain patterns warrant a conversation request
+                domains = _classify_pattern_domains(target_pattern)
+                if impact >= 0.90 and len(domains) >= 3:
+                    try:
+                        self.engine.request_conversation(
+                            topic=f"Critical cross-domain pattern ({', '.join(sorted(domains))})",
+                            reason=(
+                                f"Pattern with {len(target_pattern.signals)} signals across "
+                                f"{len(domains)} domains (impact={impact:.2f}). "
+                                f"Key topics: {', '.join(sorted(target_pattern.topics)[:8])}"
+                            ),
+                            urgency=CRITICAL,
+                            context_data={
+                                "pattern_id": target_pattern.id,
+                                "impact": impact,
+                                "domains": sorted(domains),
+                                "signal_count": len(target_pattern.signals),
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning("[PatternAccumulator] Conversation request failed: %s", exc)
+
                 return target_pattern
             else:
                 self._total_impact_suppressed += 1
@@ -633,11 +836,15 @@ class PatternAccumulator:
         pattern.fire_count += 1
         self._total_fires += 1
 
+        domains = _classify_pattern_domains(pattern)
         prefix = "ESCALATION — " if escalation else ""
+        cross = f"CROSS-DOMAIN({','.join(sorted(domains))}) " if len(domains) >= 2 else ""
         logger.info(
-            "[PatternAccumulator] %sFiring pattern %s (convergence=%.2f, signals=%d, types=%s)",
-            prefix, pattern.id, pattern.convergence_score,
-            len(pattern.signals), ",".join(sorted(pattern.source_types)),
+            "[PatternAccumulator] %s%sFiring pattern %s (convergence=%.2f, impact=%.2f, "
+            "signals=%d, domains=%s, types=%s)",
+            prefix, cross, pattern.id, pattern.convergence_score, pattern.impact_score,
+            len(pattern.signals), ",".join(sorted(domains)),
+            ",".join(sorted(pattern.source_types)),
         )
 
         # Delegate to ProactiveEngine for LLM evaluation + delivery
@@ -646,7 +853,10 @@ class PatternAccumulator:
             event_data={
                 "pattern_id": pattern.id,
                 "convergence_score": round(pattern.convergence_score, 3),
+                "impact_score": round(pattern.impact_score, 3),
                 "signal_count": len(pattern.signals),
+                "domains": sorted(domains),
+                "cross_domain": len(domains) >= 2,
                 "source_types": sorted(pattern.source_types),
                 "regions": sorted(pattern.regions),
                 "top_topics": sorted(pattern.topics)[:15],
@@ -687,11 +897,14 @@ class PatternAccumulator:
     def get_stats(self) -> dict:
         now = time.time()
         alive = [p for p in self._patterns if p.is_alive(now)]
+        cross_domain = [p for p in alive if len(_classify_pattern_domains(p)) >= 2]
         return {
             "total_signals_ingested": self._total_signals,
             "total_patterns_created": self._total_patterns_created,
             "total_fires": self._total_fires,
+            "total_impact_suppressed": self._total_impact_suppressed,
             "active_patterns": len(alive),
+            "cross_domain_patterns": len(cross_domain),
             "hot_patterns": sum(1 for p in alive if p.convergence_score >= 0.30),
             "ready_to_fire": sum(1 for p in alive if p.should_fire()),
         }
@@ -704,10 +917,14 @@ Your job: decide whether a finding is important enough to INTERRUPT the user (Π
 
 The user is a busy professional. He trusts the system to work autonomously.
 He does NOT want noise. He DOES want to know about:
+- Cross-domain insights: connections between geopolitics, economics, markets, technology, social unrest
+- Financial/economic developments with strategic implications (rate decisions, market crashes, debt crises, trade wars)
 - Geopolitical developments that change the strategic picture
 - Confirmed or disconfirmed predictions (prophecies grounding in reality)
 - Surprising discoveries that contradict current assumptions
-- Emerging patterns that require immediate attention or decision
+- Emerging multi-domain patterns that require immediate attention or decision
+- The COMBINATION of domains is what makes insights valuable — a single-domain observation
+  is rarely worth interrupting the user. Cross-domain correlations ARE worth it.
 
 You must output ONLY valid JSON:
 {{
@@ -808,6 +1025,50 @@ Format: Start with the headline, then the briefing. No greetings, no signatures.
 """
 
 
+# ══════════════════════════════════════════════════════════════
+#  AUTONOMOUS PROPHECY PROMPT — structured scenario from pattern
+# ══════════════════════════════════════════════════════════════
+
+_AUTONOMOUS_PROPHECY_PROMPT = """You are the PROPHETIC ENGINE of Αίολος, an autonomous intelligence system.
+Current date and time: {current_datetime}
+
+You are given an emergent cross-domain pattern that Αίολος detected from
+real-time data monitoring. Your task: decide whether this pattern warrants
+a LONG-TERM SCENARIO (prophecy) and, if so, generate one.
+
+A prophecy is warranted when:
+  - The pattern implies consequences that will play out over WEEKS or MONTHS
+  - The pattern connects multiple domains (e.g., economic → political → security)
+  - There is enough signal to formulate a falsifiable prediction
+  - The scenario would be USEFUL for strategic decision-making
+
+A prophecy is NOT warranted when:
+  - The pattern is a simple news event with no long-term implications
+  - The outcome is already obvious / consensus
+  - There is insufficient data to make a meaningful prediction
+
+Respond ONLY with valid JSON:
+{{
+    "generate_prophecy": true|false,
+    "reasoning": "Why this pattern does/doesn't warrant a prophecy",
+    "scenario": {{
+        "name": "Short memorable name (3-7 words)",
+        "narrative": "What happens in this scenario — the story (200-400 words)",
+        "trajectory": "Step-by-step path from now to outcome",
+        "conditions": [
+            {{"condition": "What must be true", "probability": 0.0-1.0, "evidence": "Supporting evidence"}}
+        ],
+        "timeline": "Expected timeframe (e.g., '3-6 months', '1-2 years')",
+        "predicted_outcome": "The end state if this plays out",
+        "confidence": 0.0-1.0,
+        "falsifiability": "What would disprove this within 6 months"
+    }}
+}}
+
+If generate_prophecy is false, set scenario to null.
+"""
+
+
 class Notification:
     """A single proactive notification."""
 
@@ -819,6 +1080,7 @@ class Notification:
         source: str,  # perception, curiosity, prophecy, evolution
         reason: str = "",
         raw_data: dict | None = None,
+        domains: list[str] | None = None,
     ):
         self.id = f"n_{int(time.time() * 1000)}"
         self.headline = headline
@@ -827,6 +1089,7 @@ class Notification:
         self.source = source
         self.reason = reason
         self.raw_data = raw_data or {}
+        self.domains = domains or []
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.delivered_sse = False
         self.delivered_telegram = False
@@ -840,6 +1103,7 @@ class Notification:
             "urgency": self.urgency,
             "source": self.source,
             "reason": self.reason,
+            "domains": self.domains,
             "created_at": self.created_at,
             "delivered_sse": self.delivered_sse,
             "delivered_telegram": self.delivered_telegram,
@@ -871,6 +1135,7 @@ class ProactiveEngine:
         self.perception_db = perception_db  # PerceptionDB to store research findings
         self.entity_graph = None            # EntityGraph — set by api.py after init
         self.market_collector = None         # MarketDataCollector — set by api.py after init
+        self.prophetic_memory = None         # PropheticMemory — set by api.py after init
 
         # Notification storage
         self._notifications: deque[Notification] = deque(maxlen=MAX_NOTIFICATIONS)
@@ -992,7 +1257,7 @@ class ProactiveEngine:
                 return None
 
         # Build evaluation context
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
         eval_context = f"EVENT TYPE: {event_type}\n\nDATA:\n{json.dumps(event_data, ensure_ascii=False, indent=2)[:3000]}"
         if context:
             eval_context += f"\n\nADDITIONAL CONTEXT:\n{context[:2000]}"
@@ -1041,6 +1306,12 @@ class ProactiveEngine:
         elif not summary or len(summary) < 20:
             summary = self._compose_message(headline, event_type, event_data)
 
+        # Extract domain classification from event data (set by PatternAccumulator)
+        # or classify from headline as fallback
+        notif_domains = event_data.get("domains", [])
+        if not notif_domains:
+            notif_domains = sorted(_classify_signal_domain(headline, event_type))
+
         notification = Notification(
             headline=headline,
             summary=summary,
@@ -1048,6 +1319,7 @@ class ProactiveEngine:
             source=event_type,
             reason=reason,
             raw_data=event_data,
+            domains=notif_domains,
         )
 
         self._notifications.append(notification)
@@ -1057,6 +1329,23 @@ class ProactiveEngine:
         # All evaluated alerts get full delivery — the LLM already decided
         # should_notify=true. Urgency controls Telegram only.
         self._deliver_immediate(notification)
+
+        # ── AUTONOMOUS PROPHECY: if pattern meets prophecy thresholds ──
+        convergence = event_data.get("convergence_score", 0)
+        signal_count = len(event_data.get("headlines", []))
+        # Use content-based domain classification (not raw source_type labels)
+        # because most signals arrive as 'perception_alert' regardless of domain
+        content_domains = event_data.get("domains", [])
+        if (convergence >= self._PROPHECY_MIN_CONVERGENCE
+                and signal_count >= self._PROPHECY_MIN_SIGNAL_COUNT
+                and len(set(content_domains)) >= self._PROPHECY_MIN_CROSS_DOMAIN):
+            try:
+                self.generate_autonomous_prophecy(
+                    pattern_data=event_data,
+                    research_findings=research_findings,
+                )
+            except Exception as exc:
+                logger.warning("[Proactive] Autonomous prophecy generation failed: %s", exc)
 
         return notification
 
@@ -1242,6 +1531,157 @@ class ProactiveEngine:
             self._send_telegram(notification)
 
     # ══════════════════════════════════════════════════════════════
+    #  PROACTIVE CONVERSATION STARTER
+    #  When Αίολος discovers something that warrants a DIALOGUE
+    #  (not just a one-way alert), he requests a conversation.
+    # ══════════════════════════════════════════════════════════════
+
+    # Cooldown: don't spam conversation requests
+    _CONVERSATION_REQUEST_COOLDOWN = 3600  # 1 hour between requests (general)
+    _VISUAL_ARRIVAL_COOLDOWN = 600         # 10 min between face-arrival requests
+
+    def request_conversation(
+        self,
+        topic: str,
+        reason: str,
+        urgency: str = IMPORTANT,
+        context_data: dict | None = None,
+    ) -> Notification | None:
+        """Request a new conversation with Panos.
+
+        Unlike regular notifications (one-way alerts), this explicitly signals
+        that Αίολος wants to DISCUSS something — it's a dialogue invitation.
+
+        Triggers:
+          - CuriosityEngine: exploration with priority > 0.95
+          - PatternAccumulator: cross-domain pattern with impact > 0.90
+          - Cross-system learning: breakthrough paper discovery
+          - VisionIntegration: face arrival (uses shorter cooldown)
+
+        Delivery:
+          - Telegram: conversational message ("Πάνο, χρειάζομαι τη γνώμη σου...")
+          - SSE: conversation_request event (UI shows dialogue bubble)
+        """
+        # Determine if this is a visual arrival (shorter cooldown)
+        is_visual_arrival = (
+            (context_data or {}).get("trigger") == "visual_perception_arrival"
+        )
+        cooldown = (
+            self._VISUAL_ARRIVAL_COOLDOWN if is_visual_arrival
+            else self._CONVERSATION_REQUEST_COOLDOWN
+        )
+
+        # Cooldown check — visual arrivals only check against other visual arrivals
+        now_ts = datetime.now(timezone.utc).timestamp()
+        recent_requests = [
+            n for n in self._notifications
+            if n.source == "conversation_request"
+            and (now_ts - datetime.fromisoformat(n.created_at).timestamp()) < cooldown
+            and (
+                not is_visual_arrival
+                or n.raw_data.get("trigger") == "visual_perception_arrival"
+            )
+        ]
+        if recent_requests:
+            logger.info("[Proactive] Conversation request cooldown (%ds) — skipping: %s",
+                        cooldown, topic[:80])
+            return None
+
+        # Create a conversation-request notification
+        conv_domains = (context_data or {}).get("domains", [])
+        if not conv_domains:
+            conv_domains = sorted(_classify_signal_domain(topic, "conversation_request"))
+        notification = Notification(
+            headline=f"💬 {topic}",
+            summary=reason,
+            urgency=urgency,
+            source="conversation_request",
+            reason=reason,
+            raw_data=context_data or {},
+            domains=conv_domains,
+        )
+
+        self._notifications.append(notification)
+        self._total_notified += 1
+        self._log_notification(notification)
+
+        # SSE: push with conversation_request flag
+        data = notification.to_dict()
+        data["conversation_start"] = True
+        data["conversation_request"] = True  # distinguishes from regular alerts
+        dead_queues = []
+        for q in self._sse_subscribers:
+            try:
+                q.put_nowait(data)
+                notification.delivered_sse = True
+            except asyncio.QueueFull:
+                dead_queues.append(q)
+        for q in dead_queues:
+            self._sse_subscribers.remove(q)
+
+        # Telegram: conversational tone, not alert tone
+        self._send_conversation_request_telegram(notification, context_data)
+
+        logger.info("[Proactive] 💬 CONVERSATION REQUESTED: %s", topic[:100])
+        return notification
+
+    def _send_conversation_request_telegram(
+        self,
+        notification: Notification,
+        context_data: dict | None = None,
+    ) -> bool:
+        """Send a conversation request via Telegram with a dialogue-oriented format."""
+        if not self.telegram_bot_token or not self.telegram_chat_id:
+            return False
+
+        # Build a conversational message
+        context_lines = []
+        if context_data:
+            if "priority" in context_data:
+                context_lines.append(f"Priority: {context_data['priority']:.2f}")
+            if "confidence" in context_data:
+                context_lines.append(f"Confidence: {context_data['confidence']:.0%}")
+            if "domains" in context_data:
+                context_lines.append(f"Domains: {', '.join(context_data['domains'])}")
+            if "key_finding" in context_data:
+                context_lines.append(f"\n{context_data['key_finding'][:500]}")
+
+        context_block = "\n".join(context_lines) if context_lines else ""
+
+        text = (
+            "💬 *Πάνο, χρειάζομαι τη γνώμη σου.*\n\n"
+            f"*{notification.headline}*\n\n"
+            f"{notification.summary[:800]}\n\n"
+            f"{context_block}\n\n"
+            "_Αυτό χρειάζεται συζήτηση, όχι απλά ειδοποίηση. "
+            "Όταν μπορέσεις, άνοιξε chat._"
+        )
+
+        url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+        payload = {
+            "chat_id": self.telegram_chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        }
+
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.post(url, json=payload)
+                if resp.status_code == 200:
+                    notification.delivered_telegram = True
+                    logger.info("[Proactive] Conversation request sent via Telegram: %s",
+                                notification.headline[:60])
+                    return True
+                else:
+                    logger.warning("[Proactive] Telegram conversation request failed (%d): %s",
+                                   resp.status_code, resp.text[:200])
+                    return False
+        except Exception as exc:
+            logger.warning("[Proactive] Telegram conversation request error: %s", exc)
+            return False
+
+    # ══════════════════════════════════════════════════════════════
     #  AUTO-RESEARCH — WebAgent-powered investigation
     # ══════════════════════════════════════════════════════════════
 
@@ -1332,7 +1772,7 @@ class ProactiveEngine:
             query_context += f"\nPATTERN CONTEXT:\n{context[:1500]}"
 
         try:
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
             result = self.llm.call_json(
                 RESEARCH_QUERY_PROMPT.format(current_datetime=now_str),
                 query_context,
@@ -1458,7 +1898,7 @@ class ProactiveEngine:
         # Truncate for LLM context
         findings_text = findings_text[:4000]
 
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
         prompt = RESEARCH_SYNTHESIS_PROMPT.format(headline=headline, current_datetime=now_str)
         user_msg = f"RESEARCH FINDINGS:\n{findings_text}"
 
@@ -1476,6 +1916,188 @@ class ProactiveEngine:
             return f"Auto-research for: {headline}\n" + findings_text[:800]
 
     # ══════════════════════════════════════════════════════════════
+    #  AUTONOMOUS PROPHECY GENERATION
+    #  When a high-impact cross-domain pattern is detected, Αίολος
+    #  generates a structured scenario and stores it in prophetic memory.
+    #  The scenario is marked "autonomous_proposed" and requires
+    #  Panos's approval before entering active tracking.
+    # ══════════════════════════════════════════════════════════════
+
+    # Thresholds for autonomous prophecy generation
+    _PROPHECY_MIN_CONVERGENCE = 0.70       # Pattern must be well-converged
+    _PROPHECY_MIN_SIGNAL_COUNT = 4         # Corroborated by 4+ signals
+    _PROPHECY_MIN_CROSS_DOMAIN = 2         # Must span 2+ source types
+    _PROPHECY_COOLDOWN = 7200              # 2 hours between prophecy generations
+
+    def generate_autonomous_prophecy(
+        self,
+        pattern_data: dict,
+        research_findings: str = "",
+    ) -> dict | None:
+        """Generate an autonomous long-term scenario from a detected pattern.
+
+        Called by evaluate_and_notify when a pattern meets the prophecy thresholds.
+        The scenario is stored in prophetic memory as 'autonomous_proposed'
+        and Panos is notified via request_conversation().
+
+        Args:
+            pattern_data: The emergent pattern data (from PatternAccumulator)
+            research_findings: Auto-research synthesis (if available)
+
+        Returns:
+            Dict with scenario info if generated, None if skipped/failed
+        """
+        if not self.prophetic_memory:
+            logger.debug("[Proactive/Prophecy] No prophetic_memory attached — skipping")
+            return None
+
+        # Cooldown: don't spam prophecies
+        recent_prophecies = [
+            n for n in self._notifications
+            if n.source == "autonomous_prophecy"
+            and (datetime.now(timezone.utc).timestamp()
+                 - datetime.fromisoformat(n.created_at).timestamp())
+            < self._PROPHECY_COOLDOWN
+        ]
+        if recent_prophecies:
+            logger.info("[Proactive/Prophecy] Cooldown active — skipping")
+            return None
+
+        # Build context for the LLM
+        headlines = pattern_data.get("headlines", [])
+        source_types = pattern_data.get("source_types", [])
+        regions = pattern_data.get("regions", [])
+        convergence = pattern_data.get("convergence_score", 0)
+        impact = pattern_data.get("impact_score", 0)
+
+        pattern_summary = (
+            f"EMERGENT PATTERN (convergence={convergence:.2f}, impact={impact:.2f}):\n"
+            f"Sources: {', '.join(source_types)}\n"
+            f"Regions: {', '.join(set(regions))}\n"
+            f"Key signals:\n" +
+            "\n".join(f"  - {h}" for h in headlines[:8])
+        )
+
+        if research_findings:
+            pattern_summary += f"\n\nRESEARCH FINDINGS:\n{research_findings[:2000]}"
+
+        # Ask LLM to generate a structured scenario
+        now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
+        try:
+            result = self.llm.call_json(
+                _AUTONOMOUS_PROPHECY_PROMPT.format(current_datetime=now_str),
+                pattern_summary,
+                max_tokens=2000,
+                temperature=0.4,
+            )
+        except Exception as exc:
+            logger.warning("[Proactive/Prophecy] LLM generation failed: %s", exc)
+            return None
+
+        if not result.get("generate_prophecy", False):
+            logger.info("[Proactive/Prophecy] LLM decided no prophecy needed: %s",
+                        result.get("reasoning", ""))
+            return None
+
+        scenario_data = result.get("scenario", {})
+        if not scenario_data.get("name") or not scenario_data.get("narrative"):
+            logger.warning("[Proactive/Prophecy] Invalid scenario data from LLM")
+            return None
+
+        # Build a Scenario model
+        from xdart.models import Scenario, ScenarioCondition
+
+        conditions = []
+        for c in scenario_data.get("conditions", []):
+            if isinstance(c, dict):
+                # Normalise field names — LLM may use 'condition' instead of 'description'
+                desc = c.get("description") or c.get("condition") or c.get("name", "")
+                currently_met = c.get("currently_met", c.get("met", c.get("probability", 0.5) > 0.5 if "probability" in c else False))
+                evidence = c.get("evidence", "pattern-derived")
+                conditions.append(ScenarioCondition(
+                    description=str(desc),
+                    currently_met=bool(currently_met),
+                    evidence=str(evidence),
+                ))
+            elif isinstance(c, str):
+                conditions.append(ScenarioCondition(description=c, currently_met=False, evidence="pattern-derived"))
+
+        scenario = Scenario(
+            name=scenario_data.get("name", "Autonomous Prophecy"),
+            source_view_id="proactive_engine",
+            source_perspective="autonomous_pattern_detection",
+            narrative=scenario_data.get("narrative", ""),
+            trajectory=scenario_data.get("trajectory", ""),
+            conditions=conditions,
+            timeline=scenario_data.get("timeline", "3-6 months"),
+            predicted_outcome=scenario_data.get("predicted_outcome", ""),
+            confidence=min(1.0, max(0.0, float(scenario_data.get("confidence", 0.5)))),
+            falsifiability=scenario_data.get("falsifiability", ""),
+        )
+
+        # Store in prophetic memory as autonomous_proposed
+        problem = (
+            f"[Autonomous detection] {' | '.join(headlines[:3])}"
+            if headlines else "Autonomous pattern detection"
+        )
+        entry = self.prophetic_memory.store_autonomous_prophecy(
+            problem=problem,
+            scenario=scenario,
+            source="proactive_engine",
+        )
+
+        # Notify Panos via conversation request
+        self.request_conversation(
+            topic=f"Αυτόνομη πρόβλεψη: {scenario.name}",
+            reason=(
+                f"Ανίχνευσα ένα cross-domain pattern (convergence={convergence:.2f}) "
+                f"και δημιούργησα μια αυτόνομη πρόβλεψη:\n\n"
+                f"**{scenario.name}**\n"
+                f"{scenario.narrative[:500]}\n\n"
+                f"→ Predicted outcome: {scenario.predicted_outcome}\n"
+                f"→ Timeline: {scenario.timeline}\n"
+                f"→ Confidence: {scenario.confidence:.0%}\n\n"
+                f"Χρειάζομαι την έγκρισή σου για να αρχίσω active tracking."
+            ),
+            urgency=IMPORTANT,
+            context_data={
+                "type": "autonomous_prophecy",
+                "entry_id": entry.id,
+                "scenario_name": scenario.name,
+                "confidence": scenario.confidence,
+                "convergence": convergence,
+                "signal_count": len(headlines),
+                "domains": source_types,
+            },
+        )
+
+        logger.info(
+            "[Proactive/Prophecy] AUTONOMOUS PROPHECY generated: %s (id=%s, confidence=%.2f)",
+            scenario.name, entry.id[:8], scenario.confidence,
+        )
+
+        # Also create a notification for the log
+        notification = Notification(
+            headline=f"🔮 {scenario.name}",
+            summary=f"Autonomous prophecy: {scenario.narrative[:300]}",
+            urgency=IMPORTANT,
+            source="autonomous_prophecy",
+            reason=f"Cross-domain pattern (convergence={convergence:.2f}, {len(headlines)} signals)",
+            raw_data={"entry_id": entry.id, "scenario_name": scenario.name},
+            domains=source_types if isinstance(source_types, list) else list(source_types),
+        )
+        self._notifications.append(notification)
+        self._log_notification(notification)
+
+        return {
+            "entry_id": entry.id,
+            "scenario_name": scenario.name,
+            "confidence": scenario.confidence,
+            "timeline": scenario.timeline,
+            "status": "autonomous_proposed",
+        }
+
+    # ══════════════════════════════════════════════════════════════
     #  MESSAGE COMPOSITION
     # ══════════════════════════════════════════════════════════════
 
@@ -1488,7 +2110,7 @@ class ProactiveEngine:
             "Write the proactive message (3-5 sentences)."
         )
         try:
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
             return self.llm.call(
                 MESSAGE_COMPOSER_PROMPT.format(current_datetime=now_str),
                 user_msg,

@@ -211,6 +211,18 @@
       "error": "Code validation failed",
       "timestamp": "2026-04-12T09:30:06.242630+00:00",
       "gap_description": "The system lacks a dedicated tool to detect signals of covert or stealth coordination, logistics, and operations from world events, which are crucial for identifying hidden resilience or escalation risks in geopolitical analysis, as highlighted by the 'Hidden in Plain Sight' view in Phase 2."
+    },
+    {
+      "tool_name": "sectoral_risk_mapper",
+      "error": "A/B test failed: Tool failed on real context",
+      "timestamp": "2026-04-14T06:39:27.021216+00:00",
+      "gap_description": "The system lacks a dedicated tool for mapping and scoring risks to specific economic sectors based on world events and indicators. While existing tools handle geopolitical and strategic aspects, they do not systematically analyze sectoral impacts, such as tourism in this case, which could enhance early-stage context for cross-domain reasoning."
+    },
+    {
+      "tool_name": "commodity_price_forecaster",
+      "error": "A/B test failed: The tool output reports no indicators, which does not enhance the pipeline's already comprehensive and specific forecast.",
+      "timestamp": "2026-04-14T17:45:10.485361+00:00",
+      "gap_description": "The system lacks a dedicated tool for quantitative economic forecasting based on available indicators and events, which could enhance predictions like price ranges for commodities by providing data-driven insights to supplement qualitative reasoning."
     }
   ]
 }

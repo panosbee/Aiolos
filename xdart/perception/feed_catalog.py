@@ -433,11 +433,20 @@ RSS_CATALOG: list[FeedEntry] = [
 # Triggers high-salience classification (ported from WorldMonitor)
 
 ALERT_KEYWORDS = [
+    # Military / Conflict
     "war", "invasion", "military", "nuclear", "sanctions", "missile",
     "airstrike", "drone strike", "troops deployed", "armed conflict",
     "bombing", "casualties", "ceasefire", "peace treaty", "nato", "coup",
     "martial law", "assassination", "terrorist", "terror attack",
     "cyber attack", "hostage", "evacuation order",
+    # Financial / Economic (equal treatment — these move the world too)
+    "crash", "recession", "default", "bailout", "bank run",
+    "rate cut", "rate hike", "debt ceiling", "currency crisis",
+    "flash crash", "contagion", "liquidity crisis", "sovereign default",
+    "credit crisis", "market collapse", "emergency rate",
+    # Social / Humanitarian
+    "mass protest", "revolution", "famine", "pandemic",
+    "humanitarian crisis", "refugee crisis", "civil war",
 ]
 
 # Patterns that indicate non-alert content (lifestyle, entertainment, etc.)
@@ -453,6 +462,7 @@ ALERT_EXCLUSIONS = [
 # Multi-signal keyword scoring (ported from WorldMonitor algorithms.mdx)
 
 HEADLINE_SCORE_CATEGORIES = {
+    # ── Conflict / Violence (geo domain) ──
     "violence": {
         "base": 100, "per_match": 25,
         "keywords": ["killed", "dead", "death", "shot", "casualty", "massacre",
@@ -463,34 +473,49 @@ HEADLINE_SCORE_CATEGORIES = {
         "keywords": ["war", "invasion", "airstrike", "missile", "troops",
                       "combat", "fleet", "deployment", "artillery", "drone strike"],
     },
+    # ── Social / Unrest domain ──
     "unrest": {
-        "base": 40, "per_match": 15,
+        "base": 60, "per_match": 15,
         "keywords": ["protest", "uprising", "riot", "demonstration", "revolution",
-                      "coup", "strike", "unrest", "civil disobedience"],
+                      "coup", "strike", "unrest", "civil disobedience",
+                      "mass protest", "civil war", "refugee"],
     },
+    # ── Geopolitical flashpoints ──
     "flashpoint": {
         "base": 0, "per_match": 20,
         "keywords": ["iran", "russia", "china", "taiwan", "ukraine", "israel",
                       "gaza", "north korea", "syria", "yemen", "hamas",
                       "hezbollah", "nato", "kremlin"],
     },
+    # ── General crisis (cross-domain) ──
     "crisis": {
         "base": 0, "per_match": 10,
         "keywords": ["sanctions", "escalation", "breaking", "urgent",
-                      "humanitarian", "emergency", "collapse", "default"],
+                      "humanitarian", "emergency", "collapse", "default",
+                      "pandemic", "famine", "catastrophe"],
     },
+    # ── Financial / Economic (EQUAL to military — these move the world) ──
     "financial_systemic": {
-        "base": 60, "per_match": 15,
+        "base": 100, "per_match": 25,
         "keywords": ["rate cut", "rate hike", "fomc", "quantitative easing",
                       "bank run", "credit crisis", "debt ceiling", "yield curve",
                       "sovereign default", "currency crisis", "capital flight",
-                      "bailout", "systemic risk", "contagion", "liquidity crisis"],
+                      "bailout", "systemic risk", "contagion", "liquidity crisis",
+                      "crash", "meltdown", "emergency rate"],
     },
     "financial_signal": {
-        "base": 0, "per_match": 10,
+        "base": 40, "per_match": 15,
         "keywords": ["earnings surprise", "fed", "central bank", "treasury",
                       "downgrade", "upgrade", "recession", "inflation",
-                      "deflation", "stagflation", "bond market", "credit spread"],
+                      "deflation", "stagflation", "bond market", "credit spread",
+                      "gdp", "unemployment", "trade deficit", "tariff"],
+    },
+    # ── Technology / Cyber (emerging domain) ──
+    "tech_disruption": {
+        "base": 40, "per_match": 15,
+        "keywords": ["cyber attack", "data breach", "ransomware", "hack",
+                      "ai regulation", "chip ban", "semiconductor", "export control",
+                      "tech war", "surveillance", "quantum"],
     },
 }
 
@@ -504,10 +529,11 @@ DEMOTION_KEYWORDS = [
 
 
 def score_headline(headline: str) -> int:
-    """Score a headline by geopolitical significance (0-500+).
+    """Score a headline by strategic significance (0-500+).
 
-    Uses multi-signal keyword scoring from WorldMonitor.
-    Higher scores = more geopolitically significant.
+    Uses multi-signal keyword scoring across ALL domains:
+    geopolitical, economic, social, technology.
+    Higher scores = more strategically significant.
     """
     text = headline.lower()
     total = 0

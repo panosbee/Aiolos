@@ -881,6 +881,130 @@ class PropheticMemory:
 
         return entries
 
+    def store_autonomous_prophecy(
+        self,
+        problem: str,
+        scenario: "Scenario",
+        source: str = "proactive_engine",
+        confidence_override: float | None = None,
+    ) -> PropheticMemoryEntry:
+        """Store a single autonomous prophecy — born from proactive analysis, not from the pipeline.
+
+        These scenarios have no tribunal/simulation data. They are lighter-weight
+        predictions that Αίολος generates autonomously from detected patterns.
+
+        Args:
+            problem: What pattern/question triggered this prediction
+            scenario: The generated Scenario object
+            source: Origin identifier (proactive_engine, curiosity, cross_system, etc.)
+            confidence_override: Override the scenario's confidence if needed
+
+        Returns:
+            The stored PropheticMemoryEntry
+        """
+        # Create minimal simulation result (no real simulation was run)
+        sim = ScenarioSimulationResult(
+            scenario_id=scenario.id,
+            scenario_name=scenario.name,
+            forward_projection=f"[Autonomous prophecy — no simulation] {scenario.trajectory}",
+            stress_test_results=[],
+            breakpoints=[],
+            robustness_score=confidence_override or scenario.confidence,
+            revised_confidence=confidence_override or scenario.confidence,
+            simulation_insight=f"Autonomous prophecy from {source}",
+        )
+
+        entry = PropheticMemoryEntry(
+            problem=problem,
+            scenario=scenario,
+            simulation=sim,
+            tribunal_rank=0,  # 0 = no tribunal (autonomous)
+            tribunal_score=confidence_override or scenario.confidence,
+            was_dominant=False,
+            tracking_status="autonomous_proposed",  # Distinct from pipeline "active"
+        )
+
+        embed_text = (
+            f"[AUTONOMOUS] {scenario.name}: {scenario.narrative} → {scenario.predicted_outcome}"
+        )
+        embedding = self.llm.embed(embed_text)
+
+        if self._use_fallback:
+            self._fallback_store.append((entry, embedding))
+        else:
+            from qdrant_client.models import PointStruct
+            self._client.upsert(
+                collection_name=PROPHETIC_COLLECTION,
+                points=[PointStruct(
+                    id=entry.id,
+                    vector=embedding,
+                    payload=entry.model_dump(mode="json"),
+                )],
+            )
+
+        logger.info(
+            "[PropheticMemory] AUTONOMOUS prophecy stored: %s (source=%s, confidence=%.2f)",
+            scenario.name, source, entry.tribunal_score,
+        )
+        return entry
+
+    def approve_autonomous_prophecy(self, entry_id: str) -> bool:
+        """Promote an autonomous prophecy from 'autonomous_proposed' to 'active' tracking.
+
+        Returns True if successful.
+        """
+        if self._use_fallback:
+            for entry, _ in self._fallback_store:
+                if entry.id == entry_id and entry.tracking_status == "autonomous_proposed":
+                    entry.tracking_status = "active"
+                    return True
+            return False
+
+        try:
+            self._client.set_payload(
+                collection_name=PROPHETIC_COLLECTION,
+                payload={"tracking_status": "active"},
+                points=[entry_id],
+            )
+            logger.info("[PropheticMemory] Autonomous prophecy %s → active", entry_id[:8])
+            return True
+        except Exception as exc:
+            logger.warning("[PropheticMemory] Autonomous approve failed: %s", exc)
+            return False
+
+    def reject_autonomous_prophecy(self, entry_id: str, reason: str = "") -> bool:
+        """Reject an autonomous prophecy — set status to 'rejected'.
+
+        Returns True if successful.
+        """
+        if self._use_fallback:
+            for entry, _ in self._fallback_store:
+                if entry.id == entry_id and entry.tracking_status == "autonomous_proposed":
+                    entry.tracking_status = "rejected"
+                    return True
+            return False
+
+        try:
+            self._client.set_payload(
+                collection_name=PROPHETIC_COLLECTION,
+                payload={
+                    "tracking_status": "rejected",
+                    "reality_checks": [{"action": "rejected", "reason": reason,
+                                        "timestamp": datetime.now(timezone.utc).isoformat()}],
+                },
+                points=[entry_id],
+            )
+            logger.info("[PropheticMemory] Autonomous prophecy %s → rejected: %s", entry_id[:8], reason)
+            return True
+        except Exception as exc:
+            logger.warning("[PropheticMemory] Autonomous reject failed: %s", exc)
+            return False
+
+    def list_autonomous_pending(self) -> list[dict]:
+        """List all autonomous prophecies awaiting approval."""
+        all_entries = self.list_all(limit=200)
+        return [e for e in all_entries if e.get("tracking_status") == "autonomous_proposed"]
+
     def retrieve(
         self,
         query: str,

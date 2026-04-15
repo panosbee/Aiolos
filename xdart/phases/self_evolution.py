@@ -118,10 +118,23 @@ Valid injection points: {valid_injection_points}
   - "post_tribunal" → After tribunal — challenge the dominant verdict
   - "pre_xheart"    → Before distillation — add a thinking dimension
 
-When to create a cognitive strategy (vs overlay or tool):
-  - Overlay: the phase logic is correct but needs refinement
-  - Tool: we need to COMPUTE something from data
-  - Strategy: we need an entirely new WAY OF THINKING about problems
+When to create a cognitive strategy (vs overlay):
+  - Overlay: the phase logic is correct but needs REFINEMENT of existing prompts
+  - Strategy: the system is MISSING AN ANALYTICAL APPROACH — a new way of thinking
+    about problems that doesn't exist in any current phase
+
+DECISION GUIDE — use this to choose between overlay and strategy:
+  Q: Is the problem "the system does X but should do X+Y"? → Overlay (refine X)
+  Q: Is the problem "the system never considers perspective Z"? → Strategy (add Z)
+  Q: Does the fix involve changing how a SPECIFIC phase works? → Overlay
+  Q: Does the fix involve adding a COMPLETELY NEW analytical lens? → Strategy
+  Q: Are there < 8 active strategies? → Prefer cognitive_strategy (system needs more)
+  Q: Has the same overlay target been modified 3+ times? → Try strategy instead
+
+IMPORTANT: The system currently has FEW cognitive strategies. Actively consider
+whether a cognitive_strategy would be more impactful than yet another overlay.
+Strategies are MORE POWERFUL than overlays because they create entirely new
+analytical capabilities rather than tweaking existing ones.
 
 RECENT DIAGNOSIS HISTORY (what you already diagnosed — DO NOT repeat these):
 {recent_diagnoses}
@@ -133,9 +146,9 @@ CRITICAL RULES:
   If the same pattern was already diagnosed and an overlay/strategy was applied, check
   whether it WORKED (did integrity improve?) rather than proposing the same thing again.
 - If the current overlays/strategies already address the pattern, report NO issue.
-- Only propose change types that the system can ACTUALLY EXECUTE:
-  "prompt_overlay" or "cognitive_strategy". Do NOT propose "behavior_rule",
-  "threshold_change", or "memory_governance" — those are not implemented.
+- ONLY propose type "prompt_overlay" or "cognitive_strategy". Any other type
+  (behavior_rule, threshold_change, memory_governance, prompt_adjustment)
+  WILL BE REJECTED by the system. Do NOT propose them.
 - Look for NEW patterns or regressions, not the same evidence pool you saw last time.
 
 Respond ONLY with valid JSON:
@@ -429,10 +442,26 @@ class SelfEvolutionLoop:
                     logger.warning("[SelfEvolution] Strategy forge failed: %s", forge_err)
 
             elif change_type in ("behavior_rule", "threshold_change", "memory_governance", "prompt_adjustment"):
-                logger.warning(
-                    "[SelfEvolution] ✗ Non-actionable change type '%s' proposed — only "
-                    "prompt_overlay and cognitive_strategy are executable. Ignoring.", change_type
+                # Non-executable type → redirect to strategy forge as a thinking gap
+                logger.info(
+                    "[SelfEvolution] Non-actionable type '%s' proposed — redirecting to StrategyForge "
+                    "as a potential thinking gap", change_type
                 )
+                try:
+                    pruned = self.strategy_registry.auto_prune()
+                    if pruned:
+                        logger.info("[SelfEvolution] Auto-pruned %d underperforming strategies", len(pruned))
+                    new_strategy = self.strategy_forge.forge(diagnosis=result)
+                    if new_strategy:
+                        applied = True
+                        logger.info(
+                            "[SelfEvolution] ✓ REDIRECTED → STRATEGY '%s' (id=%s) from '%s' proposal",
+                            new_strategy.name, new_strategy.id, change_type,
+                        )
+                    else:
+                        logger.info("[SelfEvolution] Strategy forge declined the redirected proposal")
+                except Exception as forge_err:
+                    logger.warning("[SelfEvolution] Redirected strategy forge failed: %s", forge_err)
 
             # Log to core_change_log
             try:

@@ -35,12 +35,14 @@ class MemoryConsolidationLoop:
         procedural_memory,
         prophetic_memory,
         interval_minutes: int = 30,
+        vision_integration=None,
     ):
         self.llm = llm
         self.episodic = episodic_memory
         self.semantic = semantic_memory
         self.procedural = procedural_memory
         self.prophetic = prophetic_memory
+        self.vision = vision_integration  # VisionIntegration — for visual consolidation
         self.interval = interval_minutes * 60
         self._cycle_count = 0
         self._running = False
@@ -80,10 +82,32 @@ class MemoryConsolidationLoop:
         else:
             logger.info("[Consolidation] Skipping cross-run extraction (odd cycle %d)", self._cycle_count)
 
+        # 3. Visual consolidation — extract patterns from visual observations
+        visual_patterns = 0
+        if self.vision:
+            visual_patterns = await asyncio.get_event_loop().run_in_executor(
+                None, self._visual_consolidation
+            )
+
+        # 4. Visual reflection — periodic deep thinking about visual experiences
+        #    Runs every ~4 hours (8 cycles × 30min = 4h), triggered here
+        reflection_result = None
+        if self.vision:
+            reflection_result = await asyncio.get_event_loop().run_in_executor(
+                None, self.vision.run_visual_reflection
+            )
+            if reflection_result:
+                logger.info("[Consolidation] Visual reflection completed: %s", {
+                    k: v for k, v in reflection_result.items()
+                    if k in ("patterns_stored", "curiosities_fed", "predictions_tracked", "distillate_stored")
+                })
+
         elapsed = time.perf_counter() - cycle_t0
         logger.info(
-            "[Consolidation] ═══ Cycle %d complete (%.2fs) — aged=%d prophecies, extracted=%d patterns ═══",
-            self._cycle_count, elapsed, aged, extracted,
+            "[Consolidation] ═══ Cycle %d complete (%.2fs) — aged=%d prophecies, "
+            "extracted=%d patterns, visual=%d patterns, reflection=%s ═══",
+            self._cycle_count, elapsed, aged, extracted, visual_patterns,
+            "yes" if reflection_result else "no",
         )
 
     def _age_prophecies(self) -> int:
@@ -133,7 +157,7 @@ class MemoryConsolidationLoop:
     def _cross_run_extraction(self) -> int:
         """Extract cross-run patterns from recent episodic memories."""
         # Get recent episodic memories
-        recent_memories = self.episodic.retrieve("geopolitical economic technology conflict", top_k=10)
+        recent_memories = self.episodic.retrieve("geopolitical economic financial market technology social conflict", top_k=10)
         if len(recent_memories) < 3:
             return 0
 
@@ -191,6 +215,74 @@ class MemoryConsolidationLoop:
 
         except Exception as exc:
             logger.warning("[Consolidation] Cross-run extraction failed: %s", exc)
+            return 0
+
+    def _visual_consolidation(self) -> int:
+        """Extract behavioral patterns from visual observations.
+
+        Reads visual journal data via the VisionIntegration bridge,
+        combines it with existing episodic patterns, and extracts
+        cross-modal truths (visual + analytical) into semantic memory.
+        """
+        if not self.vision:
+            return 0
+
+        visual_data = self.vision.get_visual_patterns_for_consolidation(last_n=100)
+        if not visual_data or len(visual_data) < 50:
+            return 0
+
+        # Also get recent episodic themes for cross-modal extraction
+        episodic_context = ""
+        try:
+            recent = self.episodic.retrieve("behavioral patterns human activity schedule", top_k=3)
+            if recent:
+                episodic_context = "\nRECENT EPISODIC CONTEXT:\n" + "\n".join(
+                    f"  - {m.entry.xheart_distillate[:200]}" for m in recent[:3]
+                )
+        except Exception:
+            pass
+
+        try:
+            response = self.llm.call_json(
+                system_prompt=(
+                    "You are the VISUAL CONSOLIDATION process of an AI system with camera perception.\n"
+                    "Review the visual observations and extract BEHAVIORAL PATTERNS:\n\n"
+                    "Look for:\n"
+                    "1. Temporal patterns (when do people arrive/leave, daily routines)\n"
+                    "2. Co-occurrence patterns (who appears with who, what objects appear with what people)\n"
+                    "3. Environmental patterns (workspace changes, equipment usage)\n"
+                    "4. Cross-modal patterns (visual observations that connect to analytical knowledge)\n\n"
+                    "Return ONLY genuine patterns supported by the data.\n"
+                    "Each pattern must reference specific evidence (timestamps, counts).\n\n"
+                    "Return JSON:\n"
+                    '{"patterns": [{"knowledge": "<behavioral pattern>", '
+                    '"confidence": <0.0-1.0>, "evidence_summary": "<data supporting this>"}]}\n\n'
+                    'Return {"patterns": []} if insufficient data for patterns.'
+                ),
+                user_prompt=f"{visual_data}{episodic_context}",
+            )
+
+            patterns = response.get("patterns", [])
+            stored = 0
+            for pattern in patterns:
+                if pattern.get("confidence", 0) < 0.5:
+                    continue
+                try:
+                    self.semantic.store_truth(
+                        knowledge=f"[Visual-Behavioral] {pattern['knowledge']}",
+                        confidence=pattern["confidence"],
+                        source="visual_consolidation",
+                    )
+                    stored += 1
+                    logger.info("[Consolidation] Visual pattern: %s (conf=%.2f)",
+                                pattern["knowledge"][:80], pattern["confidence"])
+                except Exception:
+                    pass
+
+            return stored
+
+        except Exception as exc:
+            logger.warning("[Consolidation] Visual consolidation failed: %s", exc)
             return 0
 
     @staticmethod

@@ -630,11 +630,13 @@ def format_views_for_prompt(max_views: int | None = None, categories: list[str] 
 
 
 # ── View Groups for Phase 2 multi-call ──
+# Financial views (G) are distributed across groups so they get EQUAL
+# weight in synthesis — not isolated in a tiny 4th group.
 VIEW_GROUPS = {
-    "structure": {
-        "label": "Structure & Scale",
-        "categories": ["A", "F"],
-        "description": "External angles + cross-domain pattern recognition",
+    "structure_financial": {
+        "label": "Structure, Scale & Financial Coupling",
+        "categories": ["A", "F", "G"],
+        "description": "External angles + cross-domain pattern recognition + financial-macro coupling",
     },
     "blindspots_meta": {
         "label": "Blind Spots & Meta-Reasoning",
@@ -645,10 +647,5 @@ VIEW_GROUPS = {
         "label": "Epistemology & Temporal",
         "categories": ["D", "E"],
         "description": "Philosophical lenses + multi-timescale analysis",
-    },
-    "financial_macro": {
-        "label": "Financial-Macro Coupling",
-        "categories": ["G"],
-        "description": "Geopolitical-financial coupling, currency stress, sovereign debt, market sentiment",
     },
 }

@@ -18,3 +18,7 @@ duckduckgo-search>=7.0.0
 beautifulsoup4>=4.12.0
 # Optional: JS rendering via Lightpanda CDP or built-in Chromium
 # playwright>=1.40.0
+# Vision System (Αίολος' Eyes — face detection + recognition)
+facenet-pytorch>=2.5.0
+opencv-python>=4.9.0
+Pillow>=10.0.0

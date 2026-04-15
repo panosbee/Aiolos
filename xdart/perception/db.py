@@ -250,6 +250,52 @@ class PerceptionDB:
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
+    def get_recent_events_balanced(
+        self,
+        hours_back: int = 24,
+        max_events: int = 20,
+        max_per_domain: int = 5,
+    ) -> list[dict]:
+        """Retrieve recent events with domain diversity enforced.
+
+        Instead of returning the top-N by salience (which biases toward
+        dominant news cycles), this method retrieves top-N per domain
+        then interleaves them. Ensures economic, market, social, and
+        technology events aren't drowned out by geopolitical dominance.
+        """
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        ).isoformat()
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM world_events
+                WHERE collected_at > ?
+                ORDER BY salience_score DESC, collected_at DESC
+                LIMIT 500""",
+                (cutoff,),
+            ).fetchall()
+
+        all_events = [self._row_to_dict(r) for r in rows]
+
+        # Group by domain
+        by_domain: dict[str, list[dict]] = {}
+        for e in all_events:
+            domain = (e.get("domain") or "MULTI").upper()
+            by_domain.setdefault(domain, []).append(e)
+
+        # Round-robin interleave: take top-N per domain
+        balanced: list[dict] = []
+        for domain, events in by_domain.items():
+            balanced.extend(events[:max_per_domain])
+
+        # Re-sort by salience within the balanced set
+        balanced.sort(key=lambda e: e.get("salience_score", 0), reverse=True)
+
+        return balanced[:max_events]
+
     def get_all_recent(self, hours_back: int = 72, max_events: int = 300) -> tuple[list[dict], list[dict]]:
         """Retrieve recent events and economic indicators within the time window.
 

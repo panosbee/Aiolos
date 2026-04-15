@@ -340,6 +340,9 @@ class FrameworkOutput(BaseModel):
     # Phase outputs
     phase0_ontology: OntologyResult
     phase1_xdart: CrossDomainResult
+    phase1_5_synthesis: Optional[dict] = Field(
+        default=None, description="Creative Synthesis — novel concepts from domain fusion"
+    )
     phase2_views: ViewsResult
     phase3_xheart: XHEARTState
 

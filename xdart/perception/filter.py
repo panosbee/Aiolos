@@ -106,6 +106,12 @@ class PerceptionFilter:
         "collapse", "emergency", "unprecedented", "historic",
         "rate decision", "rate cut", "rate hike", "default",
         "invasion", "nuclear", "pandemic", "earthquake", "tsunami",
+        # Economic high-salience additions
+        "recession", "bailout", "bank run", "flash crash",
+        "downgrade", "debt ceiling", "sovereign debt",
+        "trade war", "sanctions", "tariff",
+        "supply shock", "stagflation", "contagion",
+        "capital controls", "currency crisis",
     ]
 
     def classify(
@@ -242,6 +248,12 @@ class PerceptionFilter:
         # High-salience keywords boost score
         high_sal = sum(1 for kw in self.HIGH_SALIENCE_KEYWORDS if kw in text)
         base += min(high_sal * 0.1, 0.3)
+
+        # ── Domain-based salience adjustment ──
+        # Economic/market events get a boost to reach alert threshold (0.85)
+        # more easily — mirrors the natural importance of economic signals
+        if domain in ("ECONOMIC", "MARKET"):
+            base += 0.08
 
         # ── Headline importance score (WorldMonitor-ported) ──
         if headline:

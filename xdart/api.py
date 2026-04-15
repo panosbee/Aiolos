@@ -8,6 +8,9 @@ REST API endpoints:
   GET  /xdart/memory       → List episodic memories
   GET  /xdart/prophecies   → List all stored prophecies
   GET  /xdart/health       → Health check
+  GET  /xdart/system-audit → Latest 2-hour system integrity audit
+  GET  /xdart/entity-graph/vis  → Interactive entity relationship map (HTML)
+  GET  /xdart/entity-graph/data → Entity graph JSON for external renderers
   GET  /                    → Web UI
 """
 
@@ -127,11 +130,13 @@ _collector: object | None = None  # DataCollector — stored for intelligence en
 _collector_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _proactive_engine = None  # ProactiveEngine — stored for notification endpoints
+_vision_integration = None  # VisionIntegration — stored for vision endpoints
+_last_audit_result: dict = {}  # Latest system audit results — populated by audit loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine
+    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration
     _framework = XDARTFramework()
 
     # ── Initialize Proactive Communication Engine ──
@@ -149,6 +154,9 @@ async def lifespan(app: FastAPI):
             )
             # Wire proactive engine into framework for pipeline awareness
             _framework._proactive_engine = _proactive_engine
+            # Wire prophetic memory for autonomous prophecy generation
+            if hasattr(_framework, 'prophetic_memory') and _framework.prophetic_memory:
+                _proactive_engine.prophetic_memory = _framework.prophetic_memory
             # Start daily digest loop
             digest_loop = ProactiveDigestLoop(
                 engine=_proactive_engine,
@@ -159,6 +167,85 @@ async def lifespan(app: FastAPI):
                         "yes" if TELEGRAM_BOT_TOKEN else "no")
         except Exception as e:
             logger.warning("Proactive engine failed to start: %s", e)
+
+    # ── Domain-to-signal-type mapping for pattern diversity ──
+    _DOMAIN_SIGNAL_MAP = {
+        "ECONOMIC": "economic_shift",
+        "ECONOMY": "economic_shift",
+        "FINANCIAL": "financial_anomaly",
+        "SECURITY": "security_event",
+        "MILITARY": "security_event",
+        "SOCIAL": "social_disruption",
+        "TECHNOLOGY": "tech_disruption",
+        "CYBER": "tech_disruption",
+        "GEOPOLITICS": "perception_event",
+        "ENERGY": "economic_shift",
+        "HUMANITARIAN": "social_disruption",
+    }
+
+    # ── Shared alert handler for all perception sources (text, financial, multimodal) ──
+    def _proactive_alert_handler(events: list[dict]):
+        """Triggered when any collector detects high-salience events.
+        Feeds each event into the PatternAccumulator as a signal.
+        Patterns fire autonomously when convergence ≥ 0.50.
+
+        Uses domain-balanced selection to prevent geopolitical dominance:
+        instead of taking the first 25 events (which may all be geopolitical),
+        we take up to 8 per domain, ensuring economic/market/tech/social
+        events get through even when geopolitical headlines dominate.
+        """
+        if not _framework:
+            return
+        try:
+            logger.info("[ProactiveAlert] %d high-salience events detected", len(events))
+
+            if _proactive_engine:
+                # Domain-balanced selection: max 8 per domain, total max 40
+                MAX_PER_DOMAIN = 8
+                MAX_TOTAL = 40
+                by_domain: dict[str, list[dict]] = {}
+                for ev in events:
+                    domain = (ev.get("domain") or "MULTI").upper()
+                    by_domain.setdefault(domain, []).append(ev)
+
+                selected: list[dict] = []
+                for domain, domain_events in by_domain.items():
+                    selected.extend(domain_events[:MAX_PER_DOMAIN])
+
+                # Sort by salience within the balanced set
+                selected.sort(key=lambda e: e.get("salience", 0), reverse=True)
+                selected = selected[:MAX_TOTAL]
+
+                domain_counts = {}
+                for ev in selected:
+                    d = (ev.get("domain") or "MULTI").upper()
+                    domain_counts[d] = domain_counts.get(d, 0) + 1
+                logger.info("[ProactiveAlert] Domain-balanced: %s", domain_counts)
+
+                for ev in selected:
+                    raw_region = ev.get("region", "GLOBAL")
+                    if isinstance(raw_region, list):
+                        raw_region = raw_region[0] if raw_region else "GLOBAL"
+                    # Use explicit signal_type if set, otherwise derive from domain
+                    signal_type = ev.get("signal_type", "")
+                    if not signal_type or signal_type == "perception_alert":
+                        domain = ev.get("domain", "").upper()
+                        signal_type = _DOMAIN_SIGNAL_MAP.get(domain, "perception_alert")
+                    _proactive_engine.feed_signal(
+                        source_type=signal_type,
+                        headline=ev.get("headline", ""),
+                        region=raw_region,
+                        raw_data={
+                            "source": ev.get("source", ""),
+                            "domain": ev.get("domain", ""),
+                            "salience": ev.get("salience", 0),
+                        },
+                    )
+            else:
+                logger.info("[ProactiveAlert] Engine not active — logged %d events",
+                            len(events))
+        except Exception as exc:
+            logger.warning("[ProactiveAlert] Handler failed: %s", exc)
 
     # Start background perception collector if enabled
     if PERCEPTION_ENABLED:
@@ -198,40 +285,6 @@ async def lifespan(app: FastAPI):
                 _framework._entity_graph = entity_graph
                 _framework._market_collector = market_collector
 
-            def _proactive_alert_handler(events: list[dict]):
-                """Triggered when collector detects high-salience events.
-                Feeds each event into the PatternAccumulator as a signal.
-                Patterns fire autonomously when convergence ≥ 0.50."""
-                if not _framework:
-                    return
-                try:
-                    logger.info("[ProactiveAlert] %d high-salience events detected", len(events))
-
-                    if _proactive_engine:
-                        for ev in events[:25]:
-                            # region may be a list (region_focus) — normalize to string
-                            raw_region = ev.get("region", "GLOBAL")
-                            if isinstance(raw_region, list):
-                                raw_region = raw_region[0] if raw_region else "GLOBAL"
-                            # Use signal_type from event if provided (e.g. financial_anomaly)
-                            signal_type = ev.get("signal_type", "perception_alert")
-                            # Feed into pattern accumulator — NOT direct LLM call
-                            _proactive_engine.feed_signal(
-                                source_type=signal_type,
-                                headline=ev.get("headline", ""),
-                                region=raw_region,
-                                raw_data={
-                                    "source": ev.get("source", ""),
-                                    "domain": ev.get("domain", ""),
-                                    "salience": ev.get("salience", 0),
-                                },
-                            )
-                    else:
-                        logger.info("[ProactiveAlert] Engine not active — logged %d events",
-                                    len(events))
-                except Exception as exc:
-                    logger.warning("[ProactiveAlert] Handler failed: %s", exc)
-
             collector = DataCollector(
                 db=perception_db,
                 filter_layer=perception_filter,
@@ -251,21 +304,82 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Perception collector failed to start: %s", e)
 
-    # Start background memory consolidation loop (sleep process)
+    # NOTE: Memory consolidation loop is started AFTER the vision system block
+    # so that _vision_integration is available when the loop is created.
+    # See "Start background memory consolidation loop" block below the vision init.
+
+    # Start background Logic Sandbox maintenance loop (every 30 min)
+    _sandbox_maintenance_task = None
     try:
-        from xdart.phases.consolidation import MemoryConsolidationLoop
-        consolidation = MemoryConsolidationLoop(
-            llm=_framework.llm,
-            episodic_memory=_framework.memory,
-            semantic_memory=_framework.semantic_memory,
-            procedural_memory=_framework.procedural_memory,
-            prophetic_memory=_framework.prophetic_memory,
-            interval_minutes=30,
-        )
-        _consolidation_task = asyncio.create_task(consolidation.run_forever())
-        logger.info("Memory consolidation loop started (30min interval)")
+        if _framework and _framework.logic_sandbox:
+            async def _sandbox_maintenance_loop():
+                """Periodically test+deploy pending sandbox proposals."""
+                await asyncio.sleep(180)  # 3 min initial delay — let system boot
+                while True:
+                    try:
+                        sandbox = _framework.logic_sandbox
+                        # 1. Deploy any proposals that passed testing but were never approved
+                        deployed = await asyncio.get_event_loop().run_in_executor(
+                            None, sandbox.deploy_pending_proposals,
+                        )
+                        if deployed:
+                            logger.info(
+                                "[SandboxMaint] Deployed %d stale proposals: %s",
+                                len(deployed),
+                                ", ".join(d.get("function_id", "?") for d in deployed),
+                            )
+
+                        # 2. Test any proposals still in "pending" status
+                        pending = [
+                            (pid, p) for pid, p in sandbox._proposals.items()
+                            if p.status == "pending"
+                        ]
+                        for proposal_id, proposal in pending:
+                            try:
+                                test_result = await asyncio.get_event_loop().run_in_executor(
+                                    None, sandbox.test_proposal, proposal_id,
+                                )
+                                if test_result.get("all_passed"):
+                                    approve_result = await asyncio.get_event_loop().run_in_executor(
+                                        None,
+                                        lambda pid=proposal_id: sandbox.approve_proposal(
+                                            pid, approved_by="auto_maintenance",
+                                        ),
+                                    )
+                                    if approve_result.get("status") == "approved":
+                                        apply_result = await asyncio.get_event_loop().run_in_executor(
+                                            None, sandbox.apply_proposal, proposal_id,
+                                        )
+                                        logger.info(
+                                            "[SandboxMaint] ✓ AUTO-DEPLOYED %s for %s (maintenance cycle)",
+                                            proposal_id[:12], proposal.function_id,
+                                        )
+                                else:
+                                    # Failed sandbox tests — reject to unblock
+                                    await asyncio.get_event_loop().run_in_executor(
+                                        None,
+                                        lambda pid=proposal_id: sandbox.reject_proposal(
+                                            pid, reason="Auto-rejected: sandbox tests failed in maintenance",
+                                        ),
+                                    )
+                                    logger.info(
+                                        "[SandboxMaint] ✗ Rejected %s for %s (tests failed)",
+                                        proposal_id[:12], proposal.function_id,
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    "[SandboxMaint] Error processing proposal %s: %s",
+                                    proposal_id[:12], exc,
+                                )
+                    except Exception as exc:
+                        logger.warning("[SandboxMaint] Maintenance cycle failed: %s", exc)
+
+                    await asyncio.sleep(30 * 60)  # Every 30 minutes
+
+            _sandbox_maintenance_task = asyncio.create_task(_sandbox_maintenance_loop())
+            logger.info("Logic Sandbox maintenance loop started (30min interval)")
     except Exception as e:
-        logger.warning("Memory consolidation loop failed to start: %s", e)
+        logger.warning("Logic Sandbox maintenance loop failed to start: %s", e)
 
     # Start background prophecy resolution loop (every 6 hours)
     _resolver_task = None
@@ -345,14 +459,34 @@ async def lifespan(app: FastAPI):
                     result = future.result(timeout=60)
                     return result.get("results", [])
 
+            # ── Curiosity notification wrapper ──
+            # Curiosity findings must bypass PatternAccumulator (which requires
+            # convergence ≥ 0.50 from multiple signals — a single curiosity
+            # finding never crosses that gate). Route directly to evaluate_and_notify.
+            _curiosity_notify_fn = None
+            if _proactive_engine:
+                def _curiosity_notify_fn(source_type="curiosity_finding", headline="",
+                                         region="GLOBAL", raw_data=None):
+                    """Direct notification for curiosity findings — bypasses PatternAccumulator."""
+                    _proactive_engine.evaluate_and_notify(
+                        event_type=source_type,
+                        event_data={
+                            "headlines": [headline],
+                            "region": region,
+                            **(raw_data or {}),
+                        },
+                        context=f"Autonomous curiosity finding: {headline}",
+                    )
+
             curiosity_loop = CuriosityLoop(
                 engine=_framework.curiosity_engine,
                 perception_db=_perception_db,
                 web_search_fn=_web_fn,
                 character_path=CHARACTER_STATE_PATH,
                 apply_changes_fn=_framework._apply_curiosity_changes,
-                proactive_notify_fn=(
-                    _proactive_engine.feed_signal if _proactive_engine else None
+                proactive_notify_fn=_curiosity_notify_fn,
+                conversation_request_fn=(
+                    _proactive_engine.request_conversation if _proactive_engine else None
                 ),
                 interval_minutes=30,
             )
@@ -362,6 +496,273 @@ async def lifespan(app: FastAPI):
                         "yes" if _perception_db else "no")
         except Exception as e:
             logger.warning("Curiosity loop failed to start: %s", e)
+
+    # Start background multimodal perception (airspace, maritime, satellite)
+    _multimodal_task = None
+    try:
+        from xdart.config import MULTIMODAL_ENABLED, OPENSKY_USER, OPENSKY_PASS, FIRMS_MAP_KEY, MARINETRAFFIC_API_KEY
+    except ImportError:
+        MULTIMODAL_ENABLED = False
+        OPENSKY_USER = OPENSKY_PASS = FIRMS_MAP_KEY = MARINETRAFFIC_API_KEY = ""
+
+    if MULTIMODAL_ENABLED and PERCEPTION_ENABLED:
+        try:
+            from xdart.perception.multimodal import MultimodalCollector
+            _multimodal_collector = MultimodalCollector(
+                on_alert=_proactive_alert_handler,
+                opensky_user=OPENSKY_USER,
+                opensky_pass=OPENSKY_PASS,
+                firms_map_key=FIRMS_MAP_KEY,
+                marinetraffic_api_key=MARINETRAFFIC_API_KEY,
+            )
+            # Store reference for stats endpoint
+            if _framework:
+                _framework._multimodal_collector = _multimodal_collector
+            _multimodal_task = asyncio.create_task(_multimodal_collector.run_forever())
+            logger.info("Multimodal perception started (airspace=%s, satellite=%s, maritime=yes)",
+                        "auth" if OPENSKY_USER else "anon",
+                        "yes" if FIRMS_MAP_KEY else "no")
+        except Exception as e:
+            logger.warning("Multimodal perception failed to start: %s", e)
+
+    # Start background cross-system learning (daily paper acquisition)
+    _cross_system_task = None
+    try:
+        from xdart.config import CROSS_SYSTEM_LEARNING_ENABLED, CORE_API_KEY, S2_API_KEY
+    except ImportError:
+        CROSS_SYSTEM_LEARNING_ENABLED = False
+        CORE_API_KEY = ""
+        S2_API_KEY = ""
+
+    if CROSS_SYSTEM_LEARNING_ENABLED and _framework:
+        try:
+            from xdart.knowledge.cross_system_learning import CrossSystemLearner, CrossSystemLearningLoop
+            _cross_system_learner = CrossSystemLearner(
+                llm=_framework.llm,
+                core_api_key=CORE_API_KEY,
+                s2_api_key=S2_API_KEY,
+                proactive_notify_fn=(
+                    _proactive_engine.feed_signal if _proactive_engine else None
+                ),
+                conversation_request_fn=(
+                    _proactive_engine.request_conversation if _proactive_engine else None
+                ),
+                cache_path=str(Path(PERCEPTION_DB_PATH).parent / "cross_system_cache.json"),
+            )
+            _cross_system_loop = CrossSystemLearningLoop(
+                learner=_cross_system_learner,
+                curiosity_engine=_framework.curiosity_engine if hasattr(_framework, 'curiosity_engine') else None,
+                proactive_engine=_proactive_engine,
+                interval_hours=24,
+            )
+            if _framework:
+                _framework._cross_system_learner = _cross_system_learner
+            _cross_system_task = asyncio.create_task(_cross_system_loop.run_forever())
+            logger.info("Cross-system learning started (core=%s, openalex=free, daily cycle)",
+                        "key" if CORE_API_KEY else "unauth")
+        except Exception as e:
+            logger.warning("Cross-system learning failed to start: %s", e)
+
+    # ── Vision System (Αίολος' Eyes) — face detection + recognition ──
+    try:
+        from xdart.config import VISION_ENABLED, VISION_PRESENCE_COOLDOWN
+    except ImportError:
+        VISION_ENABLED = False
+        VISION_PRESENCE_COOLDOWN = 300
+
+    if VISION_ENABLED:
+        try:
+            from xdart.vision.integration import VisionIntegration
+            _vision_integration = VisionIntegration(
+                proactive_engine=_proactive_engine,
+                entity_graph=getattr(_framework, '_entity_graph', None),
+                presence_cooldown=VISION_PRESENCE_COOLDOWN,
+                llm=getattr(_framework, 'llm', None),
+                curiosity_engine=getattr(_framework, 'curiosity_engine', None),
+                episodic_memory=getattr(_framework, 'memory', None),
+                semantic_memory=getattr(_framework, 'semantic_memory', None),
+                wisdom_tracker=getattr(_framework, 'wisdom_tracker', None),
+            )
+            if _framework:
+                _framework._vision_integration = _vision_integration
+            logger.info("Vision integration initialized (cooldown=%ds, llm=%s, curiosity=%s, "
+                        "episodic=%s, semantic=%s, wisdom=%s)",
+                        VISION_PRESENCE_COOLDOWN,
+                        "yes" if getattr(_framework, 'llm', None) else "no",
+                        "yes" if getattr(_framework, 'curiosity_engine', None) else "no",
+                        "yes" if getattr(_framework, 'memory', None) else "no",
+                        "yes" if getattr(_framework, 'semantic_memory', None) else "no",
+                        "yes" if getattr(_framework, 'wisdom_tracker', None) else "no")
+        except Exception as e:
+            logger.warning("Vision integration failed to initialize: %s", e)
+
+    # Start background memory consolidation loop (sleep process)
+    # Placed AFTER vision init so _vision_integration is available
+    try:
+        from xdart.phases.consolidation import MemoryConsolidationLoop
+        consolidation = MemoryConsolidationLoop(
+            llm=_framework.llm,
+            episodic_memory=_framework.memory,
+            semantic_memory=_framework.semantic_memory,
+            procedural_memory=_framework.procedural_memory,
+            prophetic_memory=_framework.prophetic_memory,
+            interval_minutes=30,
+            vision_integration=_vision_integration,
+        )
+        _consolidation_task = asyncio.create_task(consolidation.run_forever())
+        logger.info("Memory consolidation loop started (30min interval, vision=%s)",
+                     "yes" if _vision_integration else "no")
+    except Exception as e:
+        logger.warning("Memory consolidation loop failed to start: %s", e)
+
+    # Start background System Integrity Audit loop (every 2 hours)
+    _audit_task = None
+    try:
+        async def _system_audit_loop():
+            """Periodic system health & capability audit — checks all subsystems."""
+            await asyncio.sleep(300)  # 5 min initial delay
+            while True:
+                try:
+                    audit_start = time.time()
+                    issues: list = []
+                    stats: dict = {}
+
+                    # 1. Perception DB freshness
+                    if _collector and hasattr(_collector, 'db') and _collector.db:
+                        try:
+                            recent = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: _collector.db.get_recent_events(hours_back=1, max_events=50),
+                            )
+                            stats["perception_recent_60min"] = len(recent)
+                            if len(recent) == 0:
+                                issues.append({
+                                    "subsystem": "perception",
+                                    "severity": "warning",
+                                    "message": "No headlines ingested in last 60 minutes",
+                                })
+                        except Exception as e:
+                            issues.append({
+                                "subsystem": "perception",
+                                "severity": "error",
+                                "message": f"DB check failed: {e}",
+                            })
+                    else:
+                        stats["perception_recent_60min"] = "N/A"
+
+                    # 2. Entity graph health
+                    if _framework and getattr(_framework, "_entity_graph", None):
+                        eg = _framework._entity_graph
+                        eg_stats = eg.stats()
+                        stats["entity_graph"] = eg_stats
+                        if eg_stats["nodes"] == 0:
+                            issues.append({
+                                "subsystem": "entity_graph",
+                                "severity": "warning",
+                                "message": "Entity graph is empty",
+                            })
+                    else:
+                        stats["entity_graph"] = "not initialized"
+
+                    # 3. Curiosity engine stats
+                    if _framework and _framework.curiosity_engine:
+                        ce_stats = _framework.curiosity_engine.get_stats()
+                        stats["curiosity"] = ce_stats
+                        if ce_stats.get("active_count", 0) == 0 and ce_stats.get("total_explored", 0) == 0:
+                            issues.append({
+                                "subsystem": "curiosity",
+                                "severity": "info",
+                                "message": "Curiosity engine has zero activity",
+                            })
+                    else:
+                        stats["curiosity"] = "not initialized"
+
+                    # 4. Proactive engine stats
+                    if _proactive_engine:
+                        try:
+                            pe_stats = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: {
+                                    "pending_alerts": len(getattr(_proactive_engine, '_alert_queue', [])),
+                                    "patterns_tracked": len(getattr(_proactive_engine, '_patterns', {})),
+                                    "enabled": bool(getattr(_proactive_engine, 'enabled', False)),
+                                },
+                            )
+                            stats["proactive_engine"] = pe_stats
+                        except Exception as e:
+                            stats["proactive_engine"] = f"check failed: {e}"
+                    else:
+                        stats["proactive_engine"] = "not initialized"
+
+                    # 5. Memory health
+                    if _framework and _framework.memory:
+                        try:
+                            mem_count = _framework.memory.entry_count
+                            stats["episodic_memories"] = mem_count
+                        except Exception:
+                            stats["episodic_memories"] = "check failed"
+                    else:
+                        stats["episodic_memories"] = "not initialized"
+
+                    # 6. Character state integrity
+                    try:
+                        with open(CHARACTER_STATE_PATH, "r", encoding="utf-8") as f:
+                            cs = json.load(f)
+                        worldview_count = len(cs.get("worldview", {}).get("beliefs", []))
+                        identity_keys = list(cs.get("identity", {}).keys())
+                        stats["character_state"] = {
+                            "worldview_beliefs": worldview_count,
+                            "identity_keys": len(identity_keys),
+                            "has_identity": bool(identity_keys),
+                        }
+                    except FileNotFoundError:
+                        stats["character_state"] = "not initialized"
+                    except Exception:
+                        stats["character_state"] = "check failed"
+
+                    audit_elapsed = round(time.time() - audit_start, 2)
+                    critical_issues = [i for i in issues if i["severity"] in ("error", "critical")]
+
+                    # Store latest audit result for the API
+                    _last_audit_result.update({
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                        "elapsed_seconds": audit_elapsed,
+                        "stats": stats,
+                        "issues": issues,
+                        "issues_count": len(issues),
+                        "critical_count": len(critical_issues),
+                        "status": "critical" if critical_issues else ("warning" if issues else "healthy"),
+                    })
+
+                    if critical_issues:
+                        logger.warning(
+                            "[SystemAudit] %d CRITICAL issues found: %s",
+                            len(critical_issues),
+                            "; ".join(i["message"] for i in critical_issues),
+                        )
+                        # Notify proactive engine only on critical failures
+                        if _proactive_engine:
+                            try:
+                                _proactive_engine.ingest_alert(
+                                    source_type="system_audit",
+                                    headline=f"System Audit: {len(critical_issues)} critical issues detected",
+                                    region="INTERNAL",
+                                    raw_data={"issues": critical_issues, "stats": stats},
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        logger.info(
+                            "[SystemAudit] All clear — %d stats checked, %d minor issues, %.1fs",
+                            len(stats), len(issues), audit_elapsed,
+                        )
+                except Exception as exc:
+                    logger.warning("[SystemAudit] Audit cycle failed: %s", exc)
+
+                await asyncio.sleep(2 * 3600)  # Every 2 hours
+
+        _audit_task = asyncio.create_task(_system_audit_loop())
+        logger.info("System integrity audit loop started (2h interval)")
+    except Exception as e:
+        logger.warning("System audit loop failed to start: %s", e)
 
     logger.info("XDART-Φ API started")
     yield
@@ -376,6 +777,12 @@ async def lifespan(app: FastAPI):
         _curiosity_task.cancel()
     if _proactive_task:
         _proactive_task.cancel()
+    if _multimodal_task:
+        _multimodal_task.cancel()
+    if _cross_system_task:
+        _cross_system_task.cancel()
+    if _audit_task:
+        _audit_task.cancel()
     logger.info("XDART-Φ API stopped")
 
 
@@ -1268,6 +1675,204 @@ async def get_curiosity_journal(limit: int = 50):
     }
 
 
+# ── Entity Graph Visualization ──
+
+@app.get("/xdart/system-audit")
+async def get_system_audit():
+    """Return the latest system integrity audit results."""
+    if not _last_audit_result:
+        return {"status": "pending", "message": "First audit has not run yet (runs 5min after startup, then every 2h)"}
+    return _last_audit_result
+
+@app.get("/xdart/entity-graph/data")
+async def get_entity_graph_data(
+    entity_filter: str = "",
+    entity_type: str = "",
+    max_nodes: int = 150,
+    min_mentions: int = 2,
+):
+    """Return entity graph data as JSON for external renderers."""
+    if not _framework or not getattr(_framework, "_entity_graph", None):
+        raise HTTPException(status_code=503, detail="Entity graph not available")
+    return _framework._entity_graph.export_vis_data(
+        entity_filter=entity_filter,
+        entity_type=entity_type,
+        max_nodes=max_nodes,
+        min_mentions=min_mentions,
+    )
+
+
+@app.get("/xdart/entity-graph/vis", response_class=HTMLResponse)
+async def entity_graph_visualization(
+    entity_filter: str = "",
+    entity_type: str = "",
+    max_nodes: int = 150,
+    min_mentions: int = 2,
+):
+    """Interactive entity relationship map — force-directed vis.js graph."""
+    if not _framework or not getattr(_framework, "_entity_graph", None):
+        raise HTTPException(status_code=503, detail="Entity graph not available")
+
+    vis_data = _framework._entity_graph.export_vis_data(
+        entity_filter=entity_filter,
+        entity_type=entity_type,
+        max_nodes=max_nodes,
+        min_mentions=min_mentions,
+    )
+
+    nodes_json = json.dumps(vis_data["nodes"], ensure_ascii=False)
+    edges_json = json.dumps(vis_data["edges"], ensure_ascii=False)
+    meta = vis_data["meta"]
+    legend_json = json.dumps(meta.get("type_legend", {}), ensure_ascii=False)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>XDART-Φ Entity Graph — Αίολος</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #0a0e17; color: #c0c8d8; font-family: 'Segoe UI', system-ui, sans-serif; }}
+  #graph {{ width: 100vw; height: 100vh; }}
+  #controls {{
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(10,14,23,0.92); border: 1px solid #1e2a40; border-radius: 8px;
+    padding: 14px 18px; max-width: 340px; font-size: 13px;
+  }}
+  #controls h2 {{ color: #4A90D9; font-size: 15px; margin-bottom: 8px; }}
+  #controls .stat {{ color: #7a8ba8; margin: 2px 0; }}
+  #legend {{ margin-top: 10px; }}
+  #legend .item {{ display: inline-flex; align-items: center; margin: 3px 8px 3px 0; }}
+  #legend .dot {{ width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }}
+  #search-box {{
+    margin-top: 10px; width: 100%; padding: 6px 10px;
+    background: #111827; border: 1px solid #2a3a55; border-radius: 4px;
+    color: #c0c8d8; font-size: 13px; outline: none;
+  }}
+  #search-box:focus {{ border-color: #4A90D9; }}
+  #tooltip {{
+    position: fixed; display: none; z-index: 20;
+    background: rgba(10,14,23,0.95); border: 1px solid #4A90D9; border-radius: 6px;
+    padding: 10px 14px; max-width: 350px; font-size: 12px; pointer-events: none;
+  }}
+  #tooltip h3 {{ color: #4A90D9; font-size: 14px; margin-bottom: 4px; }}
+  #tooltip .kv {{ color: #7a8ba8; }}
+</style>
+</head>
+<body>
+<div id="controls">
+  <h2>XDART-Φ Entity Graph</h2>
+  <div class="stat">Nodes: {meta['displayed_nodes']} / {meta['total_nodes']}</div>
+  <div class="stat">Edges: {meta['displayed_edges']} / {meta['total_edges']}</div>
+  <div class="stat">Headlines ingested: {meta['headlines_ingested']:,}</div>
+  <div id="legend"></div>
+  <input id="search-box" type="text" placeholder="Search entities..." />
+</div>
+<div id="tooltip"></div>
+<div id="graph"></div>
+<script>
+const rawNodes = {nodes_json};
+const rawEdges = {edges_json};
+const legend  = {legend_json};
+
+// Build legend
+const legendEl = document.getElementById('legend');
+Object.entries(legend).forEach(([type, color]) => {{
+  legendEl.innerHTML += '<span class="item"><span class="dot" style="background:'+color+'"></span>'+type+'</span>';
+}});
+
+// vis.js DataSets
+const nodes = new vis.DataSet(rawNodes.map(n => ({{
+  id: n.id, label: n.label, color: {{ background: n.color, border: n.color, highlight: {{ background: '#fff', border: n.color }} }},
+  size: n.size, font: {{ color: '#c0c8d8', size: Math.max(10, n.size * 0.7) }},
+  title: n.type + ' | ' + n.mentions + ' mentions',
+  _raw: n,
+}})));
+
+const edges = new vis.DataSet(rawEdges.map((e, i) => ({{
+  id: i, from: e.source, to: e.target, width: e.width,
+  color: {{ color: 'rgba(100,140,200,0.3)', highlight: '#4A90D9' }},
+  _raw: e,
+}})));
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container, {{ nodes, edges }}, {{
+  physics: {{
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {{
+      gravitationalConstant: -350,
+      centralGravity: 0.004,
+      springLength: 280,
+      springConstant: 0.035,
+      damping: 0.42,
+      avoidOverlap: 0.6,
+    }},
+    stabilization: {{ iterations: 350, updateInterval: 25 }},
+    maxVelocity: 40,
+    minVelocity: 0.75,
+  }},
+  interaction: {{ hover: true, tooltipDelay: 100, zoomView: true, dragView: true, navigationButtons: false, keyboard: true }},
+  nodes: {{ shape: 'dot', borderWidth: 2 }},
+  edges: {{ smooth: {{ type: 'continuous', roundness: 0.15 }}, arrows: {{ to: false }} }},
+}});
+
+// Tooltip on hover
+const tooltip = document.getElementById('tooltip');
+network.on('hoverNode', function(params) {{
+  const nodeData = nodes.get(params.node)._raw;
+  tooltip.innerHTML = '<h3>' + nodeData.label + '</h3>'
+    + '<div class="kv">Type: ' + nodeData.type + '</div>'
+    + '<div class="kv">Mentions: ' + nodeData.mentions + '</div>'
+    + '<div class="kv">Activity: ' + nodeData.activity_score + '</div>'
+    + (nodeData.last_seen_iso ? '<div class="kv">Last: ' + new Date(nodeData.last_seen_iso).toLocaleString() + '</div>' : '');
+  tooltip.style.display = 'block';
+  tooltip.style.left = params.event.center.x + 15 + 'px';
+  tooltip.style.top = params.event.center.y + 15 + 'px';
+}});
+network.on('blurNode', () => {{ tooltip.style.display = 'none'; }});
+
+// Click node → show connected edges' headlines
+network.on('click', function(params) {{
+  if (params.nodes.length === 1) {{
+    const nid = params.nodes[0];
+    const connected = network.getConnectedEdges(nid);
+    let headlines = [];
+    connected.forEach(eid => {{
+      const ed = edges.get(eid)._raw;
+      if (ed.recent_headlines) headlines = headlines.concat(ed.recent_headlines);
+    }});
+    if (headlines.length) {{
+      tooltip.innerHTML = '<h3>' + nid + ' — Recent Headlines</h3>'
+        + headlines.slice(0, 8).map(h => '<div class="kv">• ' + h + '</div>').join('');
+      tooltip.style.display = 'block';
+      tooltip.style.left = params.event.center.x + 15 + 'px';
+      tooltip.style.top = params.event.center.y + 15 + 'px';
+    }}
+  }}
+}});
+
+// Search
+document.getElementById('search-box').addEventListener('input', function(e) {{
+  const q = e.target.value.toLowerCase();
+  if (!q) {{
+    nodes.forEach(n => nodes.update({{ id: n.id, hidden: false }}));
+    return;
+  }}
+  nodes.forEach(n => {{
+    const match = n.label.toLowerCase().includes(q);
+    nodes.update({{ id: n.id, hidden: !match, opacity: match ? 1 : 0.1 }});
+  }});
+  // Focus on first match
+  const match = rawNodes.find(n => n.label.toLowerCase().includes(q));
+  if (match) network.focus(match.id, {{ scale: 1.2, animation: true }});
+}});
+</script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
 @app.get("/xdart/prophecies")
 async def get_prophecies(limit: int = 50, status: str | None = None):
     """Return all stored prophecies with full scenario details.
@@ -1323,6 +1928,51 @@ async def get_prophecies(limit: int = 50, status: str | None = None):
         }
 
     return await asyncio.get_event_loop().run_in_executor(None, _get)
+
+
+# ── Autonomous Prophecies — approve/reject ──
+
+@app.get("/xdart/prophecies/autonomous")
+async def get_autonomous_prophecies():
+    """List all autonomous prophecies awaiting approval."""
+    if not _framework:
+        raise HTTPException(status_code=503, detail="Framework not initialized")
+
+    def _get():
+        return _framework.prophetic_memory.list_autonomous_pending()
+
+    pending = await asyncio.get_event_loop().run_in_executor(None, _get)
+    return {"pending": pending, "count": len(pending)}
+
+
+@app.post("/xdart/prophecies/autonomous/{entry_id}/approve")
+async def approve_autonomous_prophecy(entry_id: str):
+    """Approve an autonomous prophecy — promotes it to active tracking."""
+    if not _framework:
+        raise HTTPException(status_code=503, detail="Framework not initialized")
+
+    def _approve():
+        return _framework.prophetic_memory.approve_autonomous_prophecy(entry_id)
+
+    success = await asyncio.get_event_loop().run_in_executor(None, _approve)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Entry '{entry_id}' not found or not in autonomous_proposed status")
+    return {"status": "active", "entry_id": entry_id}
+
+
+@app.post("/xdart/prophecies/autonomous/{entry_id}/reject")
+async def reject_autonomous_prophecy(entry_id: str, reason: str = ""):
+    """Reject an autonomous prophecy."""
+    if not _framework:
+        raise HTTPException(status_code=503, detail="Framework not initialized")
+
+    def _reject():
+        return _framework.prophetic_memory.reject_autonomous_prophecy(entry_id, reason=reason)
+
+    success = await asyncio.get_event_loop().run_in_executor(None, _reject)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Entry '{entry_id}' not found or not in autonomous_proposed status")
+    return {"status": "rejected", "entry_id": entry_id, "reason": reason}
 
 
 @app.get("/xdart/accuracy")
@@ -2262,6 +2912,246 @@ async def test_notification():
     return {"status": "sent", "notification": test_notif.to_dict()}
 
 
+# ══════════════════════════════════════════════════════════════
+#  MULTIMODAL PERCEPTION — Airspace, Maritime, Satellite
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/xdart/multimodal/stats")
+async def multimodal_stats():
+    """Get multimodal perception statistics."""
+    if not _framework or not hasattr(_framework, '_multimodal_collector') or not _framework._multimodal_collector:
+        return {"status": "disabled", "message": "Multimodal perception not active"}
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _framework._multimodal_collector.get_stats,
+    )
+
+
+@app.get("/xdart/multimodal/zones")
+async def multimodal_zones():
+    """Get list of monitored strategic zones."""
+    from xdart.perception.multimodal import STRATEGIC_ZONES
+    return {
+        "zones": {
+            k: {"name": v["name"], "lat": v["lat"], "lon": v["lon"],
+                 "radius_km": v["radius_km"], "significance": v["significance"]}
+            for k, v in STRATEGIC_ZONES.items()
+        },
+        "total": len(STRATEGIC_ZONES),
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  CROSS-SYSTEM LEARNING — Research Paper Acquisition
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/xdart/cross-system/stats")
+async def cross_system_stats():
+    """Get cross-system learning statistics."""
+    if not _framework or not hasattr(_framework, '_cross_system_learner') or not _framework._cross_system_learner:
+        return {"status": "disabled", "message": "Cross-system learning not active"}
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _framework._cross_system_learner.get_stats,
+    )
+
+
+@app.post("/xdart/cross-system/run")
+async def cross_system_run_now():
+    """Trigger an immediate cross-system learning cycle (on-demand)."""
+    if not _framework or not hasattr(_framework, '_cross_system_learner') or not _framework._cross_system_learner:
+        raise HTTPException(status_code=503, detail="Cross-system learning not active")
+
+    learner = _framework._cross_system_learner
+
+    # Gather context
+    curiosity_topics = []
+    if hasattr(_framework, 'curiosity_engine') and _framework.curiosity_engine:
+        try:
+            active = _framework.curiosity_engine.get_active_curiosities()
+            curiosity_topics = [
+                c.get("question", "") if isinstance(c, dict) else getattr(c, "question", "")
+                for c in active[:10]
+            ]
+        except Exception:
+            pass
+
+    result = await learner.run_daily_cycle(
+        curiosity_topics=curiosity_topics,
+    )
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
+#  VISION SYSTEM — Αίολος' Eyes (Face Detection + Recognition)
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/xdart/vision/event")
+async def vision_event(event: dict):
+    """Receive visual perception events from the Vision Service.
+
+    Called by the FaceNet microservice when humans are detected/depart.
+    Triggers proactive conversations and updates visual memory.
+    """
+    if not _vision_integration:
+        raise HTTPException(status_code=503, detail="Vision system not active")
+
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, _vision_integration.handle_event, event,
+    )
+    return result
+
+
+@app.get("/xdart/vision/status")
+async def vision_status():
+    """Get vision system status and sighting stats."""
+    if not _vision_integration:
+        return {"status": "disabled", "message": "Vision system not active"}
+    return _vision_integration.stats
+
+
+@app.get("/xdart/vision/sightings")
+async def vision_sightings():
+    """Get recent visual sighting log."""
+    if not _vision_integration:
+        return {"status": "disabled", "sightings": []}
+    return {
+        "sightings": _vision_integration.sighting_log,
+        "humans_present": _vision_integration.humans_present,
+        "current_faces": _vision_integration.current_faces,
+    }
+
+
+@app.post("/xdart/vision/scene")
+async def vision_scene(scene: dict):
+    """Receive browser-side COCO-SSD scene detection results.
+
+    Called by the TF.js COCO-SSD model running in the browser every 3 seconds.
+    Contains detected objects (80 COCO classes) with counts and confidence scores.
+    """
+    if not _vision_integration:
+        raise HTTPException(status_code=503, detail="Vision system not active")
+    _vision_integration.update_scene(scene)
+    return {"status": "ok"}
+
+
+@app.post("/xdart/vision/register-face")
+async def vision_register_face(body: dict):
+    """Register a face UUID → human name association.
+
+    Once registered, Αίολος will recognize this face by name in all future
+    detections. The mapping persists across restarts.
+
+    Body: {"face_id": "uuid-string", "name": "Panos"}
+    """
+    if not _vision_integration:
+        raise HTTPException(status_code=503, detail="Vision system not active")
+    face_id = body.get("face_id", "").strip()
+    name = body.get("name", "").strip()
+    if not face_id or not name:
+        raise HTTPException(status_code=400, detail="Both 'face_id' and 'name' are required")
+    result = _vision_integration.register_face_name(face_id, name)
+    return result
+
+
+@app.delete("/xdart/vision/register-face/{face_id}")
+async def vision_unregister_face(face_id: str):
+    """Remove a face UUID → name association."""
+    if not _vision_integration:
+        raise HTTPException(status_code=503, detail="Vision system not active")
+    return _vision_integration.unregister_face_name(face_id)
+
+
+@app.get("/xdart/vision/face-registry")
+async def vision_face_registry():
+    """Get all registered face UUID → name mappings."""
+    if not _vision_integration:
+        return {"status": "disabled", "registry": {}}
+    return {
+        "registry": _vision_integration.face_registry,
+        "total": len(_vision_integration.face_registry),
+    }
+
+
+@app.get("/xdart/vision/objects")
+async def vision_objects():
+    """Get object tracking data — accumulated history of detected objects."""
+    if not _vision_integration:
+        return {"status": "disabled", "tracking": {}, "log": []}
+    return {
+        "current_scene": _vision_integration.stats.get("scene_objects", {}),
+        "tracking": _vision_integration.object_tracking,
+        "recent_log": _vision_integration.object_log[-20:],
+        "scene_timestamp": _vision_integration.stats.get("scene_timestamp", ""),
+    }
+
+
+@app.get("/xdart/vision/journal")
+async def vision_journal(last_n: int = 50):
+    """Get Αίολος' visual memory journal — persistent record of everything seen."""
+    if not _vision_integration:
+        return {"status": "disabled", "entries": []}
+    entries = _vision_integration.get_journal(last_n=min(last_n, 500))
+    return {
+        "status": "ok",
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+@app.post("/xdart/vision/reflect")
+async def vision_reflect():
+    """Trigger an immediate visual reflection — Αίολος thinks about what it has seen."""
+    if not _vision_integration:
+        raise HTTPException(status_code=503, detail="Vision integration not active")
+    # Force reflection by resetting the timer
+    _vision_integration._last_reflection_time = 0
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, _vision_integration.run_visual_reflection
+    )
+    if result is None:
+        return {"status": "skipped", "reason": "Insufficient visual data for reflection"}
+    return {"status": "ok", "reflection": result}
+
+
+@app.get("/xdart/vision/cognition")
+async def vision_cognition():
+    """Get Αίολος' visual cognition state — patterns, predictions, experience."""
+    if not _vision_integration:
+        return {"status": "disabled"}
+    return {
+        "status": "ok",
+        "patterns": _vision_integration._visual_patterns[-20:],
+        "active_predictions": [p for p in _vision_integration._visual_predictions if not p.get("resolved")],
+        "resolved_predictions": [p for p in _vision_integration._visual_predictions if p.get("resolved")],
+        "visual_distillate": _vision_integration.get_visual_distillate_for_character(),
+        "reflection_interval_hours": _vision_integration._reflection_interval / 3600,
+        "last_reflection_ago_sec": int(time.time() - _vision_integration._last_reflection_time)
+            if _vision_integration._last_reflection_time > 0 else None,
+    }
+
+
+class ConversationRequestBody(BaseModel):
+    topic: str = Field(..., description="Topic for conversation")
+    reason: str = Field(default="", description="Why this conversation is needed")
+
+
+@app.post("/xdart/conversation/request")
+async def request_conversation(body: ConversationRequestBody):
+    """Manually trigger a conversation request from Αίολος."""
+    if not _proactive_engine:
+        raise HTTPException(status_code=503, detail="Proactive engine not active")
+
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: _proactive_engine.request_conversation(
+            topic=body.topic,
+            reason=body.reason or f"Manual request: {body.topic}",
+        ),
+    )
+    if result:
+        return {"status": "sent", "notification": result.to_dict()}
+    return {"status": "cooldown", "message": "Conversation request on cooldown"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
     """Serve the XDART-Φ × XHEART web UI."""
@@ -2292,13 +3182,16 @@ from fastapi.responses import FileResponse
 async def get_cognitive_strategies():
     """List all cognitive strategies (active and inactive)."""
     try:
-        from xdart.phases.cognitive_strategies import StrategyRegistry
-        registry = StrategyRegistry()
+        if not _framework:
+            raise HTTPException(status_code=503, detail="Framework not initialized")
+        registry = _framework.strategy_registry
         strategies = registry.get_all(active_only=False)
         return {
             "strategies": [s.to_dict() for s in strategies],
             "stats": registry.stats(),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("[API] Failed to load strategies: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -2308,8 +3201,9 @@ async def get_cognitive_strategies():
 async def deactivate_strategy(strategy_id: str):
     """Deactivate a cognitive strategy."""
     try:
-        from xdart.phases.cognitive_strategies import StrategyRegistry
-        registry = StrategyRegistry()
+        if not _framework:
+            raise HTTPException(status_code=503, detail="Framework not initialized")
+        registry = _framework.strategy_registry
         success = registry.deactivate(strategy_id, reason="manual deactivation via API")
         if not success:
             raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
@@ -2329,12 +3223,12 @@ async def deactivate_strategy(strategy_id: str):
 async def get_logic_sandbox():
     """Get the logic sandbox registry — modifiable functions + proposals."""
     try:
-        if not framework.logic_sandbox:
+        if not _framework or not _framework.logic_sandbox:
             raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
         return {
-            "functions": framework.logic_sandbox.get_registry(),
-            "proposals": framework.logic_sandbox.get_proposals(),
-            "stats": framework.logic_sandbox.get_stats(),
+            "functions": _framework.logic_sandbox.get_registry(),
+            "proposals": _framework.logic_sandbox.get_proposals(),
+            "stats": _framework.logic_sandbox.get_stats(),
         }
     except HTTPException:
         raise
@@ -2347,9 +3241,9 @@ async def get_logic_sandbox():
 async def get_logic_proposals():
     """Get all logic modification proposals."""
     try:
-        if not framework.logic_sandbox:
+        if not _framework or not _framework.logic_sandbox:
             raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
-        return {"proposals": framework.logic_sandbox.get_proposals()}
+        return {"proposals": _framework.logic_sandbox.get_proposals()}
     except HTTPException:
         raise
     except Exception as e:
@@ -2364,9 +3258,9 @@ class LogicApproveRequest(BaseModel):
 async def approve_logic_proposal(proposal_id: str):
     """Approve a logic modification proposal — applies the change."""
     try:
-        if not framework.logic_sandbox:
+        if not _framework or not _framework.logic_sandbox:
             raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
-        result = framework.logic_sandbox.approve_proposal(proposal_id)
+        result = _framework.logic_sandbox.approve_proposal(proposal_id)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
@@ -2380,9 +3274,9 @@ async def approve_logic_proposal(proposal_id: str):
 async def reject_logic_proposal(proposal_id: str, reason: str = ""):
     """Reject a logic modification proposal."""
     try:
-        if not framework.logic_sandbox:
+        if not _framework or not _framework.logic_sandbox:
             raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
-        result = framework.logic_sandbox.reject_proposal(proposal_id, reason=reason)
+        result = _framework.logic_sandbox.reject_proposal(proposal_id, reason=reason)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
@@ -2396,10 +3290,77 @@ async def reject_logic_proposal(proposal_id: str, reason: str = ""):
 async def rollback_logic_function(function_name: str, to_factory: bool = False):
     """Rollback a function to its previous version or factory original."""
     try:
-        if not framework.logic_sandbox:
+        if not _framework or not _framework.logic_sandbox:
             raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
-        result = framework.logic_sandbox.rollback(function_name, to_original=to_factory)
+        result = _framework.logic_sandbox.rollback(function_name, to_original=to_factory)
         if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/xdart/logic-sandbox/deploy-all")
+async def deploy_all_pending_proposals():
+    """Auto-approve and apply ALL sandbox-tested proposals that are awaiting approval."""
+    try:
+        if not _framework or not _framework.logic_sandbox:
+            raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
+        results = _framework.logic_sandbox.deploy_pending_proposals()
+        return {"deployed": len([r for r in results if r.get("action") == "deployed"]), "results": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/xdart/logic-sandbox/register")
+async def register_sandbox_function(body: dict):
+    """Register a new function for self-modification in the Logic Sandbox.
+
+    Required body fields: function_id, description, module_path, function_name,
+                          signature, code, constraints, test_inputs, expected_behavior
+    """
+    try:
+        if not _framework or not _framework.logic_sandbox:
+            raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
+
+        required = ["function_id", "description", "module_path", "function_name",
+                     "signature", "code", "constraints", "test_inputs", "expected_behavior"]
+        missing = [f for f in required if f not in body]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
+
+        result = _framework.logic_sandbox.register_function(
+            function_id=body["function_id"],
+            description=body["description"],
+            module_path=body["module_path"],
+            function_name=body["function_name"],
+            signature=body["signature"],
+            code=body["code"],
+            constraints=body["constraints"],
+            test_inputs=body["test_inputs"],
+            expected_behavior=body["expected_behavior"],
+        )
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/xdart/logic-sandbox/functions/{function_id}")
+async def unregister_sandbox_function(function_id: str):
+    """Remove a function from the Logic Sandbox registry."""
+    try:
+        if not _framework or not _framework.logic_sandbox:
+            raise HTTPException(status_code=503, detail="Logic Sandbox is disabled")
+        result = _framework.logic_sandbox.unregister_function(function_id)
+        if result.get("status") == "error":
             raise HTTPException(status_code=400, detail=result["error"])
         return result
     except HTTPException:
@@ -2417,11 +3378,11 @@ async def rollback_logic_function(function_name: str, to_factory: bool = False):
 async def get_principles(include_retired: bool = False):
     """List all dynamic principles (active, proposed, optionally retired)."""
     try:
-        if not framework.principle_registry:
+        if not _framework or not _framework.principle_registry:
             raise HTTPException(status_code=503, detail="Principle Registry is disabled")
         return {
-            "principles": framework.principle_registry.get_all(include_retired=include_retired),
-            "stats": framework.principle_registry.get_stats(),
+            "principles": _framework.principle_registry.get_all(include_retired=include_retired),
+            "stats": _framework.principle_registry.get_stats(),
         }
     except HTTPException:
         raise
@@ -2434,9 +3395,9 @@ async def get_principles(include_retired: bool = False):
 async def get_pending_principles():
     """Get principles awaiting human approval."""
     try:
-        if not framework.principle_registry:
+        if not _framework or not _framework.principle_registry:
             raise HTTPException(status_code=503, detail="Principle Registry is disabled")
-        return {"pending": framework.principle_registry.get_pending_approvals()}
+        return {"pending": _framework.principle_registry.get_pending_approvals()}
     except HTTPException:
         raise
     except Exception as e:
@@ -2447,9 +3408,9 @@ async def get_pending_principles():
 async def approve_principle(principle_id: str):
     """Approve a proposed principle — makes it active in the pipeline."""
     try:
-        if not framework.principle_registry:
+        if not _framework or not _framework.principle_registry:
             raise HTTPException(status_code=503, detail="Principle Registry is disabled")
-        result = framework.principle_registry.approve(principle_id)
+        result = _framework.principle_registry.approve(principle_id)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
@@ -2463,9 +3424,46 @@ async def approve_principle(principle_id: str):
 async def reject_principle(principle_id: str, reason: str = ""):
     """Reject a proposed principle."""
     try:
-        if not framework.principle_registry:
+        if not _framework or not _framework.principle_registry:
             raise HTTPException(status_code=503, detail="Principle Registry is disabled")
-        result = framework.principle_registry.reject(principle_id, reason=reason)
+        result = _framework.principle_registry.reject(principle_id, reason=reason)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Principle Philosophy ──
+
+@app.get("/xdart/principles/philosophy")
+async def get_principle_philosophy():
+    """Get current principle discovery philosophy mode and settings."""
+    try:
+        if not _framework or not _framework.principle_registry:
+            raise HTTPException(status_code=503, detail="Principle Registry is disabled")
+        return _framework.principle_registry.get_philosophy()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/xdart/principles/philosophy/{mode}")
+async def set_principle_philosophy(mode: str):
+    """Switch principle discovery philosophy.
+
+    Modes:
+      - balanced: Default — error prevention AND pattern discovery
+      - conservative: Ultra-conservative — 3+ events needed, higher retire threshold
+      - exploratory: Aggressive discovery — even 1 event suffices, auto-approve with probation
+    """
+    try:
+        if not _framework or not _framework.principle_registry:
+            raise HTTPException(status_code=503, detail="Principle Registry is disabled")
+        result = _framework.principle_registry.set_philosophy(mode)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         return result

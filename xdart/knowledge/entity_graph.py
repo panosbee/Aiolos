@@ -736,6 +736,115 @@ class EntityGraph:
         }
 
     # ══════════════════════════════════════════════════════════════
+    #  VISUALIZATION — export graph data for interactive rendering
+    # ══════════════════════════════════════════════════════════════
+
+    _TYPE_COLORS: dict[str, str] = {
+        "GPE":      "#4A90D9",   # Countries/cities — blue
+        "PERSON":   "#E74C3C",   # People — red
+        "ORG":      "#2ECC71",   # Organizations — green
+        "NORP":     "#F39C12",   # Nationalities/groups — orange
+        "EVENT":    "#9B59B6",   # Events — purple
+        "LOC":      "#1ABC9C",   # Locations — teal
+        "FAC":      "#E91E63",   # Facilities — pink
+        "PRODUCT":  "#FF9800",   # Products — amber
+        "UNKNOWN":  "#95A5A6",   # Fallback — grey
+    }
+
+    def export_vis_data(
+        self,
+        entity_filter: str = "",
+        entity_type: str = "",
+        max_nodes: int = 150,
+        min_mentions: int = 2,
+    ) -> dict[str, Any]:
+        """Export graph data in a format suitable for interactive visualization.
+
+        Parameters
+        ----------
+        entity_filter : str
+            If set, only include nodes whose name contains this substring (case-insensitive).
+        entity_type : str
+            If set, only include nodes of this spaCy NER type (GPE, PERSON, ORG, etc.).
+        max_nodes : int
+            Maximum number of nodes to include (by activity score).
+        min_mentions : int
+            Minimum mention count to include a node.
+
+        Returns
+        -------
+        dict with keys: nodes (list), edges (list), meta (dict)
+        """
+        now = time.time()
+
+        # Score all nodes by recency-weighted activity
+        scored: list[tuple[str, dict, float]] = []
+        for name, data in self._graph.nodes(data=True):
+            mentions = data.get("mention_count", 0)
+            if mentions < min_mentions:
+                continue
+            if entity_filter and entity_filter.lower() not in name.lower():
+                continue
+            ntype = data.get("type", "UNKNOWN")
+            if entity_type and ntype.upper() != entity_type.upper():
+                continue
+
+            last_seen = data.get("last_seen", 0)
+            recency = max(0, now - last_seen)
+            recency_factor = math.exp(-0.693 * recency / 86400)
+            score = mentions * recency_factor
+            scored.append((name, data, score))
+
+        scored.sort(key=lambda x: x[2], reverse=True)
+        selected = scored[:max_nodes]
+        node_set = {name for name, _, _ in selected}
+
+        # Build node list
+        vis_nodes = []
+        for name, data, score in selected:
+            ntype = data.get("type", "UNKNOWN")
+            vis_nodes.append({
+                "id": name,
+                "label": name,
+                "type": ntype,
+                "color": self._TYPE_COLORS.get(ntype, self._TYPE_COLORS["UNKNOWN"]),
+                "size": max(8, min(50, int(data.get("mention_count", 1) ** 0.6 * 5))),
+                "mentions": data.get("mention_count", 0),
+                "last_seen_iso": datetime.fromtimestamp(
+                    data.get("last_seen", 0), tz=timezone.utc
+                ).isoformat() if data.get("last_seen") else None,
+                "activity_score": round(score, 2),
+            })
+
+        # Build edge list (only edges between selected nodes)
+        vis_edges = []
+        for u, v, data in self._graph.edges(data=True):
+            if u not in node_set or v not in node_set:
+                continue
+            weight = data.get("weight", 1.0)
+            vis_edges.append({
+                "source": u,
+                "target": v,
+                "weight": round(weight, 2),
+                "co_occurrences": data.get("co_occurrence_count", 0),
+                "width": max(1, min(8, int(weight ** 0.5))),
+                "recent_headlines": data.get("recent_headlines", [])[-3:],
+            })
+
+        meta = {
+            "total_nodes": len(self._graph.nodes),
+            "total_edges": len(self._graph.edges),
+            "displayed_nodes": len(vis_nodes),
+            "displayed_edges": len(vis_edges),
+            "headlines_ingested": self._total_headlines_ingested,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "type_legend": {k: v for k, v in self._TYPE_COLORS.items()
+                           if any(n["type"] == k for n in vis_nodes)},
+        }
+
+        return {"nodes": vis_nodes, "edges": vis_edges, "meta": meta}
+
+    # ══════════════════════════════════════════════════════════════
     #  PERSISTENCE — JSON save/load
     # ══════════════════════════════════════════════════════════════
 

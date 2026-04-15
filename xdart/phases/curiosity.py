@@ -22,7 +22,7 @@ Integration:
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -901,6 +901,183 @@ What new questions does this exploration reveal? What deeper layers are now visi
     #  WORLD DATA: Perception → New Curiosities
     # ══════════════════════════════════════════════════════════════
 
+    def generate_autonomous_gaps(self, character: dict | None = None) -> list[Curiosity]:
+        """Generate curiosities from fundamental knowledge gaps — NO external trigger needed.
+
+        This is meta-cognition: the system examines its OWN knowledge map
+        and finds structural holes, thin domains, unexplored connections.
+
+        Called periodically by CuriosityLoop (every ~3 cycles).
+        """
+        # Build a map of what the system knows
+        knowledge_map_parts = []
+
+        if character:
+            # Concepts inventory
+            concepts = character.get("named_concepts_owned", [])
+            if concepts:
+                knowledge_map_parts.append(
+                    f"OWNED CONCEPTS ({len(concepts)}):\n"
+                    + "\n".join(f"  • {c}" for c in concepts[:20])
+                )
+
+            # Epistemic stance
+            stance = character.get("current_epistemic_stance", "")
+            if stance:
+                knowledge_map_parts.append(f"CURRENT EPISTEMIC STANCE:\n  {stance[:500]}")
+
+            # Capabilities — what domains am I active in?
+            caps = character.get("capabilities", {})
+            active_caps = [k for k, v in caps.items() if v.get("enabled")]
+            if active_caps:
+                knowledge_map_parts.append(
+                    f"ACTIVE CAPABILITIES ({len(active_caps)}): {', '.join(active_caps)}"
+                )
+
+            # Tensions — what am I struggling with?
+            tensions = [t["description"][:150] for t in character.get("active_tensions", [])
+                        if not t.get("resolved")]
+            if tensions:
+                knowledge_map_parts.append(
+                    f"UNRESOLVED TENSIONS ({len(tensions)}):\n"
+                    + "\n".join(f"  • {t}" for t in tensions[:5])
+                )
+
+            # How I have changed — what was my learning trajectory?
+            changes = character.get("how_i_have_changed", [])
+            if changes:
+                knowledge_map_parts.append(
+                    f"RECENT CHANGES ({len(changes)}):\n"
+                    + "\n".join(f"  • {c.get('caused_by', '?')[:100]}" for c in changes[-5:])
+                )
+
+        # Add existing curiosity history to understand explored territory
+        explored_topics = set()
+        for c in self._history[-30:]:
+            explored_topics.update(c.tags)
+        if explored_topics:
+            knowledge_map_parts.append(
+                f"RECENTLY EXPLORED TOPICS: {', '.join(sorted(explored_topics)[:20])}"
+            )
+
+        # Existing curiosities
+        existing = ""
+        if self._curiosities:
+            existing = "\n\nALREADY ACTIVE CURIOSITIES (do NOT duplicate):\n"
+            existing += "\n".join(f"  • {c.question}" for c in self._curiosities)
+
+        if not knowledge_map_parts:
+            return []
+
+        knowledge_map = "\n\n".join(knowledge_map_parts)
+
+        system = """You are the META-COGNITION ENGINE of Αίολος (XDART-Φ).
+
+Your job: examine the system's KNOWLEDGE MAP and identify FUNDAMENTAL GAPS.
+This is NOT about current events or recent errors. This is about:
+
+1. STRUCTURAL GAPS — entire domains or subdomains the system hasn't explored
+   (e.g. "I have 20 concepts about escalation dynamics but ZERO about
+   de-escalation mechanisms")
+
+2. MISSING CONNECTIONS — topics the system knows individually but hasn't
+   connected (e.g. "I study energy markets AND military logistics separately
+   but never their interaction")
+
+3. FOUNDATIONAL KNOWLEDGE — base-level understanding the system lacks
+   in physics, economics, social dynamics, game theory, network science, etc.
+   that would improve ALL analyses
+
+4. META-ANALYTICAL GAPS — weaknesses in HOW the system thinks, not WHAT it
+   thinks about (e.g. "I always think linearly about cascades but never model
+   feedback loops")
+
+5. BLIND SPOT DETECTION — domains or perspectives the system systematically
+   ignores (e.g. "I model state actors well but ignore non-state actors,
+   diaspora networks, or cultural factors")
+
+OUTPUT FORMAT (strict JSON):
+{
+  "gap_analysis": "Brief analysis of what the knowledge map reveals (max 200 chars)",
+  "curiosities": [
+    {
+      "question": "Specific, researchable question about a fundamental gap",
+      "provenance": "What gap in the knowledge map this addresses",
+      "source_type": "meta_gap",
+      "priority": 0.0-1.0,
+      "tags": ["domain1", "domain2"],
+      "gap_type": "structural|connection|foundational|meta_analytical|blind_spot"
+    }
+  ]
+}
+
+Generate 1-3 curiosities. Focus on gaps that would MULTIPLY analytical power.
+Prioritize foundational & connection gaps over narrow domain gaps."""
+
+        user = f"""MY KNOWLEDGE MAP:
+{knowledge_map}
+{existing}
+
+What fundamental gaps do you see? What should I be learning that I'm NOT?"""
+
+        try:
+            t0 = time.perf_counter()
+            result = self.llm.call_json(
+                system_prompt=system,
+                user_prompt=user,
+                temperature=0.55,
+                max_tokens=2000,
+                thinking=False,
+            )
+            elapsed = time.perf_counter() - t0
+
+            raw_curiosities = result.get("curiosities", [])
+            new_curiosities = []
+
+            for raw in raw_curiosities[:3]:
+                if not raw.get("question") or not raw.get("provenance"):
+                    continue
+                c = Curiosity(
+                    question=raw["question"],
+                    provenance=raw["provenance"],
+                    source_type="meta_gap",
+                    priority=max(0.0, min(1.0, raw.get("priority", 0.70))),
+                    tags=raw.get("tags", []) + [raw.get("gap_type", "structural")],
+                )
+                if any(self._is_similar(c.question, ex.question) for ex in self._curiosities):
+                    continue
+                if any(self._is_similar(c.question, h.question) for h in self._history[-20:]):
+                    continue
+                self._curiosities.append(c)
+                new_curiosities.append(c)
+
+            # Trim
+            self._curiosities.sort(key=lambda x: x.priority, reverse=True)
+            self._curiosities = self._curiosities[:MAX_CURIOSITIES]
+
+            if new_curiosities:
+                self._generation_count += 1
+                self._save_state()
+                self._journal("meta_gap_scan", {
+                    "gap_analysis": result.get("gap_analysis", ""),
+                    "new_count": len(new_curiosities),
+                    "questions": [c.question for c in new_curiosities],
+                    "gap_types": [raw.get("gap_type", "?") for raw in raw_curiosities[:3]],
+                    "elapsed_seconds": round(elapsed, 2),
+                })
+                logger.info(
+                    "[Curiosity] META-GAP SCAN: %d fundamental questions generated (%.1fs)",
+                    len(new_curiosities), elapsed,
+                )
+            else:
+                logger.info("[Curiosity] Meta-gap scan: no new gaps identified")
+
+            return new_curiosities
+
+        except Exception as e:
+            logger.warning("[Curiosity] Meta-gap generation failed: %s", e)
+            return []
+
     def generate_from_world_data(
         self,
         world_events: list[dict],
@@ -949,6 +1126,17 @@ NOT every event deserves a curiosity. Look for:
 - Patterns across multiple events that suggest something deeper
 - Events in domains where the system has knowledge gaps
 
+CRITICAL — DOMAIN DIVERSITY MANDATE:
+You receive events from MULTIPLE domains (geopolitics, economics, markets,
+technology, social). Do NOT generate all curiosities about the same topic.
+If geopolitical events dominate the feed, ACTIVELY seek non-geopolitical
+curiosities: economic shifts, market anomalies, technology developments,
+social trends. A balanced analyst covers ALL domains, not just the loudest.
+
+PRIORITY BOOST: Economic data points ([ECONOMIC DATA] entries) and market
+anomaly signals are HIGH VALUE — they provide quantitative ground truth
+that text-based news cannot. Always consider investigating them.
+
 THE IRON RULE: each curiosity must cite a SPECIFIC headline or event.
 
 OUTPUT FORMAT (strict JSON):
@@ -964,7 +1152,8 @@ OUTPUT FORMAT (strict JSON):
   ]
 }
 
-Generate 0-3 curiosities. ZERO is fine — not every news cycle is interesting."""
+Generate 0-3 curiosities. ZERO is fine — not every news cycle is interesting.
+If you generate 2+, ensure they span DIFFERENT domains."""
 
         user = f"""RECENT WORLD EVENTS:
 {events_text}
@@ -1048,7 +1237,18 @@ class CuriosityLoop:
 
     This is the self-reinforcing growth engine:
     more knowledge → more gaps visible → more questions → more exploration → more knowledge
+
+    Deep-Dive Mode (weekly):
+    Every 7 days, runs an intensive multi-search exploration on the highest-priority
+    stale curiosity (pending for >48h with priority ≥ 0.80). Uses multiple web searches
+    and LLM synthesis to produce comprehensive knowledge consolidation.
     """
+
+    # Deep-dive configuration
+    DEEP_DIVE_INTERVAL = 7 * 24 * 3600   # Weekly (seconds)
+    DEEP_DIVE_PRIORITY_THRESHOLD = 0.80   # Minimum priority for deep-dive
+    DEEP_DIVE_STALE_HOURS = 48            # Must be pending for at least 48h
+    DEEP_DIVE_SEARCH_ROUNDS = 3           # Number of web search rounds
 
     def __init__(
         self,
@@ -1058,6 +1258,7 @@ class CuriosityLoop:
         character_path: str = "",
         apply_changes_fn=None,
         proactive_notify_fn=None,
+        conversation_request_fn=None,
         interval_minutes: int = 15,
     ):
         self.engine = engine
@@ -1066,9 +1267,11 @@ class CuriosityLoop:
         self.character_path = character_path
         self.apply_changes_fn = apply_changes_fn
         self.proactive_notify_fn = proactive_notify_fn  # callable(event_type, event_data, context)
+        self.conversation_request_fn = conversation_request_fn  # callable(topic, reason, urgency, context_data)
         self.interval = interval_minutes * 60
         self._cycle_count = 0
         self._running = False
+        self._last_deep_dive: float = 0.0  # timestamp of last deep-dive
 
     async def run_forever(self):
         """Main loop — call as asyncio.create_task(loop.run_forever())."""
@@ -1094,7 +1297,7 @@ class CuriosityLoop:
             await asyncio.sleep(self.interval)
 
     async def _run_cycle(self):
-        """Single curiosity cycle: scan → explore → cascade → reflect."""
+        """Single curiosity cycle: scan → explore → cascade → reflect → (meta-gap every 3rd)."""
         self._cycle_count += 1
         loop = asyncio.get_event_loop()
         logger.info("[CuriosityLoop] ═══ Cycle %d starting ═══", self._cycle_count)
@@ -1102,23 +1305,64 @@ class CuriosityLoop:
         # Load current character state
         character = self._load_character()
 
+        # ── Step 0: Meta-gap scan (every 3rd cycle) — autonomous knowledge gap detection ──
+        if self._cycle_count % 3 == 0:
+            try:
+                meta_gaps = await loop.run_in_executor(
+                    None, self.engine.generate_autonomous_gaps, character,
+                )
+                if meta_gaps:
+                    logger.info("[CuriosityLoop] Meta-gap scan: %d fundamental questions", len(meta_gaps))
+            except Exception as e:
+                logger.warning("[CuriosityLoop] Meta-gap scan failed: %s", e)
+
+        # Load current character state
+        character = self._load_character()
+
         # ── Step 1: Scan world data for new curiosities ──
+        # Use domain-balanced retrieval to prevent geopolitical dominance
         world_ctx_str = ""
         if self.perception_db:
             try:
+                # Domain-balanced: ensures economic, market, social, tech events are represented
                 events = await loop.run_in_executor(
-                    None, lambda: self.perception_db.get_recent_events(hours_back=24, max_events=20),
+                    None,
+                    lambda: (
+                        self.perception_db.get_recent_events_balanced(
+                            hours_back=24, max_events=20, max_per_domain=5,
+                        )
+                        if hasattr(self.perception_db, 'get_recent_events_balanced')
+                        else self.perception_db.get_recent_events(hours_back=24, max_events=20)
+                    ),
                 )
+                # Also fetch economic indicators — these are a separate table
+                econ_data = await loop.run_in_executor(
+                    None,
+                    lambda: self.perception_db.get_recent_economic(max_indicators=10),
+                )
+                # Convert economic indicators to event-like dicts for world scan
+                for ind in (econ_data or []):
+                    indicator_name = ind.get("indicator_name", ind.get("series_id", ""))
+                    value = ind.get("value", "")
+                    source = ind.get("source", "")
+                    events.append({
+                        "headline": f"[ECONOMIC DATA] {indicator_name}: {value} ({source})",
+                        "domain": "ECONOMIC",
+                        "source_name": source,
+                        "salience_score": 0.6,
+                    })
+
                 if events:
                     world_new = await loop.run_in_executor(
                         None, self.engine.generate_from_world_data, events, character,
                     )
-                    logger.info("[CuriosityLoop] World scan: %d new curiosities from %d events",
-                                len(world_new), len(events))
+                    domains_seen = set(e.get("domain", "?") for e in events)
+                    logger.info("[CuriosityLoop] World scan: %d new curiosities from %d events (domains: %s)",
+                                len(world_new), len(events), ", ".join(sorted(domains_seen)))
 
                     # Build world context string for exploration
                     world_ctx_str = "\n".join(
-                        e.get("headline", e.get("title", ""))[:200] for e in events[:10]
+                        e.get("headline", e.get("title", ""))[:200] for e in events[:15]
                     )
             except Exception as e:
                 logger.warning("[CuriosityLoop] World scan failed: %s", e)
@@ -1169,9 +1413,10 @@ class CuriosityLoop:
         # ── Step 5: Proactive notification — feed into PatternAccumulator ──
         if self.proactive_notify_fn and exploration:
             try:
-                question = exploration.get("question", "")[:200]
-                confidence = exploration.get("confidence", 0)
-                method = exploration.get("exploration_method", "")
+                curiosity_info = exploration.get("curiosity", {})
+                question = curiosity_info.get("question", "")[:200]
+                confidence = curiosity_info.get("confidence", 0)
+                method = curiosity_info.get("exploration_method", "")
                 await loop.run_in_executor(
                     None,
                     lambda: self.proactive_notify_fn(
@@ -1179,8 +1424,8 @@ class CuriosityLoop:
                         headline=f"Curiosity: {question}",
                         region="GLOBAL",
                         raw_data={
-                            "question": exploration.get("question", ""),
-                            "answer_summary": exploration.get("answer_summary", ""),
+                            "question": curiosity_info.get("question", ""),
+                            "answer_summary": curiosity_info.get("answer_summary", ""),
                             "confidence": confidence,
                             "method": method,
                             "cascade_count": len(cascade_new),
@@ -1190,7 +1435,51 @@ class CuriosityLoop:
             except Exception as e:
                 logger.warning("[CuriosityLoop] Proactive notify failed: %s", e)
 
+        # ── Step 6: Conversation request — if curiosity priority > 0.95 ──
+        if self.conversation_request_fn and exploration:
+            try:
+                # priority/confidence live inside the nested curiosity dict
+                curiosity_data = exploration.get("curiosity", {})
+                priority = curiosity_data.get("priority", 0)
+                confidence = curiosity_data.get("confidence", 0)
+                # High-priority finding that warrants interactive discussion
+                if priority > 0.80 or (priority > 0.70 and confidence > 0.7):
+                    question = curiosity_data.get("question", "")[:200]
+                    answer_summary = curiosity_data.get("answer_summary", "")[:500]
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self.conversation_request_fn(
+                            topic=f"Discovery: {question}",
+                            reason=(
+                                f"Priority {priority:.2f}, confidence {confidence:.0%}. "
+                                f"{answer_summary}"
+                            ),
+                            urgency="critical" if priority > 0.95 else "important",
+                            context_data={
+                                "priority": priority,
+                                "confidence": confidence,
+                                "question": exploration.get("question", ""),
+                                "key_finding": answer_summary,
+                                "cascade_count": len(cascade_new),
+                            },
+                        ),
+                    )
+                    logger.info("[CuriosityLoop] 💬 Conversation requested — priority=%.2f: %s",
+                                priority, question[:80])
+            except Exception as e:
+                logger.warning("[CuriosityLoop] Conversation request failed: %s", e)
+
         self._log_cycle_stats()
+
+        # ── Step 7: Deep-dive check — weekly intensive research ──
+        now_ts = time.time()
+        if now_ts - self._last_deep_dive >= self.DEEP_DIVE_INTERVAL:
+            try:
+                did_dive = await self._deep_dive_cycle()
+                if did_dive:
+                    self._last_deep_dive = now_ts
+            except Exception as e:
+                logger.warning("[CuriosityLoop] Deep-dive failed: %s", e)
 
     def _load_character(self) -> dict:
         """Load current character state from disk."""
@@ -1212,3 +1501,223 @@ class CuriosityLoop:
             stats["total_explored"],
             (stats["top_curiosity"] or "none")[:60],
         )
+
+    # ══════════════════════════════════════════════════════════════
+    #  DEEP-DIVE — Weekly intensive multi-search exploration
+    # ══════════════════════════════════════════════════════════════
+
+    async def _deep_dive_cycle(self) -> bool:
+        """Run an intensive deep-dive on the highest-priority stale curiosity.
+
+        Unlike normal exploration (1 search + 1 LLM call), deep-dive runs
+        multiple search rounds with progressively refined queries, then
+        synthesizes all findings into a comprehensive knowledge nucleus.
+
+        Returns True if a deep-dive was executed.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Find candidate: high priority, pending for >48h
+        now = datetime.now(timezone.utc)
+        stale_threshold = timedelta(hours=self.DEEP_DIVE_STALE_HOURS)
+
+        candidates = []
+        for c in self.engine._curiosities:
+            if c.status != "pending":
+                continue
+            if c.priority < self.DEEP_DIVE_PRIORITY_THRESHOLD:
+                continue
+            try:
+                created = datetime.fromisoformat(c.created_at)
+                if (now - created) >= stale_threshold:
+                    candidates.append(c)
+            except (ValueError, TypeError):
+                continue
+
+        if not candidates:
+            logger.debug("[CuriosityLoop] Deep-dive: no stale high-priority curiosities")
+            return False
+
+        target = max(candidates, key=lambda c: c.priority)
+        logger.info("[CuriosityLoop] ═══ DEEP-DIVE starting: '%s' (priority=%.2f) ═══",
+                    target.question[:80], target.priority)
+
+        # ── Phase 1: Multi-round web research ──
+        all_findings: list[str] = []
+
+        if self.web_search_fn:
+            # Round 1: Direct question search
+            search_queries = [target.question]
+
+            # Round 2-3: Generate refined sub-queries via LLM
+            try:
+                sub_queries_result = await loop.run_in_executor(
+                    None,
+                    lambda: self.engine.llm.call_json(
+                        system_prompt=(
+                            "Generate 2-3 focused web search queries to deeply research "
+                            "this question. Each should target a different angle or aspect. "
+                            "Return JSON: {\"queries\": [\"query1\", \"query2\", ...]}"
+                        ),
+                        user_prompt=f"Question: {target.question}\nTags: {', '.join(target.tags)}",
+                        temperature=0.4,
+                        max_tokens=300,
+                        thinking=False,
+                    ),
+                )
+                extra_queries = sub_queries_result.get("queries", [])
+                search_queries.extend(extra_queries[:3])
+            except Exception as e:
+                logger.debug("[CuriosityLoop] Deep-dive sub-query generation failed: %s", e)
+
+            for i, sq in enumerate(search_queries[:self.DEEP_DIVE_SEARCH_ROUNDS]):
+                try:
+                    results = await loop.run_in_executor(
+                        None, self.web_search_fn, sq, 5,
+                    )
+                    if results:
+                        round_text = f"\n=== Search Round {i+1}: '{sq[:60]}' ===\n"
+                        for r in results[:5]:
+                            title = r.get("title", "")
+                            snippet = r.get("body", r.get("snippet", ""))
+                            round_text += f"  [{title}] {snippet[:400]}\n"
+                        all_findings.append(round_text)
+                    await asyncio.sleep(3)  # Courtesy delay between searches
+                except Exception as e:
+                    logger.debug("[CuriosityLoop] Deep-dive search round %d failed: %s", i+1, e)
+
+        if not all_findings:
+            logger.info("[CuriosityLoop] Deep-dive: no web results — falling back to reasoning only")
+
+        combined_research = "\n".join(all_findings)
+
+        # ── Phase 2: Comprehensive LLM synthesis ──
+        try:
+            target.status = "exploring"
+            t0 = time.perf_counter()
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.engine.llm.call_json(
+                    system_prompt="""You are conducting a DEEP-DIVE RESEARCH for the XDART-Φ system.
+This is an intensive investigation, not a quick exploration.
+
+Your job: synthesize ALL available research into a comprehensive knowledge nucleus.
+
+RULES:
+- Ground every claim in specific evidence from the search results
+- Distinguish between well-established facts and uncertain claims
+- Identify key actors, mechanisms, timelines, and causal chains
+- Note contradictions between sources
+- Explicitly state what remains UNKNOWN even after this deep research
+- Provide actionable strategic implications
+
+OUTPUT FORMAT (strict JSON):
+{
+  "executive_summary": "3-5 sentence comprehensive answer",
+  "detailed_analysis": "Full analysis with evidence citations (500-1000 words)",
+  "key_facts": ["Verified fact 1", "Verified fact 2", ...],
+  "key_uncertainties": ["What remains unknown 1", ...],
+  "strategic_implications": ["How this affects geopolitical/economic analysis", ...],
+  "confidence": 0.0-1.0,
+  "sources_quality": "Assessment of source reliability"
+}""",
+                    user_prompt=f"""DEEP-DIVE QUESTION:
+{target.question}
+
+PROVENANCE: {target.provenance}
+TAGS: {', '.join(target.tags)}
+
+MULTI-ROUND RESEARCH FINDINGS:
+{combined_research[:8000]}
+
+Synthesize this into a comprehensive knowledge nucleus.""",
+                    temperature=0.3,
+                    max_tokens=4000,
+                ),
+            )
+            elapsed = time.perf_counter() - t0
+
+            # Update curiosity
+            target.status = "answered"
+            target.explored_at = now.isoformat()
+            target.answer_summary = result.get("executive_summary", "Deep-dive completed — no summary produced")
+            target.exploration_method = "deep_dive"
+            target.confidence = result.get("confidence", 0.0)
+
+            # Move to history
+            self.engine._curiosities.remove(target)
+            self.engine._history.append(target)
+            self.engine._exploration_count += 1
+            self.engine._save_state()
+
+            # Journal
+            self.engine._journal("deep_dive", {
+                "question": target.question,
+                "executive_summary": result.get("executive_summary", ""),
+                "key_facts_count": len(result.get("key_facts", [])),
+                "confidence": target.confidence,
+                "search_rounds": len(all_findings),
+                "elapsed_seconds": round(elapsed, 2),
+                "strategic_implications": result.get("strategic_implications", []),
+            })
+
+            # Consolidate to long-term memory
+            exploration_result = {
+                "curiosity": target.to_dict(),
+                "detailed_findings": result.get("detailed_analysis", ""),
+                "implications": result.get("strategic_implications", []),
+                "remaining_gaps": result.get("key_uncertainties", []),
+                "elapsed_seconds": round(elapsed, 2),
+            }
+            self.engine._consolidate_to_memory(exploration_result)
+
+            logger.info(
+                "[CuriosityLoop] ═══ DEEP-DIVE complete: '%s' (%.1fs, confidence=%.2f, %d searches) ═══",
+                target.question[:60], elapsed, target.confidence, len(all_findings),
+            )
+
+            # Notify proactive engine
+            if self.proactive_notify_fn:
+                try:
+                    self.proactive_notify_fn(
+                        source_type="deep_dive_finding",
+                        headline=f"Deep-Dive: {target.question[:150]}",
+                        region="GLOBAL",
+                        raw_data={
+                            "question": target.question,
+                            "executive_summary": result.get("executive_summary", ""),
+                            "confidence": target.confidence,
+                            "key_facts": result.get("key_facts", []),
+                            "method": "deep_dive",
+                        },
+                    )
+                except Exception:
+                    pass
+
+            # Request conversation if high-value finding
+            if self.conversation_request_fn and target.confidence >= 0.7:
+                try:
+                    self.conversation_request_fn(
+                        topic=f"Deep-Dive Complete: {target.question[:100]}",
+                        reason=(
+                            f"Ολοκλήρωσα εβδομαδιαίο deep-dive (confidence {target.confidence:.0%}). "
+                            f"{result.get('executive_summary', '')[:300]}"
+                        ),
+                        urgency="important",
+                        context_data={
+                            "type": "deep_dive",
+                            "question": target.question,
+                            "confidence": target.confidence,
+                            "key_facts": result.get("key_facts", [])[:5],
+                        },
+                    )
+                except Exception:
+                    pass
+
+            return True
+
+        except Exception as e:
+            target.status = "pending"  # Reset for retry
+            logger.warning("[CuriosityLoop] Deep-dive synthesis failed: %s", e)
+            return False

@@ -74,6 +74,9 @@ class LLMClient:
         if resolved_base_url:
             client_kwargs["base_url"] = resolved_base_url
 
+        # Timeout: 120s connect + read prevents hanging on DeepSeek stalls
+        client_kwargs["timeout"] = 120.0
+
         self.client = OpenAI(**client_kwargs)
         self.model = model or OPENAI_MODEL
         self.is_reasoning = _is_reasoning_model(self.model)
@@ -172,6 +175,10 @@ class LLMClient:
         response = self.client.chat.completions.create(**kwargs)
         elapsed = time.perf_counter() - t0
 
+        if not response.choices:
+            logger.error("[LLM.call] API returned empty choices (finish_reason may be content_filter or error) — elapsed %.2fs", elapsed)
+            return ""
+
         message = response.choices[0].message
         content = message.content or ""
 
@@ -258,6 +265,10 @@ class LLMClient:
         t0 = time.perf_counter()
         response = self.client.chat.completions.create(**kwargs)
         elapsed = time.perf_counter() - t0
+
+        if not response.choices:
+            logger.error("[LLM.call_json] API returned empty choices (finish_reason may be content_filter or error) — elapsed %.2fs", elapsed)
+            return {}
 
         message = response.choices[0].message
         raw = message.content or "{}"

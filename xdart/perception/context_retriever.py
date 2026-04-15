@@ -27,8 +27,8 @@ logger = logging.getLogger("xdart.perception.context_retriever")
 
 # Budget limits
 MAX_EVENTS = 1500             # DB fetch pool (wide net, domain-capped later)
-MAX_EVENTS_PER_DOMAIN = 80    # per-domain cap for diversity
-MAX_CONTEXT_CHARS = 50000     # hard char budget for the full context string
+MAX_EVENTS_PER_DOMAIN = 40    # per-domain cap for diversity (was 80 — halved to prevent context bloat)
+MAX_CONTEXT_CHARS = 25000     # hard char budget for the full context string (was 50K — halved for pipeline speed)
 
 
 class WorldContextRetriever:

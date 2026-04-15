@@ -118,11 +118,19 @@ class DataCollector:
         self._gdelt_consecutive_failures = 0
         self._gdelt_backoff_seconds = 10
         self._gdelt_disabled = False
-        self._gdelt_max_failures = 5  # disable after N consecutive failures
+        self._gdelt_max_failures = 8  # disable after N consecutive failures
         self._gdelt_disabled_until: float = 0  # re-enable after cooldown
         # GDELT response cache — avoid re-querying within cache window
         self._gdelt_cache: dict[str, tuple[float, list]] = {}  # query → (timestamp, articles)
-        self._gdelt_cache_ttl = 300  # 5 minutes
+        self._gdelt_cache_ttl = 900  # 15 minutes — matches realtime loop interval
+        # GDELT DOC query rotation — run 3 of 5 per cycle to reduce pressure
+        self._gdelt_query_offset = 0
+        self._gdelt_queries_per_cycle = 3
+        # Adaptive realtime interval — extends after GDELT rate-limits
+        self._realtime_interval = 15 * 60  # default 15 min
+        self._realtime_interval_default = 15 * 60
+        self._realtime_interval_backoff = 25 * 60  # 25 min after rate-limit
+        self._gdelt_rate_limited_recently = False
         # Keyword spike detector (trending term detection)
         self.spike_detector = KeywordSpikeDetector()
         # Cross-stream correlation engine
@@ -133,8 +141,6 @@ class DataCollector:
         """Temporarily disable GDELT with a cooldown period (default 10 min)."""
         self._gdelt_disabled = True
         self._gdelt_disabled_until = time.time() + cooldown_seconds
-        # Proactive trigger accumulator
-        self._pending_alerts: list[dict] = []
 
     # ── feedparser wrapper with proper User-Agent ──
     # Raw feedparser.parse(url) uses Python's default urllib UA
@@ -221,9 +227,15 @@ class DataCollector:
                 )
                 # Phase 2: GDELT bulk CSV downloads (Events then GKG, sequential)
                 # Both hit data.gdeltproject.org — running concurrent causes SSL/rate issues
-                await self._collect_gdelt_events()
-                await asyncio.sleep(5)
-                await self._collect_gdelt_gkg()
+                # Skip if GDELT DOC just got rate-limited — don't pile on
+                if not self._gdelt_disabled and not self._gdelt_rate_limited_recently:
+                    await self._collect_gdelt_events()
+                    await asyncio.sleep(5)
+                    await self._collect_gdelt_gkg()
+                elif self._gdelt_disabled:
+                    logger.info("[Collector] GDELT Events/GKG skipped (GDELT disabled, cooldown)")
+                else:
+                    logger.info("[Collector] GDELT Events/GKG skipped (recent rate-limit, backing off)")
 
                 # Phase 3: Financial market data (if collector available)
                 if self.market_collector:
@@ -289,12 +301,21 @@ class DataCollector:
                         logger.warning("[Collector] Alert callback failed: %s", e)
             except Exception as e:
                 logger.error("[Collector] Realtime loop error: %s", e)
-            await asyncio.sleep(15 * 60)
+            # Adaptive interval — back off after GDELT rate-limits
+            if self._gdelt_rate_limited_recently:
+                self._realtime_interval = self._realtime_interval_backoff
+                logger.info("[Collector] Realtime interval extended to %dmin (GDELT backoff)",
+                            self._realtime_interval // 60)
+            else:
+                self._realtime_interval = self._realtime_interval_default
+            await asyncio.sleep(self._realtime_interval)
 
     async def _run_hourly_loop(self):
         """Every hour: ACLED + USGS earthquakes + NASA EONET + GDACS disasters."""
         while True:
             try:
+                # Track alerts from hourly sources (earthquakes, conflicts, disasters)
+                pre_count = len(self._pending_alerts)
                 await asyncio.gather(
                     self._collect_acled(),
                     self._collect_usgs_earthquakes(),
@@ -302,14 +323,30 @@ class DataCollector:
                     self._collect_gdacs(),
                     return_exceptions=True,
                 )
+                # Fire alerts accumulated by hourly collectors
+                new_alerts = self._pending_alerts[pre_count:]
+                if new_alerts and self.on_alert:
+                    try:
+                        logger.info("[Collector] HOURLY ALERT: %d events from hourly sources",
+                                    len(new_alerts))
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, self.on_alert, list(new_alerts),
+                        )
+                    except Exception as e:
+                        logger.warning("[Collector] Hourly alert callback failed: %s", e)
             except Exception as e:
                 logger.error("[Collector] Hourly loop error: %s", e)
             await asyncio.sleep(60 * 60)
 
     async def _run_daily_loop(self):
-        """Every 24h: FRED + World Bank + ECB + UCDP + FX + Commodities + Yahoo Markets + Finnhub + Financial."""
+        """Every 24h: FRED + World Bank + ECB + UCDP + FX + Commodities + Yahoo Markets + Finnhub + Financial.
+
+        Economic data collectors generate economic_shift signals for meaningful changes.
+        Signals feed into PatternAccumulator to enable geo+econ cross-domain fusion.
+        """
         while True:
             try:
+                pre_count = len(self._pending_alerts)
                 await self._collect_fred()
                 await self._collect_worldbank()
                 await self._collect_ecb()
@@ -322,6 +359,21 @@ class DataCollector:
                 await self._collect_finnhub_earnings_calendar()
                 await self._collect_finnhub_economic_calendar()
                 await self._collect_finnhub_market_news()
+
+                # Fire economic signals accumulated by daily collectors
+                new_alerts = self._pending_alerts[pre_count:]
+                if new_alerts and self.on_alert:
+                    try:
+                        logger.info(
+                            "[Collector] DAILY ECONOMIC ALERT: %d economic signals "
+                            "from daily collectors — feeding to PatternAccumulator",
+                            len(new_alerts),
+                        )
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, self.on_alert, list(new_alerts),
+                        )
+                    except Exception as e:
+                        logger.warning("[Collector] Daily alert callback failed: %s", e)
             except Exception as e:
                 logger.error("[Collector] Daily loop error: %s", e)
             await asyncio.sleep(24 * 60 * 60)
@@ -345,15 +397,21 @@ class DataCollector:
             self._gdelt_disabled = False
             self._gdelt_consecutive_failures = 0
 
-        queries = [
+        all_queries = [
             '(economy OR inflation OR "interest rate" OR "central bank")',
             '(war OR conflict OR sanctions OR "military" OR "cease fire")',
             '(election OR government OR policy OR "political crisis")',
             '(technology OR AI OR semiconductor OR "artificial intelligence")',
             '(trade OR tariff OR "supply chain" OR "trade war")',
         ]
-        random.shuffle(queries)
-        queries = queries[:3]  # Only 3 queries per cycle to stay under rate limits
+        # Rotate queries — run _gdelt_queries_per_cycle per cycle, cycling through all domains
+        n = len(all_queries)
+        start = self._gdelt_query_offset % n
+        indices = [(start + i) % n for i in range(self._gdelt_queries_per_cycle)]
+        queries = [all_queries[i] for i in indices]
+        self._gdelt_query_offset += self._gdelt_queries_per_cycle
+        logger.info("[Collector] GDELT DOC: running %d/%d queries this cycle (domains: %s)",
+                    len(queries), n, [i + 1 for i in indices])
 
         any_success = False
         client_recreated_this_cycle = False
@@ -375,9 +433,9 @@ class DataCollector:
                                      query[:40], len(cached_articles), now - cached_ts)
                         continue
 
-                # 30s between queries (rate-limit safe margin)
+                # 30-45s between queries (rate-limit safe margin with jitter)
                 if i > 0:
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(30 + random.uniform(0, 15))
                 elif self._gdelt_consecutive_failures > 0 and not any_success:
                     await asyncio.sleep(min(20 * self._gdelt_consecutive_failures, 120))
 
@@ -394,6 +452,7 @@ class DataCollector:
                 )
                 if resp.status_code == 429:
                     self._gdelt_consecutive_failures += 1
+                    self._gdelt_rate_limited_recently = True
                     wait = min(self._gdelt_backoff_seconds * (2 ** self._gdelt_consecutive_failures), 300)
                     logger.info("[Collector] GDELT rate-limited, backoff %ds (failures=%d/%d)",
                                 wait, self._gdelt_consecutive_failures, self._gdelt_max_failures)
@@ -401,9 +460,9 @@ class DataCollector:
                         self._disable_gdelt()
                         logger.warning("[Collector] GDELT disabled after %d consecutive failures (cooldown 10min).",
                                        self._gdelt_consecutive_failures)
-                        return
-                    await asyncio.sleep(wait)
-                    continue
+                    # Stop cycle on rate-limit — remaining queries run next cycle
+                    logger.info("[Collector] GDELT stopping cycle early after 429 — remaining queries deferred")
+                    return
                 if resp.status_code != 200:
                     self._gdelt_consecutive_failures += 1
                     logger.warning("[Collector] GDELT HTTP %d for query '%s' (failures=%d)",
@@ -540,6 +599,7 @@ class DataCollector:
         if any_success:
             self._gdelt_consecutive_failures = 0
             self._gdelt_backoff_seconds = 10
+            self._gdelt_rate_limited_recently = False
 
     @staticmethod
     def _gdelt_region(article: dict) -> str:
@@ -589,6 +649,12 @@ class DataCollector:
         Goldstein scale (-10 to +10), actor info, and geolocation.
         We filter for high-conflict events (Goldstein < -5, mentions >= 3).
         """
+        if self._gdelt_disabled:
+            if time.time() < self._gdelt_disabled_until:
+                return
+            logger.info("[Collector] GDELT Events: cooldown expired, re-enabling")
+            self._gdelt_disabled = False
+            self._gdelt_consecutive_failures = 0
         try:
             # Get lastupdate.txt for the latest export URL
             # Uses no-verify client — data.gdeltproject.org has a known SSL cert mismatch
@@ -739,6 +805,12 @@ class DataCollector:
         what (themes), where (locations), and sentiment (tone).
         Much richer than article headlines — this is the GDELT metadata layer.
         """
+        if self._gdelt_disabled:
+            if time.time() < self._gdelt_disabled_until:
+                return
+            logger.info("[Collector] GDELT GKG: cooldown expired, re-enabling")
+            self._gdelt_disabled = False
+            self._gdelt_consecutive_failures = 0
         try:
             # Get lastupdate.txt for the latest GKG URL
             # Uses no-verify client — data.gdeltproject.org has a known SSL cert mismatch
@@ -761,16 +833,23 @@ class DataCollector:
                 logger.warning("[Collector] GDELT lastupdate.txt: no GKG URL found")
                 return
 
-            # Download GKG ZIP — with fallback to previous 15-min slot
+            # Download GKG ZIP — with multi-slot fallback for 404 race condition
+            # GKG files are announced in lastupdate.txt before they finish uploading.
+            # Try the announced URL first, then fall back through up to 4 previous
+            # 15-minute slots until we find a ready file.
             zip_resp = await self._gdelt_data_client.get(gkg_url, timeout=30.0)
             if zip_resp.status_code == 404:
-                # GKG files are announced before they're ready; try previous slot
                 ts = gkg_url.split("/")[-1].split(".")[0]
                 try:
                     dt = datetime.strptime(ts, "%Y%m%d%H%M%S")
-                    prev_dt = dt - timedelta(minutes=15)
-                    prev_url = gkg_url.replace(ts, prev_dt.strftime("%Y%m%d%H%M%S"))
-                    zip_resp = await self._gdelt_data_client.get(prev_url, timeout=30.0)
+                    for slots_back in range(1, 5):
+                        prev_dt = dt - timedelta(minutes=15 * slots_back)
+                        prev_url = gkg_url.replace(ts, prev_dt.strftime("%Y%m%d%H%M%S"))
+                        zip_resp = await self._gdelt_data_client.get(prev_url, timeout=30.0)
+                        if zip_resp.status_code == 200:
+                            logger.debug("[Collector] GDELT GKG: used slot -%d (-%dmin)",
+                                         slots_back, slots_back * 15)
+                            break
                 except Exception:
                     pass
 
@@ -1098,8 +1177,8 @@ class DataCollector:
 
         catalog = list(RSS_CATALOG)
 
-        # Always-include categories — crisis-critical feeds every cycle
-        priority_cats = {"crisis", "defense", "nuclear", "osint"}
+        # Always-include categories — crisis-critical + economic feeds every cycle
+        priority_cats = {"crisis", "defense", "nuclear", "osint", "finance", "economic"}
         priority_feeds = [f for f in catalog if f.get("category") in priority_cats]
         regular_feeds = [f for f in catalog if f.get("category") not in priority_cats]
 
@@ -1309,6 +1388,23 @@ class DataCollector:
                 )
                 if stored:
                     count += 1
+                    # Feed high-impact ACLED events into proactive alerts
+                    event_type = item.get("event_type", "").lower()
+                    fatalities = int(item.get("fatalities", 0) or 0)
+                    is_high_impact = (
+                        fatalities >= 10
+                        or event_type in ("battles", "explosions/remote violence",
+                                          "violence against civilians",
+                                          "strategic developments")
+                    )
+                    if is_high_impact:
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": "ACLED",
+                            "domain": "GEOPOLITICAL",
+                            "salience": min(0.95, 0.80 + fatalities * 0.005),
+                            "region": [region],
+                        })
 
             if count:
                 logger.info("[Collector] ACLED: stored %d new conflict events", count)
@@ -1388,10 +1484,73 @@ class DataCollector:
                 logger.info("[Collector] FRED %s: %.4f %s (%s)", series_id,
                             current_val or 0, unit, current["date"])
 
+                # ── Generate economic_shift signals for meaningful changes ──
+                # These feed into PatternAccumulator to enable geo+econ fusion
+                if change_pct is not None and current_val is not None:
+                    abs_change = abs(change_pct)
+                    # Thresholds vary by indicator type
+                    is_significant = False
+                    if series_id in ("FEDFUNDS", "DGS10", "TEDRATE"):
+                        # Interest rates: any change > 2% relative is significant
+                        is_significant = abs_change >= 2.0
+                    elif series_id in ("CPIAUCSL", "T10YIE"):
+                        # Inflation: > 1% relative change
+                        is_significant = abs_change >= 1.0
+                    elif series_id == "UNRATE":
+                        # Unemployment: > 3% relative change
+                        is_significant = abs_change >= 3.0
+                    elif series_id in ("DCOILBRENTEU", "DHHNGSP"):
+                        # Energy: > 5% change
+                        is_significant = abs_change >= 5.0
+                    elif series_id in ("BAMLH0A0HYM2", "STLFSI4"):
+                        # Stress indicators: > 10% relative change
+                        is_significant = abs_change >= 10.0
+                    elif series_id in ("T10Y2Y",):
+                        # Yield curve: any > 15% relative change (or inversion signal)
+                        is_significant = abs_change >= 15.0 or (current_val < 0 and previous_val and previous_val >= 0)
+                    elif series_id in ("DTWEXBGS", "DEXUSEU", "DEXJPUS", "DEXCHUS",
+                                       "DEXMXUS", "DEXBZUS", "DEXTAUS"):
+                        # Currency: > 1.5% change
+                        is_significant = abs_change >= 1.5
+                    elif series_id in ("M2SL", "GFDEBTN"):
+                        # Money supply / debt: > 2% change
+                        is_significant = abs_change >= 2.0
+                    elif series_id == "UMCSENT":
+                        # Consumer sentiment: > 5% change
+                        is_significant = abs_change >= 5.0
+                    else:
+                        # Generic: > 3% relative change
+                        is_significant = abs_change >= 3.0
+
+                    if is_significant:
+                        direction = "rose" if change_pct > 0 else "fell"
+                        headline = (
+                            f"[ECONOMIC SHIFT] FRED {name} {direction} to "
+                            f"{current_val:.2f}{unit} ({change_pct:+.2f}% vs previous)"
+                        )
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": "FRED",
+                            "domain": "ECONOMIC",
+                            "salience": 0.90,
+                            "region": ["US"],
+                            "signal_type": "economic_shift",
+                        })
+                        logger.info("[Collector] FRED economic_shift signal: %s", headline)
+
             except Exception as e:
                 logger.warning("[Collector] FRED error %s: %s", series_id, e)
 
     # ── World Bank API (FREE, no key, Tier 1) ──
+
+    # Change thresholds per WorldBank indicator type (% relative change)
+    _WORLDBANK_THRESHOLDS = {
+        "NY.GDP.MKTP.KD.ZG": 1.0,   # GDP growth: >1pp shift is significant
+        "FP.CPI.TOTL.ZG": 1.5,      # CPI inflation: >1.5pp shift
+        "SL.UEM.TOTL.ZS": 1.0,      # Unemployment: >1pp shift
+        "BX.KLT.DINV.CD.WD": 10.0,  # FDI: >10% change (volatile)
+        "DT.DOD.DECT.CD": 5.0,      # External debt: >5% change
+    }
 
     async def _collect_worldbank(self):
         """Collect from World Bank API v2 — 16,000+ global indicators.
@@ -1402,6 +1561,10 @@ class DataCollector:
         WorldBank API is unreliable (frequent 502s, timeouts). Uses:
           - Per-request 15s timeout (shorter than default to not block cycle)
           - Graceful skip on any HTTP error (API has frequent outages)
+
+        Change detection: fetches last 2 values (mrnev=2) and fires
+        economic_shift signals when the latest value deviates significantly
+        from the previous one.
         """
         # Fallback chains: composite first, then individual countries
         country_sets = [
@@ -1424,8 +1587,7 @@ class DataCollector:
                         params={
                             "format": "json",
                             "per_page": 5,
-                            "date": "2019:2025",
-                            "mrnev": 1,
+                            "mrv": 2,  # Most Recent Values — last 2 non-empty for change detection
                         },
                         timeout=15.0,  # Short timeout — WorldBank is flaky
                     )
@@ -1447,6 +1609,8 @@ class DataCollector:
                     if not records:
                         continue
 
+                    # Collect valid values sorted by date (newest first)
+                    valid_records: list[tuple[str, float, str, dict]] = []
                     stored_count = 0
                     for record in records:
                         value = record.get("value")
@@ -1465,12 +1629,49 @@ class DataCollector:
                             raw_payload=record,
                         )
                         stored_count += 1
+                        valid_records.append((period, float(value), country, record))
 
                     if stored_count > 0:
                         logger.info("[Collector] WorldBank %s: %d records from %s",
                                     name, stored_count, country_set)
                         got_data = True
                         total_stored += stored_count
+
+                    # ── Change detection: compare latest two values ──
+                    if len(valid_records) >= 2:
+                        # Records come newest-first from WorldBank API
+                        curr_period, curr_val, curr_country, _ = valid_records[0]
+                        prev_period, prev_val, _, _ = valid_records[1]
+
+                        if prev_val and abs(prev_val) > 1e-9:
+                            # For rates (%, index), use absolute difference in percentage points
+                            # For monetary values (USD), use relative % change
+                            if unit == "%":
+                                change_pp = curr_val - prev_val
+                                threshold = self._WORLDBANK_THRESHOLDS.get(indicator_id, 2.0)
+                                is_significant = abs(change_pp) >= threshold
+                                change_desc = f"{change_pp:+.2f}pp"
+                            else:
+                                change_pct = ((curr_val - prev_val) / abs(prev_val)) * 100
+                                threshold = self._WORLDBANK_THRESHOLDS.get(indicator_id, 5.0)
+                                is_significant = abs(change_pct) >= threshold
+                                change_desc = f"{change_pct:+.1f}%"
+
+                            if is_significant:
+                                direction = "rose" if curr_val > prev_val else "fell"
+                                headline = (
+                                    f"[ECONOMIC SHIFT] WorldBank {name} {direction}: "
+                                    f"{curr_val:.2f}{unit} ({change_desc} vs {prev_period})"
+                                )
+                                self._pending_alerts.append({
+                                    "headline": headline,
+                                    "source": "WorldBank",
+                                    "domain": "ECONOMIC",
+                                    "salience": 0.87,
+                                    "region": ["GLOBAL"],
+                                    "signal_type": "economic_shift",
+                                })
+                                logger.info("[Collector] WorldBank economic_shift signal: %s", headline)
 
                 except (httpx.TimeoutException, httpx.ConnectError) as e:
                     # Network-level failure — WorldBank is down, skip indicator
@@ -1491,8 +1692,19 @@ class DataCollector:
 
     # ── ECB API (FREE, Tier 1 — EU economic data) ──
 
+    # ECB change detection thresholds
+    _ECB_THRESHOLDS = {
+        "Euro Area HICP Inflation": 0.3,     # Inflation: >0.3pp monthly change
+        "EUR/USD Exchange Rate": 1.0,         # FX: >1% change
+    }
+
     async def _collect_ecb(self):
-        """Collect from ECB Statistical Data Warehouse (SDMX-JSON API)."""
+        """Collect from ECB Statistical Data Warehouse (SDMX-JSON API).
+
+        Change detection: fetches last 2 observations per series and fires
+        economic_shift signals for significant moves — inflation jumps,
+        EUR/USD volatility, etc.
+        """
         # ECB SDMX endpoint: data-api.ecb.europa.eu/service/data/{flowRef}/{key}
         # The key uses dots as dimension separators within the dataflow
         ecb_series = [
@@ -1526,6 +1738,42 @@ class DataCollector:
 
                 if observations:
                     logger.info("[Collector] ECB %s: %d observations", name, len(observations))
+
+                # ── Change detection: compare the 2 most recent observations ──
+                if len(observations) >= 2:
+                    # observations are (period, value) tuples, newest last from SDMX
+                    curr_period, curr_val = observations[-1]
+                    prev_period, prev_val = observations[-2]
+
+                    if prev_val and abs(prev_val) > 1e-9:
+                        # For inflation (%), use absolute difference in percentage points
+                        # For exchange rates, use relative % change
+                        if unit == "%":
+                            change_pp = curr_val - prev_val
+                            threshold = self._ECB_THRESHOLDS.get(name, 0.5)
+                            is_significant = abs(change_pp) >= threshold
+                            change_desc = f"{change_pp:+.2f}pp"
+                        else:
+                            change_pct = ((curr_val - prev_val) / abs(prev_val)) * 100
+                            threshold = self._ECB_THRESHOLDS.get(name, 1.0)
+                            is_significant = abs(change_pct) >= threshold
+                            change_desc = f"{change_pct:+.2f}%"
+
+                        if is_significant:
+                            direction = "rose" if curr_val > prev_val else "fell"
+                            headline = (
+                                f"[ECONOMIC SHIFT] ECB {name} {direction}: "
+                                f"{curr_val:.4f} {unit} ({change_desc} vs {prev_period})"
+                            )
+                            self._pending_alerts.append({
+                                "headline": headline,
+                                "source": "ECB",
+                                "domain": "ECONOMIC",
+                                "salience": 0.88,
+                                "region": ["EU"],
+                                "signal_type": "economic_shift",
+                            })
+                            logger.info("[Collector] ECB economic_shift signal: %s", headline)
 
             except Exception as e:
                 logger.warning("[Collector] ECB error %s: %s", name, e)
@@ -1977,29 +2225,61 @@ class DataCollector:
                     if result:
                         meta = result[0].get("meta", {})
                         price = meta.get("regularMarketPrice")
+                        prev_close = meta.get("previousClose")
                         if price and price > 0:
                             period = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+                            change_pct = None
+                            if prev_close and prev_close > 0:
+                                change_pct = round(((price - prev_close) / prev_close) * 100, 3)
+
                             self.db.store_economic(
                                 source="Commodities",
                                 indicator=name,
                                 value=round(float(price), 2),
                                 period=period,
                                 unit=unit,
+                                previous_value=float(prev_close) if prev_close else None,
+                                change_pct=change_pct,
                                 raw_payload={
                                     "yahoo_symbol": symbol,
                                     "price": price,
+                                    "previous_close": prev_close,
                                     "currency": meta.get("currency", "USD"),
                                     "exchange": meta.get("exchangeName", ""),
                                     "market_state": meta.get("marketState", ""),
                                 },
                             )
                             count += 1
-                            logger.info("[Collector] %s: $%.2f %s (Yahoo, %s)",
-                                        name, float(price), unit, period)
+                            chg_str = f" ({change_pct:+.2f}%)" if change_pct is not None else ""
+                            logger.info("[Collector] %s: $%.2f %s%s (Yahoo, %s)",
+                                        name, float(price), unit, chg_str, period)
                             if "Brent" in name or "WTI" in name:
                                 yahoo_got_oil = True
                             if "Natural Gas" in name:
                                 yahoo_got_gas = True
+
+                            # ── Commodity price shock detection ──
+                            if change_pct is not None:
+                                abs_chg = abs(change_pct)
+                                # Energy: >3% daily move; Gold: >2%
+                                threshold = 2.0 if "Gold" in name else 3.0
+                                if abs_chg >= threshold:
+                                    direction = "up" if change_pct > 0 else "down"
+                                    headline = (
+                                        f"[COMMODITY SHOCK] {name} {direction} {abs_chg:.1f}% "
+                                        f"to ${float(price):.2f} (prev: ${float(prev_close):.2f})"
+                                    )
+                                    self._pending_alerts.append({
+                                        "headline": headline,
+                                        "source": "Commodities/Yahoo",
+                                        "domain": "ECONOMIC",
+                                        "salience": 0.90,
+                                        "region": ["GLOBAL"],
+                                        "signal_type": "financial_anomaly",
+                                    })
+                                    logger.info("[Collector] Commodity signal: %s", headline)
+
             except Exception as e:
                 logger.debug("[Collector] Yahoo %s error: %s", symbol, e)
 
@@ -2183,6 +2463,40 @@ class DataCollector:
                 chg_str = f" ({change_pct:+.2f}%)" if change_pct is not None else ""
                 logger.info("[Collector] Yahoo %s: %.2f%s", name, float(price), chg_str)
 
+                # ── Generate economic_shift signals for significant daily market moves ──
+                if change_pct is not None:
+                    abs_chg = abs(change_pct)
+                    # Thresholds: indices > 1.5%, VIX > 10% change
+                    threshold = 10.0 if "VIX" in name else 1.5
+                    if abs_chg >= threshold:
+                        direction = "up" if change_pct > 0 else "down"
+                        headline = (
+                            f"[MARKET SHIFT] {name} {direction} {abs_chg:.1f}% "
+                            f"to {float(price):.2f} (prev: {float(prev_close):.2f})"
+                        )
+                        # Map indices to regions
+                        idx_region = "GLOBAL"
+                        if any(x in name for x in ("S&P", "Dow", "NASDAQ", "Russell")):
+                            idx_region = "US"
+                        elif "DAX" in name or "Stoxx" in name:
+                            idx_region = "EU"
+                        elif "FTSE" in name:
+                            idx_region = "UK"
+                        elif "Nikkei" in name:
+                            idx_region = "JP"
+                        elif "Shanghai" in name:
+                            idx_region = "CN"
+
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": "YahooFinance",
+                            "domain": "MARKET",
+                            "salience": 0.90,
+                            "region": [idx_region],
+                            "signal_type": "economic_shift",
+                        })
+                        logger.info("[Collector] Yahoo economic_shift signal: %s", headline)
+
             except Exception as e:
                 logger.debug("[Collector] Yahoo %s error: %s", symbol, e)
 
@@ -2250,6 +2564,32 @@ class DataCollector:
                         },
                     )
                     count += 1
+
+                    # ── Feed significant financial news into proactive alerts ──
+                    # Finnhub market news enriches pattern accumulator with
+                    # financial context that can merge with geopolitical patterns
+                    hl_lower = headline.lower()
+                    is_significant = any(
+                        kw in hl_lower
+                        for kw in (
+                            "fed", "ecb", "interest rate", "inflation", "gdp",
+                            "recession", "rate cut", "rate hike", "tariff",
+                            "sanctions", "trade war", "oil", "crude",
+                            "crash", "selloff", "rally", "downgrade",
+                            "earnings miss", "layoffs", "merger", "acquisition",
+                            "default", "debt", "yield", "treasury",
+                            "stimulus", "quantitative", "currency",
+                        )
+                    )
+                    if is_significant:
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": f"Finnhub/{cat}",
+                            "domain": "ECONOMIC",
+                            "salience": 0.87,
+                            "region": [],
+                            "signal_type": "perception_alert",
+                        })
 
                 await asyncio.sleep(1)  # Rate limit: stay under 60/min
             except Exception as e:
@@ -2327,6 +2667,22 @@ class DataCollector:
                     },
                 )
                 count += 1
+
+                # ── Feed significant earnings surprises into proactive alerts ──
+                if surprise_pct is not None and abs(surprise_pct) >= 20.0:
+                    direction = "beat" if surprise_pct > 0 else "missed"
+                    headline = (
+                        f"[EARNINGS] {symbol} {direction} estimates by "
+                        f"{abs(surprise_pct):.1f}% — EPS: {eps_actual} vs est: {eps_estimate}"
+                    )
+                    self._pending_alerts.append({
+                        "headline": headline,
+                        "source": "Finnhub/Earnings",
+                        "domain": "MARKET",
+                        "salience": 0.88,
+                        "region": ["US"],
+                        "signal_type": "economic_shift",
+                    })
 
             await asyncio.sleep(1)
         except Exception as e:
@@ -2409,6 +2765,39 @@ class DataCollector:
                 )
                 count += 1
 
+                # ── Generate economic_shift signals for high-impact surprises ──
+                # Rate decisions, CPI, GDP releases with significant surprise
+                is_high_impact = impact in ("high", "medium")
+                has_data = actual is not None
+                has_surprise = surprise is not None and abs(surprise) >= 5.0
+                is_rate_decision = any(
+                    kw in event_name.lower()
+                    for kw in ("interest rate", "rate decision", "fomc", "ecb rate",
+                               "boe rate", "boj rate", "rba rate", "central bank")
+                )
+
+                if has_data and (has_surprise or is_rate_decision):
+                    region_map = {
+                        "US": "US", "EU": "EU", "GB": "UK", "JP": "JP",
+                        "CN": "CN", "DE": "EU", "FR": "EU", "IN": "IN",
+                    }
+                    region = region_map.get(country, "GLOBAL")
+                    surprise_str = f" (surprise: {surprise:+.1f}%)" if surprise is not None else ""
+                    headline = (
+                        f"[ECONOMIC EVENT] [{country}] {event_name}: "
+                        f"actual={actual}, estimate={estimate}, prev={prev}"
+                        f"{surprise_str} — impact: {impact}"
+                    )
+                    self._pending_alerts.append({
+                        "headline": headline,
+                        "source": "Finnhub/EconCalendar",
+                        "domain": "ECONOMIC",
+                        "salience": 0.92 if is_rate_decision else 0.88,
+                        "region": [region],
+                        "signal_type": "economic_shift",
+                    })
+                    logger.info("[Collector] Finnhub economic_shift signal: %s", headline)
+
             await asyncio.sleep(1)
         except Exception as e:
             logger.debug("[Collector] Finnhub econ calendar error: %s", e)
@@ -2467,6 +2856,41 @@ class DataCollector:
                 count += 1
                 chg_str = f" ({change_pct:+.3f}%)" if change_pct is not None else ""
                 logger.info("[Collector] Finnhub FX %s: %.5f%s", name, float(price), chg_str)
+
+                # ── Generate financial_anomaly signals for significant FX moves ──
+                if change_pct is not None:
+                    abs_chg = abs(change_pct)
+                    # FX thresholds: majors >1%, EM/volatile pairs >2%
+                    is_em = any(em in symbol for em in ("TRY", "ZAR", "CNH"))
+                    threshold = 2.0 if is_em else 1.0
+
+                    if abs_chg >= threshold:
+                        direction = "up" if change_pct > 0 else "down"
+                        headline = (
+                            f"[FX SHIFT] Finnhub {name} {direction} {abs_chg:.2f}% "
+                            f"to {float(price):.5f} (prev: {float(prev_close):.5f})"
+                        )
+                        # Map FX pairs to regions
+                        fx_region = "GLOBAL"
+                        region_hints = {
+                            "EUR": "EU", "GBP": "UK", "JPY": "JP",
+                            "CHF": "CH", "AUD": "AU", "CNH": "CN",
+                            "TRY": "TR", "ZAR": "ZA",
+                        }
+                        for hint, reg in region_hints.items():
+                            if hint in name:
+                                fx_region = reg
+                                break
+
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": "Finnhub/FX",
+                            "domain": "ECONOMIC",
+                            "salience": 0.87,
+                            "region": [fx_region],
+                            "signal_type": "financial_anomaly",
+                        })
+                        logger.info("[Collector] Finnhub FX signal: %s", headline)
 
                 await asyncio.sleep(1)  # Rate limit
             except Exception as e:
@@ -2574,6 +2998,58 @@ class DataCollector:
                 count += 1
                 chg_str = f" ({change_pct:+.3f}%)" if change_pct is not None else ""
                 logger.info("[Collector] Yahoo %s: %.4f%s", name, float(price), chg_str)
+
+                # ── Generate economic_shift signals for significant FX/Sector/Bond moves ──
+                if change_pct is not None:
+                    abs_chg = abs(change_pct)
+                    # Dynamic thresholds by asset class
+                    if symbol in self.YAHOO_CURRENCY_PAIRS:
+                        # FX: >1% daily move is significant; EM currencies >2%
+                        is_em = any(em in symbol for em in ("RUB", "TRY", "ZAR", "CNH"))
+                        threshold = 2.0 if is_em else 1.0
+                        signal_type = "financial_anomaly"
+                        # Map FX pairs to regions
+                        fx_region_map = {
+                            "EUR": "EU", "GBP": "UK", "JPY": "JP",
+                            "CNH": "CN", "RUB": "RU", "TRY": "TR",
+                            "ZAR": "ZA", "DX-Y": "US",
+                        }
+                        region = "GLOBAL"
+                        for k, r in fx_region_map.items():
+                            if k in symbol:
+                                region = r
+                                break
+                    elif symbol in self.YAHOO_SECTOR_ETFS:
+                        # Sector ETFs: >2.5% daily move
+                        threshold = 2.5
+                        signal_type = "economic_shift"
+                        region = "US"
+                    elif symbol in self.YAHOO_BOND_ETFS:
+                        # Bond ETFs: >1.5% daily move (bonds are normally stable)
+                        threshold = 1.5
+                        signal_type = "financial_anomaly"
+                        # EM bonds map to GLOBAL, US treasuries to US
+                        region = "GLOBAL" if "EM" in name else "US"
+                    else:
+                        threshold = 2.0
+                        signal_type = "economic_shift"
+                        region = "GLOBAL"
+
+                    if abs_chg >= threshold:
+                        direction = "up" if change_pct > 0 else "down"
+                        headline = (
+                            f"[MARKET SHIFT] {name} {direction} {abs_chg:.2f}% "
+                            f"to {float(price):.4f} (prev: {float(prev_close):.4f})"
+                        )
+                        self._pending_alerts.append({
+                            "headline": headline,
+                            "source": source_tag,
+                            "domain": "ECONOMIC",
+                            "salience": 0.88,
+                            "region": [region],
+                            "signal_type": signal_type,
+                        })
+                        logger.info("[Collector] Yahoo FX/Sector/Bond signal: %s", headline)
 
             except Exception as e:
                 logger.debug("[Collector] Yahoo %s error: %s", symbol, e)
