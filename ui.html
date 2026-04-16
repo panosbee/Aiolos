@@ -5140,6 +5140,12 @@ let _ttsSources = [];           // ALL scheduled AudioBufferSourceNodes (for cle
 let _ttsSpeaking = false;       // True while TTS is active (queuing or playing)
 const _ttsPlaybackRate = 1.30;  // Speech speed multiplier (1.0 = normal, 1.30 = 30% faster)
 
+// ── Global Sentence Queue (prevents overlap between messages) ──
+let _ttsSentenceQueue = [];     // Global queue of sentences waiting to be spoken
+let _ttsSpeakingStream = false; // True while sentence queue is actively playing
+let _ttsSentenceGen = 0;        // Generation counter — bumped on each new message
+let _ttsSentenceBuffer = '';    // Accumulates text until sentence boundary
+
 // ── Initialize Voice System ──
 async function _initVoice() {
   try {
@@ -5206,7 +5212,13 @@ function _splitIntoSentences(text) {
  * Used during streaming to hide tags before post-processing runs on server.
  */
 function _stripInternalTags(text) {
-  // Block-style tags: <TAG>...</TAG>
+  // Execution tags the LLM hallucinates: <run>, <run_web_agent>, <execute>, etc.
+  text = text.replace(/<run(?:_\w+)?\b[^>]*>[\s\S]*?<\/run(?:_\w+)?\s*>/gi, '');
+  text = text.replace(/<execute\b[^>]*>[\s\S]*?<\/execute\s*>/gi, '');
+  text = text.replace(/<search\b[^>]*>[\s\S]*?<\/search\s*>/gi, '');
+  text = text.replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call\s*>/gi, '');
+  text = text.replace(/<function_call\b[^>]*>[\s\S]*?<\/function_call\s*>/gi, '');
+  // Block-style internal tags: <TAG>...</TAG>
   text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*?<\/VISUAL_ACTION\s*>/gi, '');
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*?<\/MEMORY_STORE\s*>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\b[^>]*>[\s\S]*?<\/BAYESIAN_FUZZY_ENGINE\s*>/gi, '');
@@ -5215,6 +5227,8 @@ function _stripInternalTags(text) {
   text = text.replace(/<MEMORY_STORE\s+[^>]*\/?>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\s+[^>]*\/?>/gi, '');
   // Incomplete block tags at end of stream (opening tag without closing)
+  text = text.replace(/<run(?:_\w+)?\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<execute\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*$/gi, '');
   // Clean up multiple blank lines
@@ -5229,8 +5243,8 @@ function _stripInternalTags(text) {
 async function speakText(text) {
   if (!_voiceEnabled || !text || text.length < 2) return;
 
-  // Stop any currently playing TTS
-  stopSpeaking();
+  // Stop current audio playback (but NOT the sentence queue)
+  _stopCurrentAudio();
 
   const cleanText = _cleanTextForSpeech(text);
   if (cleanText.length < 2) return;
@@ -5438,26 +5452,40 @@ async function _speakViaServerProxy(text) {
 /**
  * Stop any currently playing TTS audio.
  */
-function stopSpeaking() {
-  _ttsSpeaking = false;
-
-  // Close WebSocket — stops new chunks from arriving
+/**
+ * Stop current audio playback WITHOUT killing the sentence queue.
+ * Used by speakText() between sentences in the queue.
+ */
+function _stopCurrentAudio() {
   if (_ttsWs) {
     try { _ttsWs.close(); } catch(e) {}
     _ttsWs = null;
   }
-
-  // Stop ALL scheduled AudioBufferSourceNodes (fixes overlap bug)
   for (const src of _ttsSources) {
     try { src.stop(); } catch(e) {}
   }
   _ttsSources = [];
-
-  // Disconnect gain node to kill any residual audio
   if (_ttsGainNode) {
     try { _ttsGainNode.disconnect(); } catch(e) {}
     _ttsGainNode = null;
   }
+}
+
+/**
+ * Stop ALL TTS — current audio AND the sentence queue.
+ * Used when a new message starts or user explicitly stops.
+ */
+function stopSpeaking() {
+  _ttsSpeaking = false;
+
+  // ── Kill the sentence queue — prevents queued sentences from playing ──
+  _ttsSentenceGen++;             // Bump generation — any running _playNextSentence will bail
+  _ttsSentenceQueue = [];
+  _ttsSpeakingStream = false;
+  _ttsSentenceBuffer = '';
+
+  // Stop current audio
+  _stopCurrentAudio();
 
   _ttsQueue = [];
   _ttsPlaying = false;
@@ -5623,8 +5651,59 @@ function toggleAutoVoice() {
  */
 function autoSpeak(text) {
   if (_voiceAutoPlay && _voiceEnabled && text) {
+    // Stop any previous TTS before starting new message
+    stopSpeaking();
     speakText(text);
   }
+}
+
+/**
+ * Global sentence-level TTS queue for streaming responses.
+ * Uses generation counter to prevent overlap between messages.
+ */
+function _flushSentenceToTTS(sentence, gen) {
+  if (!_voiceAutoPlay || !_voiceEnabled || !sentence.trim()) return;
+  if (gen !== _ttsSentenceGen) return;  // Stale generation — skip
+  _ttsSentenceQueue.push(sentence.trim());
+  if (!_ttsSpeakingStream) _playNextSentence(gen);
+}
+
+async function _playNextSentence(gen) {
+  // Check generation — if bumped, another message started, bail out
+  if (gen !== _ttsSentenceGen) {
+    _ttsSpeakingStream = false;
+    return;
+  }
+  if (_ttsSentenceQueue.length === 0) {
+    _ttsSpeakingStream = false;
+    _updateSpeakingIndicator(false);
+    return;
+  }
+  _ttsSpeakingStream = true;
+  const sentence = _ttsSentenceQueue.shift();
+  try {
+    await speakText(sentence);
+  } catch (e) {
+    console.warn('[Voice/Stream] Sentence TTS failed:', e);
+  }
+  // Continue with next sentence (re-check generation)
+  _playNextSentence(gen);
+}
+
+function _checkSentenceBoundary(text, gen) {
+  if (gen !== _ttsSentenceGen) return;  // Stale generation
+  _ttsSentenceBuffer += text;
+  const sentenceRegex = /([^.!?;·]+[.!?;·]+)\s*/g;
+  let match;
+  let lastIndex = 0;
+  while ((match = sentenceRegex.exec(_ttsSentenceBuffer)) !== null) {
+    const sentence = match[1].trim();
+    if (sentence.length > 5) {
+      _flushSentenceToTTS(sentence, gen);
+    }
+    lastIndex = sentenceRegex.lastIndex;
+  }
+  _ttsSentenceBuffer = _ttsSentenceBuffer.substring(lastIndex);
 }
 
 async function sendChat() {
@@ -5664,50 +5743,9 @@ async function sendChat() {
   let responseTextEl = null;
   let streamedText = '';
 
-  // ── TTS sentence queue: speak sentences as they arrive ──
-  let _ttsSentenceBuffer = '';
-  let _ttsSentenceQueue = [];
-  let _ttsSpeakingStream = false;
-
-  function _flushSentenceToTTS(sentence) {
-    if (!_voiceAutoPlay || !_voiceEnabled || !sentence.trim()) return;
-    _ttsSentenceQueue.push(sentence.trim());
-    if (!_ttsSpeakingStream) _playNextSentence();
-  }
-
-  async function _playNextSentence() {
-    if (_ttsSentenceQueue.length === 0) {
-      _ttsSpeakingStream = false;
-      return;
-    }
-    _ttsSpeakingStream = true;
-    const sentence = _ttsSentenceQueue.shift();
-    try {
-      await speakText(sentence);
-    } catch (e) {
-      console.warn('[Voice/Stream] Sentence TTS failed:', e);
-    }
-    // Play next sentence after current one finishes
-    _playNextSentence();
-  }
-
-  function _checkSentenceBoundary(text) {
-    // Accumulate text and flush complete sentences to TTS
-    _ttsSentenceBuffer += text;
-    // Split on sentence boundaries: . ! ? ; followed by space or end
-    const sentenceRegex = /([^.!?;]+[.!?;]+)\s*/g;
-    let match;
-    let lastIndex = 0;
-    while ((match = sentenceRegex.exec(_ttsSentenceBuffer)) !== null) {
-      const sentence = match[1].trim();
-      if (sentence.length > 5) {  // Skip very short fragments
-        _flushSentenceToTTS(sentence);
-      }
-      lastIndex = sentenceRegex.lastIndex;
-    }
-    // Keep the remainder (incomplete sentence)
-    _ttsSentenceBuffer = _ttsSentenceBuffer.substring(lastIndex);
-  }
+  // ── Stop any previous TTS and reset global sentence queue ──
+  stopSpeaking();
+  const myGen = ++_ttsSentenceGen;  // Capture THIS message's generation
 
   try {
     // ═══ SSE Streaming Chat ═══
@@ -5811,7 +5849,7 @@ async function sendChat() {
 
             // Feed CLEANED text to sentence-level TTS (no tags in speech)
             const cleanChunk = _stripInternalTags(chunkText);
-            if (cleanChunk) _checkSentenceBoundary(cleanChunk);
+            if (cleanChunk) _checkSentenceBoundary(cleanChunk, myGen);
           }
 
           else if (currentEvent === 'done') {
@@ -5827,8 +5865,8 @@ async function sendChat() {
             chatHistory.push({ role: 'assistant', content: finalText });
 
             // Flush remaining sentence buffer to TTS
-            if (_ttsSentenceBuffer.trim().length > 5) {
-              _flushSentenceToTTS(_ttsSentenceBuffer);
+            if (_ttsSentenceBuffer.trim().length > 5 && myGen === _ttsSentenceGen) {
+              _flushSentenceToTTS(_ttsSentenceBuffer, myGen);
               _ttsSentenceBuffer = '';
             }
 
@@ -5869,16 +5907,17 @@ async function sendChat() {
       });
       const data = await res.json();
 
+      const fallbackResponse = _stripInternalTags(data.response || '');
       chatHistory.push({ role: 'user', content: message });
-      chatHistory.push({ role: 'assistant', content: data.response || '' });
+      chatHistory.push({ role: 'assistant', content: fallbackResponse });
 
       conversation.innerHTML += `
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
           <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
-          <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(data.response || '')}</div>
+          <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(fallbackResponse)}</div>
         </div>`;
 
-      autoSpeak(data.response || '');
+      autoSpeak(fallbackResponse);
     } catch (fallbackErr) {
       conversation.innerHTML += `
         <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
@@ -5966,7 +6005,7 @@ async function initiateProactiveChat(notif) {
     const thinkEl = document.getElementById(thinkingId);
     if (thinkEl) thinkEl.remove();
 
-    const response = data.response || data.reasoning || 'Could not analyze at this time.';
+    const response = _stripInternalTags(data.response || data.reasoning || 'Could not analyze at this time.');
     chatHistory.push({ role: 'assistant', content: response });
 
     conversation.innerHTML += `

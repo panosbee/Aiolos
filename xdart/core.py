@@ -5111,25 +5111,21 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         original_len = len(response_text)
 
-        # 1. Strip <run>...</run> tags (any format)
-        run_matches = re.findall(r'<run\b[^>]*>.*?</run\s*>', response_text, flags=re.DOTALL | re.IGNORECASE)
-        if run_matches:
-            for m in run_matches:
-                logger.info("[Chat.InternalStrip] Stripped <run> tag: %s", m[:120])
-            response_text = re.sub(
-                r'<run\b[^>]*>.*?</run\s*>',
-                '',
-                response_text,
-                flags=re.DOTALL | re.IGNORECASE,
-            )
-
-        # 2. Strip <execute>...</execute> tags
-        response_text = re.sub(
-            r'<execute\b[^>]*>.*?</execute\s*>',
-            '',
-            response_text,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
+        # 1. Strip <run>...</run>, <run_*>...</run_*>, <execute>...</execute> tags
+        # The LLM hallucinates various execution tags: <run>, <run_web_agent>,
+        # <run_tool>, <execute>, etc. Catch them all with a broad pattern.
+        for tag_pattern in (
+            r'<run(?:_\w+)?\b[^>]*>.*?</run(?:_\w+)?\s*>',   # <run>, <run_web_agent>, <run_tool>, etc.
+            r'<execute\b[^>]*>.*?</execute\s*>',               # <execute>...</execute>
+            r'<search\b[^>]*>.*?</search\s*>',                 # <search>...</search>
+            r'<tool_call\b[^>]*>.*?</tool_call\s*>',           # <tool_call>...</tool_call>
+            r'<function_call\b[^>]*>.*?</function_call\s*>',   # <function_call>...</function_call>
+        ):
+            matches = re.findall(tag_pattern, response_text, flags=re.DOTALL | re.IGNORECASE)
+            if matches:
+                for m in matches:
+                    logger.info("[Chat.InternalStrip] Stripped execution tag: %s", m[:120])
+                response_text = re.sub(tag_pattern, '', response_text, flags=re.DOTALL | re.IGNORECASE)
 
         # 3. Strip "ΕΚΤΕΛΕΣΗ" sections ONLY when they contain tool execution references
         # (not conceptual proposals that happen to use the word)
@@ -5150,7 +5146,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # 5. Strip any remaining internal tags that slipped through earlier processors
         # Block-style: <TAG>...</TAG>
-        for tag in ('VISUAL_ACTION', 'MEMORY_STORE', 'BAYESIAN_FUZZY_ENGINE'):
+        for tag in ('VISUAL_ACTION', 'MEMORY_STORE', 'BAYESIAN_FUZZY_ENGINE',
+                     'run_web_agent', 'run_tool', 'run_search', 'auto_search'):
             response_text = re.sub(
                 rf'<{tag}\b[^>]*>.*?</{tag}\s*>',
                 '', response_text, flags=re.DOTALL | re.IGNORECASE,
