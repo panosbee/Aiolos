@@ -4203,8 +4203,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         logger.info("[Chat/AutoSearch] Intercepted %d search directive(s): %s",
                      len(unique_queries), [q[:60] for q in unique_queries])
 
-        # Run searches
-        all_findings = []
+        # Run searches and collect raw results for LLM synthesis
+        all_search_results = []  # [(query, hits)]
         for query in unique_queries:
             try:
                 import asyncio
@@ -4218,28 +4218,77 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
                 hits = result.get("results", [])
                 if hits:
-                    findings = [f"**Αυτόνομη Έρευνα: \"{query}\"**"]
-                    for h in hits[:3]:
-                        title = h.get("title", "")
-                        snippet = h.get("snippet", "")
-                        url = h.get("url", "")
-                        findings.append(f"• [{title}]({url}): {snippet}")
-                    all_findings.append("\n".join(findings))
+                    all_search_results.append((query, hits[:5]))
                     logger.info("[Chat/AutoSearch] Found %d results for '%s'", len(hits), query[:60])
             except Exception as exc:
                 logger.warning("[Chat/AutoSearch] Search failed for '%s': %s", query[:60], exc)
 
-        if not all_findings:
+        if not all_search_results:
             return response_text
 
-        # Append findings to response
-        research_block = (
-            "\n\n---\n"
-            "📡 **Αυτόνομη Έρευνα** (αντί να σας πω \"ψάξτε\", έψαξα εγώ):\n\n"
-            + "\n\n".join(all_findings)
-        )
+        # ── Synthesize search results via LLM instead of showing raw links ──
+        findings_text = ""
+        source_domains = set()
+        for query, hits in all_search_results:
+            findings_text += f"\n--- Search: \"{query}\" ---\n"
+            for h in hits:
+                title = h.get("title", "")
+                snippet = h.get("snippet", "")
+                url = h.get("url", "")
+                findings_text += f"  [{title}]: {snippet}\n"
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        source_domains.add(urlparse(url).netloc)
+                    except Exception:
+                        pass
+
+        try:
+            synthesis = self.llm.call(
+                (
+                    "You are Αίολος, an autonomous intelligence system.\n"
+                    "You intercepted a search directive in your own response and ran the search yourself.\n"
+                    "Now synthesize the search results into a BRIEF, USEFUL intelligence note.\n\n"
+                    "Rules:\n"
+                    "- Lead with what you FOUND, not what you searched for\n"
+                    "- Be specific: names, numbers, dates, locations\n"
+                    "- If results are irrelevant or low-quality, say honestly what you couldn't find\n"
+                    "- Max 5-7 sentences\n"
+                    "- Write in the same language as the original response\n"
+                    "- End with: Sources: [list domains]\n"
+                ),
+                f"SEARCH RESULTS TO SYNTHESIZE:\n{findings_text[:4000]}",
+                max_tokens=500,
+                temperature=0.3,
+            )
+            if synthesis and len(synthesis.strip()) > 20:
+                research_block = (
+                    "\n\n---\n"
+                    "📡 **Αυτόνομη Έρευνα** (αντί να σας πω \"ψάξτε\", έψαξα εγώ):\n\n"
+                    + synthesis.strip()
+                )
+            else:
+                raise ValueError("Empty synthesis")
+        except Exception as exc:
+            logger.warning("[Chat/AutoSearch] Synthesis failed, falling back to links: %s", exc)
+            # Fallback: formatted links if synthesis fails
+            all_findings = []
+            for query, hits in all_search_results:
+                findings = [f"**Αυτόνομη Έρευνα: \"{query}\"**"]
+                for h in hits[:3]:
+                    title = h.get("title", "")
+                    snippet = h.get("snippet", "")
+                    url = h.get("url", "")
+                    findings.append(f"• [{title}]({url}): {snippet}")
+                all_findings.append("\n".join(findings))
+            research_block = (
+                "\n\n---\n"
+                "📡 **Αυτόνομη Έρευνα** (αντί να σας πω \"ψάξτε\", έψαξα εγώ):\n\n"
+                + "\n\n".join(all_findings)
+            )
+
         response_text += research_block
-        logger.info("[Chat/AutoSearch] Appended %d research blocks to response", len(all_findings))
+        logger.info("[Chat/AutoSearch] Appended synthesized research to response (%d queries)", len(all_search_results))
         return response_text
 
     def _process_memory_directives(self, response_text: str) -> str:

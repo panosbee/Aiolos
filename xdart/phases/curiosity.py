@@ -352,6 +352,50 @@ What knowledge gaps do you see? What should I explore on my own initiative?"""
     #  PHASE 2: EXPLORE TOP CURIOSITY
     # ══════════════════════════════════════════════════════════════
 
+    def _effective_priority(self, c: Curiosity) -> float:
+        """Compute effective priority with temporal decay.
+
+        Older curiosities lose priority over time so that fresh questions
+        naturally rise to the top.  Half-life = 3 days → a curiosity that
+        was 0.85 nine days ago is ~0.11 now.
+        """
+        import math
+        try:
+            created = datetime.fromisoformat(c.created_at)
+            age_hours = max(0, (datetime.now(timezone.utc) - created).total_seconds() / 3600)
+        except (ValueError, TypeError):
+            age_hours = 0
+        half_life_hours = 72  # 3 days
+        decay = math.exp(-0.693 * age_hours / half_life_hours)
+        return c.priority * decay
+
+    def _recover_stuck_exploring(self) -> int:
+        """Reset any curiosities stuck in 'exploring' back to 'pending'.
+
+        This can happen when the explore() call crashes outside the
+        try/except (e.g. thread killed, timeout, OOM).  A curiosity is
+        considered stuck if it's been in 'exploring' for > 10 minutes.
+        """
+        now = time.time()
+        recovered = 0
+        for c in self._curiosities:
+            if c.status != "exploring":
+                continue
+            try:
+                created = datetime.fromisoformat(c.created_at)
+                age_s = (datetime.now(timezone.utc) - created).total_seconds()
+            except (ValueError, TypeError):
+                age_s = 0
+            # If it's been 'exploring' for a long time, it's stuck
+            # (normal exploration takes <2 min; if still exploring after 10 min, it crashed)
+            if age_s > 600 or c.explored_at is None:
+                c.status = "pending"
+                recovered += 1
+        if recovered:
+            logger.info("[Curiosity] Recovered %d stuck curiosities from 'exploring' → 'pending'", recovered)
+            self._save_state()
+        return recovered
+
     def explore(
         self,
         web_search_fn: Any | None = None,
@@ -362,13 +406,16 @@ What knowledge gaps do you see? What should I explore on my own initiative?"""
         Uses web search (if available) + LLM reasoning to answer the question.
         Returns exploration result dict, or None if nothing to explore.
         """
-        # Find top pending curiosity
+        # Recover any curiosities stuck in 'exploring' from prior crashes
+        self._recover_stuck_exploring()
+
+        # Find top pending curiosity (using effective priority with temporal decay)
         pending = [c for c in self._curiosities if c.status == "pending"]
         if not pending:
             logger.info("[Curiosity] No pending curiosities to explore")
             return None
 
-        target = max(pending, key=lambda c: c.priority)
+        target = max(pending, key=lambda c: self._effective_priority(c))
         target.status = "exploring"
         logger.info("[Curiosity] Exploring: %s (priority=%.2f)", target.question[:80], target.priority)
 
@@ -729,10 +776,14 @@ Should the character state change based on this exploration?"""
 
     @property
     def active_curiosities(self) -> list[Curiosity]:
-        """Get all active (pending) curiosities, sorted by priority."""
+        """Get all active (pending) curiosities, sorted by effective priority.
+
+        Effective priority includes temporal decay: older curiosities
+        naturally lose priority so fresh questions rise to the top.
+        """
         return sorted(
             [c for c in self._curiosities if c.status == "pending"],
-            key=lambda c: c.priority,
+            key=lambda c: self._effective_priority(c),
             reverse=True,
         )
 
@@ -763,14 +814,16 @@ Should the character state change based on this exploration?"""
 
     def get_stats(self) -> dict:
         """Return statistics about the curiosity system."""
+        active = self.active_curiosities  # pending only, sorted by effective priority
+        top_q = active[0] if active else None
         return {
-            "active_count": len([c for c in self._curiosities if c.status == "pending"]),
+            "active_count": len(active),
             "exploring_count": len([c for c in self._curiosities if c.status == "exploring"]),
             "total_generated": self._generation_count,
             "total_explored": self._exploration_count,
             "history_count": len(self._history),
-            "top_curiosity": self._curiosities[0].question if self._curiosities else None,
-            "top_priority": self._curiosities[0].priority if self._curiosities else 0.0,
+            "top_curiosity": top_q.question if top_q else None,
+            "top_priority": round(self._effective_priority(top_q), 2) if top_q else 0.0,
         }
 
     # ══════════════════════════════════════════════════════════════

@@ -395,6 +395,7 @@ class EmergentPattern:
         self.source_types: set[str] = {seed_signal.source_type}
         self.fired = False          # Has this pattern triggered a notification?
         self.fire_count = 0         # How many times it re-fired (escalation)
+        self._last_fire_ts = 0.0    # Timestamp of last fire (for cooldown)
         self.convergence_score = 0.0
         self.impact_score = 0.0     # Strategic impact (0.0-1.0), set before fire
 
@@ -481,8 +482,12 @@ class EmergentPattern:
 
     def should_re_fire(self) -> bool:
         """Check if an already-fired pattern has escalated significantly.
-        Re-fire at 0.75 and 0.90 thresholds."""
+        Re-fire at 0.75 and 0.90 thresholds, with 10-min minimum cooldown
+        between fires to prevent alert flooding."""
         if not self.fired:
+            return False
+        # Enforce minimum 10-minute cooldown between fires
+        if (time.time() - self._last_fire_ts) < 600:
             return False
         next_threshold = 0.75 if self.fire_count == 1 else 0.90
         return self.convergence_score >= next_threshold and self.fire_count < 3
@@ -834,6 +839,7 @@ class PatternAccumulator:
         """Evaluate pattern via LLM and notify if warranted."""
         pattern.fired = True
         pattern.fire_count += 1
+        pattern._last_fire_ts = time.time()
         self._total_fires += 1
 
         domains = _classify_pattern_domains(pattern)

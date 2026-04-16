@@ -3062,10 +3062,10 @@
     <div class="input-row">
       <textarea id="problemInput" placeholder="Ask anything... the system will decide whether to respond directly or trigger a full prophetic analysis." rows="2"></textarea>
       <div class="input-controls">
-        <button class="btn-run" id="btnMic" onclick="toggleVoiceRecording()" title="Voice disabled" style="background:linear-gradient(135deg,#1b5e20,#2e7d32);min-width:44px;font-size:18px;padding:10px;display:none">🎙</button>
+        <button class="btn-run" id="btnMic" onclick="toggleVoiceRecording()" title="Hold to record voice" style="background:linear-gradient(135deg,#1b5e20,#2e7d32);min-width:44px;font-size:18px;padding:10px;display:none">🎙</button>
         <button class="btn-run" id="btnChat" onclick="sendChat()" style="background:linear-gradient(135deg,#1a237e,#283593);min-width:70px">Chat</button>
         <button class="btn-run" id="btnRun" onclick="startAnalysis()" style="min-width:90px">Analyze ◈</button>
-        <button class="btn-run" id="btnVoiceToggle" onclick="toggleAutoVoice()" title="Voice disabled" style="background:linear-gradient(135deg,#4a148c,#6a1b9a);min-width:44px;font-size:16px;padding:10px;opacity:0.3;display:none">🔇</button>
+        <button class="btn-run" id="btnVoiceToggle" onclick="toggleAutoVoice()" title="Voice OFF — click to enable" style="background:linear-gradient(135deg,#4a148c,#6a1b9a);min-width:44px;font-size:16px;padding:10px;opacity:0.3;display:none">🔇</button>
       </div>
     </div>
     <!-- Client Profile Selector -->
@@ -3144,6 +3144,9 @@ async function checkHealth() {
 }
 checkHealth();
 setInterval(checkHealth, 15000);
+
+// ── Voice system init ──
+_initVoice();
 
 // ── Timer ──
 function startTimer() {
@@ -5104,120 +5107,363 @@ let chatHistory = [];
 let isChatting = false;
 
 // ══════════════════════════════════════════════════════════════
-//  VOICE ENGINE — ElevenLabs TTS + STT
+//  VOICE ENGINE — ElevenLabs TTS (WebSocket) + STT (Scribe v2)
+//
+//  Architecture:
+//    TTS: Browser → ElevenLabs WebSocket → AudioContext (streaming)
+//         Text is chunked by sentence, sent via WebSocket.
+//         Audio chunks are decoded and queued for gapless playback.
+//         Fallback: server-side proxy via /xdart/voice/tts
+//
+//    STT: Browser MediaRecorder → POST /xdart/voice/stt → ElevenLabs Scribe v2
+//         Recording is sent as webm/opus for transcription.
+//
+//  The API key is fetched from the backend at startup (not hardcoded).
 // ══════════════════════════════════════════════════════════════
 
 let _voiceAutoPlay = false;     // Auto-play TTS on Αίολος responses
 let _voiceRecording = false;    // Currently recording mic
 let _mediaRecorder = null;      // MediaRecorder instance
 let _audioChunks = [];          // Recorded audio chunks
-let _currentAudio = null;       // Currently playing Audio element
 
-// ── TTS: Text to Speech (streaming from ElevenLabs v3) ──
-async function speakText(text) {
-  if (!text || text.length < 2) return;
+// ── Voice Config (fetched from backend) ──
+let _voiceCfg = null;           // {api_key, voice_id, model_tts, model_stt, tts_settings}
+let _voiceEnabled = false;      // True once config is loaded and valid
 
-  // Stop any currently playing audio
-  if (_currentAudio) {
-    _currentAudio.pause();
-    _currentAudio.src = '';
-    _currentAudio = null;
-  }
+// ── TTS WebSocket State ──
+let _ttsWs = null;              // Current WebSocket connection
+let _ttsAudioCtx = null;        // AudioContext for playback
+let _ttsGainNode = null;        // Master gain node — all sources route through this
+let _ttsQueue = [];             // Queue of decoded AudioBuffers
+let _ttsPlaying = false;        // Currently playing audio
+let _ttsSources = [];           // ALL scheduled AudioBufferSourceNodes (for clean stop)
+let _ttsSpeaking = false;       // True while TTS is active (queuing or playing)
+const _ttsPlaybackRate = 1.15;  // Speech speed multiplier (1.0 = normal, 1.15 = ~15% faster)
 
-  // Strip markdown formatting for cleaner speech
-  let cleanText = text
-    .replace(/\*\*([^*]+)\*\*/g, '$1')    // bold
-    .replace(/\*([^*]+)\*/g, '$1')         // italic
-    .replace(/`([^`]+)`/g, '$1')           // code
-    .replace(/#{1,6}\s+/g, '')             // headers
-    .replace(/[-*]\s+/g, '')               // list items
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
-    .replace(/<[^>]+>/g, '')               // HTML tags
-    .trim();
-
-  if (cleanText.length > 5000) cleanText = cleanText.substring(0, 5000);
-
+// ── Initialize Voice System ──
+async function _initVoice() {
   try {
-    const res = await fetch(`${API_BASE}/xdart/voice/tts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: cleanText }),
-    });
-
-    if (!res.ok) {
-      console.warn('[Voice/TTS] Error:', res.status, await res.text());
+    const res = await fetch(`${API_BASE}/xdart/voice/config`);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (!cfg.enabled) {
+      console.log('[Voice] Disabled:', cfg.reason);
       return;
     }
+    _voiceCfg = cfg;
+    _voiceEnabled = true;
 
-    // Collect streaming chunks into a growing buffer and start playback
-    // as soon as we have enough data (first ~8KB)
-    const reader = res.body.getReader();
-    const chunks = [];
-    let totalBytes = 0;
-    let playbackStarted = false;
+    // Show voice buttons
+    document.getElementById('btnMic').style.display = '';
+    document.getElementById('btnVoiceToggle').style.display = '';
 
-    // We accumulate chunks; once we have ≥8KB or the stream ends,
-    // we create a blob and play it.  The Audio element handles mp3
-    // progressive playback natively once it has a blob URL.
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) {
-        chunks.push(value);
-        totalBytes += value.length;
-      }
-      // Start playback early: after first ~8KB arrive
-      if (!playbackStarted && totalBytes >= 8192) {
-        _startAudioFromChunks(chunks, false);
-        playbackStarted = true;
-      }
-      if (done) break;
-    }
-
-    // Final: replace with complete blob for seamless playback
-    if (!playbackStarted) {
-      // Short audio — all data arrived before threshold
-      _startAudioFromChunks(chunks, true);
-    } else {
-      // Replace partial with full audio to avoid cuts
-      _startAudioFromChunks(chunks, true);
-    }
-
-    console.log('[Voice/TTS] Playing', cleanText.length, 'chars,', totalBytes, 'bytes streamed');
-  } catch (err) {
-    console.warn('[Voice/TTS] Failed:', err);
+    console.log('[Voice] Initialized — model:', cfg.model_tts, 'voice:', cfg.voice_id);
+  } catch (e) {
+    console.warn('[Voice] Config fetch failed:', e);
   }
 }
 
-function _startAudioFromChunks(chunks, isFinal) {
+// ══════════════════════════════════════════════════════════════
+// TTS: WebSocket Streaming (browser → ElevenLabs → AudioContext)
+// ══════════════════════════════════════════════════════════════
+
+function _ensureAudioContext() {
+  if (!_ttsAudioCtx || _ttsAudioCtx.state === 'closed') {
+    _ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+  }
+  if (_ttsAudioCtx.state === 'suspended') {
+    _ttsAudioCtx.resume();
+  }
+  return _ttsAudioCtx;
+}
+
+function _cleanTextForSpeech(text) {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/[-*]\s+/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+}
+
+/**
+ * Split text into sentences for streaming TTS.
+ * Sends each sentence as it arrives for lower perceived latency.
+ */
+function _splitIntoSentences(text) {
+  // Split on sentence boundaries (., !, ?, ;) but keep the punctuation
+  const parts = text.match(/[^.!?;]+[.!?;]+\s*/g) || [text];
+  return parts.map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Speak text via ElevenLabs WebSocket streaming.
+ * Audio chunks arrive as raw PCM/mp3, decoded and played via AudioContext.
+ */
+async function speakText(text) {
+  if (!_voiceEnabled || !text || text.length < 2) return;
+
+  // Stop any currently playing TTS
+  stopSpeaking();
+
+  const cleanText = _cleanTextForSpeech(text);
+  if (cleanText.length < 2) return;
+  const textToSend = cleanText.length > 5000 ? cleanText.substring(0, 5000) : cleanText;
+
+  _ttsSpeaking = true;
+  _updateSpeakingIndicator(true);
+
+  // Try WebSocket streaming first, fall back to server proxy
+  try {
+    await _speakViaWebSocket(textToSend);
+  } catch (wsErr) {
+    console.warn('[Voice/TTS] WebSocket failed, falling back to server proxy:', wsErr.message);
+    try {
+      await _speakViaServerProxy(textToSend);
+    } catch (proxyErr) {
+      console.warn('[Voice/TTS] Server proxy also failed:', proxyErr.message);
+    }
+  }
+
+  _ttsSpeaking = false;
+  _updateSpeakingIndicator(false);
+}
+
+/**
+ * Primary TTS: Browser connects directly to ElevenLabs WebSocket.
+ * Text is sent in one shot; audio chunks stream back and are played
+ * through AudioContext with buffered scheduling for gapless output.
+ */
+function _speakViaWebSocket(text) {
+  return new Promise((resolve, reject) => {
+    const ctx = _ensureAudioContext();
+    const voiceId = _voiceCfg.voice_id;
+    const modelId = _voiceCfg.model_tts;
+    const apiKey = _voiceCfg.api_key;
+
+    const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+
+    _ttsQueue = [];
+    _ttsPlaying = false;
+    _ttsSources = [];             // Reset tracked sources for this new stream
+    let totalBytes = 0;
+    let audioBuffers = [];
+    let nextPlayTime = 0;
+    let firstChunkPlayed = false;
+    let wsOpen = false;
+    let resolved = false;
+
+    const ws = new WebSocket(wsUrl);
+    _ttsWs = ws;
+
+    ws.onopen = () => {
+      wsOpen = true;
+      // Send BOS (Beginning of Stream) message with settings
+      ws.send(JSON.stringify({
+        text: ' ',
+        voice_settings: {
+          stability: _voiceCfg.tts_settings?.stability ?? 0.70,
+          similarity_boost: _voiceCfg.tts_settings?.similarity_boost ?? 0.75,
+        },
+        xi_api_key: apiKey,
+        generation_config: {
+          chunk_length_schedule: [120, 160, 250, 290],
+        },
+      }));
+
+      // Send the full text
+      ws.send(JSON.stringify({ text: text }));
+
+      // Send EOS (End of Stream)
+      ws.send(JSON.stringify({ text: '' }));
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+
+        if (msg.audio) {
+          // Decode base64 audio chunk (PCM 24kHz 16-bit mono)
+          const binaryStr = atob(msg.audio);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          totalBytes += bytes.length;
+
+          // Convert PCM 16-bit LE to Float32 for AudioContext
+          const samples = new Float32Array(bytes.length / 2);
+          const view = new DataView(bytes.buffer);
+          for (let i = 0; i < samples.length; i++) {
+            samples[i] = view.getInt16(i * 2, true) / 32768;
+          }
+
+          // Create AudioBuffer
+          const audioBuffer = ctx.createBuffer(1, samples.length, 24000);
+          audioBuffer.getChannelData(0).set(samples);
+
+          // Schedule playback with precise timing for gapless output
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.playbackRate.value = _ttsPlaybackRate;  // Speed up speech
+
+          // Route through master gain node for clean cutoff
+          if (!_ttsGainNode || _ttsGainNode.context !== ctx) {
+            _ttsGainNode = ctx.createGain();
+            _ttsGainNode.connect(ctx.destination);
+          }
+          source.connect(_ttsGainNode);
+
+          const now = ctx.currentTime;
+          if (!firstChunkPlayed) {
+            nextPlayTime = now + 0.02;
+            firstChunkPlayed = true;
+          }
+
+          const startAt = Math.max(nextPlayTime, now);
+          source.start(startAt);
+          // Adjust duration for playback rate
+          nextPlayTime = startAt + (audioBuffer.duration / _ttsPlaybackRate);
+
+          _ttsSources.push(source);
+        }
+
+        if (msg.isFinal) {
+          // Stream complete — wait for all audio to finish playing
+          const remainingTime = Math.max(0, nextPlayTime - ctx.currentTime);
+          setTimeout(() => {
+            if (!resolved) { resolved = true; resolve(); }
+          }, remainingTime * 1000 + 100);
+        }
+      } catch (decodeErr) {
+        console.warn('[Voice/TTS] Chunk decode error:', decodeErr);
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.warn('[Voice/TTS] WebSocket error:', e);
+      if (!resolved) { resolved = true; reject(new Error('WebSocket error')); }
+    };
+
+    ws.onclose = (e) => {
+      _ttsWs = null;
+      if (!resolved) {
+        if (totalBytes > 0) {
+          // Got some audio, wait for it to play
+          const remainingTime = Math.max(0, nextPlayTime - (ctx?.currentTime || 0));
+          setTimeout(() => {
+            if (!resolved) { resolved = true; resolve(); }
+          }, remainingTime * 1000 + 100);
+        } else {
+          resolved = true;
+          reject(new Error(`WebSocket closed: code=${e.code}`));
+        }
+      }
+    };
+
+    // Safety timeout: 30 seconds max per TTS call
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+        resolve(); // partial playback is fine
+      }
+    }, 30000);
+  });
+}
+
+/**
+ * Fallback TTS: Server-side proxy via /xdart/voice/tts.
+ * Streams MP3 chunks and plays via Audio element.
+ */
+async function _speakViaServerProxy(text) {
+  const res = await fetch(`${API_BASE}/xdart/voice/tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Server TTS error: ${res.status}`);
+  }
+
+  // Collect all chunks into a blob
+  const reader = res.body.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) chunks.push(value);
+    if (done) break;
+  }
+
+  if (chunks.length === 0) return;
+
   const blob = new Blob(chunks, { type: 'audio/mpeg' });
   const audioUrl = URL.createObjectURL(blob);
 
-  if (_currentAudio && !isFinal) {
-    // Early playback — just start it
-    _currentAudio.src = audioUrl;
-    _currentAudio.play().catch(() => {});
-    return;
-  }
-
-  // If we had a partial audio playing, grab its currentTime
-  let seekTo = 0;
-  if (_currentAudio) {
-    seekTo = _currentAudio.currentTime;
-    _currentAudio.pause();
-    if (_currentAudio._blobUrl) URL.revokeObjectURL(_currentAudio._blobUrl);
-  }
-
-  _currentAudio = new Audio(audioUrl);
-  _currentAudio._blobUrl = audioUrl;
-  _currentAudio.onended = () => {
-    URL.revokeObjectURL(audioUrl);
-    _currentAudio = null;
-  };
-  if (seekTo > 0) _currentAudio.currentTime = seekTo;
-  _currentAudio.play().catch(() => {});
+  return new Promise((resolve) => {
+    const audio = new Audio(audioUrl);
+    audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+    audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
+    audio.play().catch(() => resolve());
+  });
 }
 
-// ── STT: Speech to Text (Mic Recording) ──
+/**
+ * Stop any currently playing TTS audio.
+ */
+function stopSpeaking() {
+  _ttsSpeaking = false;
+
+  // Close WebSocket — stops new chunks from arriving
+  if (_ttsWs) {
+    try { _ttsWs.close(); } catch(e) {}
+    _ttsWs = null;
+  }
+
+  // Stop ALL scheduled AudioBufferSourceNodes (fixes overlap bug)
+  for (const src of _ttsSources) {
+    try { src.stop(); } catch(e) {}
+  }
+  _ttsSources = [];
+
+  // Disconnect gain node to kill any residual audio
+  if (_ttsGainNode) {
+    try { _ttsGainNode.disconnect(); } catch(e) {}
+    _ttsGainNode = null;
+  }
+
+  _ttsQueue = [];
+  _ttsPlaying = false;
+  _updateSpeakingIndicator(false);
+}
+
+/**
+ * Visual indicator for speaking state.
+ */
+function _updateSpeakingIndicator(speaking) {
+  const btn = document.getElementById('btnVoiceToggle');
+  if (!btn) return;
+  if (speaking) {
+    btn.textContent = '🔊';
+    btn.style.animation = 'pulse 1s infinite';
+  } else if (_voiceAutoPlay) {
+    btn.textContent = '🔊';
+    btn.style.animation = '';
+  } else {
+    btn.textContent = '🔇';
+    btn.style.animation = '';
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// STT: Speech to Text (Mic → ElevenLabs Scribe v2)
+// ══════════════════════════════════════════════════════════════
+
 async function toggleVoiceRecording() {
   if (_voiceRecording) {
     stopVoiceRecording();
@@ -5228,8 +5474,19 @@ async function toggleVoiceRecording() {
 
 async function startVoiceRecording() {
   const btn = document.getElementById('btnMic');
+
+  // Stop any playing TTS to avoid feedback
+  stopSpeaking();
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 16000,
+      }
+    });
     _audioChunks = [];
     _mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
 
@@ -5246,6 +5503,10 @@ async function startVoiceRecording() {
 
       if (blob.size < 100) {
         console.warn('[Voice/STT] Recording too short');
+        btn.textContent = '🎙';
+        btn.disabled = false;
+        _voiceRecording = false;
+        btn.style.background = 'linear-gradient(135deg,#1b5e20,#2e7d32)';
         return;
       }
 
@@ -5267,11 +5528,17 @@ async function startVoiceRecording() {
         }
 
         const data = await res.json();
-        if (data.text) {
+        if (data.text && data.text.trim()) {
           const input = document.getElementById('problemInput');
-          input.value = (input.value ? input.value + ' ' : '') + data.text;
+          const trimmed = data.text.trim();
+          input.value = (input.value ? input.value + ' ' : '') + trimmed;
           input.focus();
-          console.log('[Voice/STT] Transcribed:', data.text.substring(0, 80), `(lang=${data.language})`);
+          console.log('[Voice/STT] Transcribed:', trimmed.substring(0, 80), `(lang=${data.language}, conf=${data.language_probability})`);
+
+          // Auto-send if the text looks like a complete sentence
+          if (_voiceAutoPlay && /[.!?;]$/.test(trimmed)) {
+            sendChat();
+          }
         }
       } catch (err) {
         console.warn('[Voice/STT] Transcription failed:', err);
@@ -5283,10 +5550,11 @@ async function startVoiceRecording() {
       }
     };
 
-    _mediaRecorder.start();
+    _mediaRecorder.start(250); // collect data every 250ms for faster availability
     _voiceRecording = true;
     btn.textContent = '⏹';
     btn.style.background = 'linear-gradient(135deg,#b71c1c,#d32f2f)';
+    btn.title = 'Recording... click to stop';
     console.log('[Voice/STT] Recording started');
   } catch (err) {
     console.warn('[Voice/STT] Mic access denied:', err);
@@ -5302,7 +5570,11 @@ function stopVoiceRecording() {
   }
 }
 
-// ── Auto-Voice Toggle ──
+
+// ══════════════════════════════════════════════════════════════
+// Voice Controls
+// ══════════════════════════════════════════════════════════════
+
 function toggleAutoVoice() {
   _voiceAutoPlay = !_voiceAutoPlay;
   const btn = document.getElementById('btnVoiceToggle');
@@ -5310,24 +5582,26 @@ function toggleAutoVoice() {
     btn.textContent = '🔊';
     btn.style.opacity = '1';
     btn.title = 'Voice ON — Αίολος will speak (click to mute)';
+    // Resume AudioContext (required after user gesture)
+    _ensureAudioContext();
     console.log('[Voice] Auto-voice enabled');
   } else {
     btn.textContent = '🔇';
     btn.style.opacity = '0.5';
     btn.title = 'Voice OFF — click to enable Αίολος voice';
-    // Stop any playing audio
-    if (_currentAudio) {
-      _currentAudio.pause();
-      _currentAudio = null;
-    }
+    stopSpeaking();
     console.log('[Voice] Auto-voice disabled');
   }
 }
 
-// ── Helper: Speak if auto-voice is ON ──
-// DISABLED — voice has been turned off entirely
+/**
+ * Auto-speak helper — called after each Αίολος response.
+ * Only speaks if auto-voice is enabled.
+ */
 function autoSpeak(text) {
-  // No-op: voice disabled
+  if (_voiceAutoPlay && _voiceEnabled && text) {
+    speakText(text);
+  }
 }
 
 async function sendChat() {

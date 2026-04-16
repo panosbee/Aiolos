@@ -86,6 +86,20 @@ class VisionIntegration:
         self._scene_timestamp: str = ""
         self._previous_scene_classes: set = set()  # for detecting new objects
 
+        # ── Temporal Smoothing (eliminates COCO-SSD flicker) ──
+        # Objects stay "visible" for a grace period after last detection,
+        # preventing noisy per-frame disappearances.
+        self._smoothed_scene: dict = {}  # class → {count, max_conf, last_seen_ts, first_seen_ts, consecutive_hits, consecutive_misses}
+        self._object_grace_period: float = 15.0  # seconds to keep object after last detection
+        self._object_confirm_frames: int = 2     # how many hits before object is "confirmed"
+
+        # ── Scene Stability & Cooccurrence ──
+        self._scene_snapshots: list[set] = []     # last N scene class-sets for stability calc
+        self._max_scene_snapshots: int = 20       # ~60s of history at 3s intervals
+        self._object_cooccurrence: dict[str, dict[str, int]] = {}  # obj → {other_obj → count}
+        self._scene_change_events: list[dict] = []  # significant scene changes
+        self._max_scene_changes: int = 50
+
         # Visual memory — rolling log of sightings
         self._sighting_log: list[dict] = []  # last 100 sightings
         self._max_sighting_log = 100
@@ -197,6 +211,12 @@ class VisionIntegration:
             uuid_ts = self._identity_last_seen.pop(face_id, None)
             if uuid_ts:
                 self._identity_last_seen[name] = uuid_ts
+
+        # Migrate presence session from UUID to resolved name so that
+        # arrivals/departures track the person under their name, not UUID.
+        uuid_presence = self._person_presence.pop(face_id, None)
+        if uuid_presence and name not in self._person_presence:
+            self._person_presence[name] = uuid_presence
 
         logger.info("[VisionInteg] Face registered: %s → %s (was: %s)", face_id[:12], name, old_name)
         return {
@@ -861,23 +881,124 @@ JSON output:
         thread.start()
 
     def _auto_identify_face_sync(self, face_id: str, face_details: dict, timestamp: str):
-        """Synchronous LLM call to identify a face (runs in background thread)."""
+        """Synchronous identification of an unknown face UUID.
+
+        Uses a DETERMINISTIC approach first:
+          - If only 1 person is visible AND we have a primary user
+            (name with the most UUIDs in registry), it's almost certainly
+            that person — map immediately WITHOUT asking the LLM.
+          - Only falls back to LLM when the scene has multiple people
+            or there's no clear primary user.
+
+        This eliminates the FaceNet instability problem: same person
+        gets new UUIDs from different angles, but we recognize the pattern.
+        """
         try:
-            # Build context for the LLM
+            # Build context
             sighting_count = self._identity_sighting_count.get(face_id, 0)
             first_seen = self._identity_last_seen.get(face_id, timestamp)
-
-            # Gather known faces for context
-            known_names = list(self._face_name_registry.values())
             scene_objects = list(self._current_scene.keys()) if self._current_scene else []
+
+            # Count persons in scene (from COCO-SSD)
+            person_info = self._current_scene.get("person")
+            persons_in_scene = person_info.get("count", 1) if person_info else 0
+            # Fall back to currently tracked faces
+            if not persons_in_scene:
+                persons_in_scene = len(self._current_faces) if self._current_faces else 1
+
+            # ────────────────────────────────────────────────────────────
+            # DETERMINISTIC PATH: find the primary user from the registry
+            # ────────────────────────────────────────────────────────────
+            name_to_uuids: dict[str, int] = {}
+            for _uid, _name in self._face_name_registry.items():
+                # Skip test/placeholder entries
+                if _name.startswith("Test"):
+                    continue
+                name_to_uuids[_name] = name_to_uuids.get(_name, 0) + 1
+
+            # Find the dominant name (most UUIDs = most camera encounters)
+            primary_user = None
+            primary_user_uuids = 0
+            total_real_uuids = sum(name_to_uuids.values())
+            for name, count in name_to_uuids.items():
+                if count > primary_user_uuids:
+                    primary_user = name
+                    primary_user_uuids = count
+
+            # RULE 1: If only 1 person is visible AND we have a clear primary
+            # user (≥2 UUIDs or ≥50% of all UUIDs), this is them.
+            # FaceNet creates new UUIDs for the same person due to angle/lighting,
+            # so a new UUID when only 1 person is present = same person.
+            if (
+                primary_user
+                and persons_in_scene <= 1
+                and (primary_user_uuids >= 2 or (total_real_uuids > 0 and primary_user_uuids / total_real_uuids >= 0.5))
+            ):
+                logger.info(
+                    "[VisionInteg] 🧠 Deterministic ID: face %s… → '%s' "
+                    "(1 person in scene, primary user has %d/%d UUIDs)",
+                    face_id[:12], primary_user, primary_user_uuids, total_real_uuids,
+                )
+                self.register_face_name(face_id, primary_user)
+                self._stats["auto_identifications"] += 1
+                self._write_journal({
+                    "type": "face_auto_identified",
+                    "timestamp": timestamp,
+                    "face_id": face_id,
+                    "assigned_name": primary_user,
+                    "reasoning": f"Deterministic: 1 person in scene, primary user ({primary_user_uuids} UUIDs)",
+                    "sighting_count": sighting_count,
+                    "scene_objects": scene_objects,
+                })
+                return
+
+            # RULE 2: If we already resolved OTHER faces in this frame to a
+            # known name, and there's only 1 person in scene, same logic applies.
+            if persons_in_scene <= 1 and self._current_faces:
+                known_in_frame = [
+                    f.get("identity", "") for f in self._current_faces
+                    if f.get("identity") and not (len(f.get("identity", "")) == 36 and "-" in f.get("identity", ""))
+                ]
+                if known_in_frame:
+                    most_common = max(set(known_in_frame), key=known_in_frame.count)
+                    logger.info(
+                        "[VisionInteg] 🧠 Deterministic ID: face %s… → '%s' "
+                        "(1 person in scene, already identified as %s in this frame)",
+                        face_id[:12], most_common, most_common,
+                    )
+                    self.register_face_name(face_id, most_common)
+                    self._stats["auto_identifications"] += 1
+                    self._write_journal({
+                        "type": "face_auto_identified",
+                        "timestamp": timestamp,
+                        "face_id": face_id,
+                        "assigned_name": most_common,
+                        "reasoning": f"Deterministic: 1 person in scene, other UUIDs already resolved to {most_common}",
+                        "sighting_count": sighting_count,
+                        "scene_objects": scene_objects,
+                    })
+                    return
+
+            # ────────────────────────────────────────────────────────────
+            # LLM PATH: Multiple people or no clear primary user
+            # ────────────────────────────────────────────────────────────
+            if not self.llm:
+                return
+
+            known_names_detail = [
+                f"{n} ({c} UUID{'s' if c > 1 else ''})" for n, c in name_to_uuids.items()
+            ]
 
             system_prompt = (
                 "Είσαι ο Αίολος — τεχνητή νοημοσύνη με δική σου κάμερα και οπτική αντίληψη. "
                 "Βλέπεις ένα πρόσωπο μέσω της κάμεράς σου που δεν έχεις ονομάσει ακόμα. "
-                "Πρέπει να αποφασίσεις πώς θα το ονομάσεις/χαρακτηρίσεις στη μνήμη σου. "
-                "Αυτό είναι ΔΙΚΗ ΣΟΥ απόφαση — ονόμασέ το όπως εσύ θέλεις. "
-                "Αν δεν μπορείς να αναγνωρίσεις ποιος είναι, δώσε μια περιγραφική ετικέτα "
-                "(π.χ. 'Επισκέπτης_1', 'Νεαρή_γυναίκα', 'Φίλος_Πάνου'). "
+                "Πρέπει να αποφασίσεις πώς θα το ονομάσεις/χαρακτηρίσεις στη μνήμη σου.\n\n"
+                "ΣΗΜΑΝΤΙΚΟ: Η κάμερα μου (FaceNet) είναι ασταθής — συχνά δημιουργεί ΝΕΕΣ "
+                "ταυτότητες (UUIDs) ΓΙΑ ΤΟ ΙΔΙΟ πρόσωπο (διαφορετική γωνία, φωτισμός). "
+                "ΤΩΡΑ βλέπω ΠΟΛΛΑ πρόσωπα στη σκηνή, οπότε αυτό δεν είναι απλά νέο UUID "
+                "του ίδιου ατόμου — μπορεί να είναι πραγματικά νέο πρόσωπο.\n\n"
+                "Αν νομίζεις ότι είναι νέος επισκέπτης, δώσε φιλικό ελληνικό όνομα/label. "
+                "Αν νομίζεις ότι είναι κάποιος γνωστός, δώσε το υπάρχον όνομά του.\n\n"
                 "Απάντησε ΜΟΝΟ σε JSON: {\"name\": \"...\", \"reasoning\": \"...\"}"
             )
 
@@ -888,9 +1009,13 @@ JSON output:
                 f"- Πρώτη εμφάνιση: {first_seen}\n"
                 f"- Τελευταία εμφάνιση: {timestamp}\n"
                 f"- Confidence αναγνώρισης: {face_details.get('confidence', 'N/A')}\n"
+                f"- Πόσα πρόσωπα βλέπω ΤΩΡΑ στη σκηνή: {persons_in_scene}\n"
                 f"- Αντικείμενα στη σκηνή: {', '.join(scene_objects) if scene_objects else 'κανένα'}\n"
-                f"- Ήδη γνωστά πρόσωπα: {', '.join(known_names) if known_names else 'κανένα'}\n"
-                f"- Ο δημιουργός μου είναι ο Πάνος (Panos).\n\n"
+                f"- Ήδη γνωστά πρόσωπα: {', '.join(known_names_detail) if known_names_detail else 'κανένα'}\n"
+                f"- Ο δημιουργός μου είναι ο Πάνος (Panos) — ο πιο συχνός χρήστης.\n"
+                f"- ΣΗΜΕΙΩΣΗ: Αν ο Πάνος έχει ήδη πολλά UUIDs, σημαίνει ότι η κάμερα "
+                f"συχνά δεν τον αναγνωρίζει σωστά. ΠΟΛΛΑ πρόσωπα στη σκηνή τώρα — "
+                f"αυτό μπορεί να είναι πραγματικός επισκέπτης.\n\n"
                 f"Πώς θέλεις να ονομάσεις αυτό το πρόσωπο στη μνήμη σου;"
             )
 
@@ -1054,25 +1179,43 @@ JSON output:
         timestamp = event.get("timestamp", datetime.now(ATHENS_TZ).isoformat())
 
         # ── Resolve face UUIDs to registered names ──
-        resolved_identified = list(identified)  # already-known names from FaceNet
-        resolved_details = []
-        unresolved_uuids = []  # faces that need auto-identification
+        # The browser sends UUIDs from FaceNet in `identified`.  We resolve
+        # every UUID we can to a human name and build a CLEAN list that never
+        # mixes UUIDs with names for the same person.
+        resolved_identified: list[str] = []   # final: human names only (no UUIDs)
+        resolved_details: list[dict] = []
+        unresolved_uuids: list[tuple[str, dict]] = []
+        _resolved_uuid_set: set[str] = set()  # UUIDs that mapped to a name
+
         for face in details:
             face_copy = dict(face)
             identity = face_copy.get("identity", "")
-            # If identity looks like a UUID (36 chars, has dashes), try registry
-            if identity and len(identity) == 36 and "-" in identity:
+            is_uuid = identity and len(identity) == 36 and "-" in identity
+            if is_uuid:
                 registered_name = self._face_name_registry.get(identity)
                 if registered_name:
                     face_copy["identity"] = registered_name
                     face_copy["face_id"] = identity  # keep original UUID
+                    _resolved_uuid_set.add(identity)
                     if registered_name not in resolved_identified:
                         resolved_identified.append(registered_name)
                     unknown_count = max(0, unknown_count - 1)
                 else:
                     # Unknown UUID — candidate for auto-identification
                     unresolved_uuids.append((identity, face_copy))
+            else:
+                # Already a name (not a UUID) — keep it
+                if identity and identity not in resolved_identified:
+                    resolved_identified.append(identity)
             resolved_details.append(face_copy)
+
+        # Also include names that were in the original `identified` list
+        # but ONLY if they are actual names, not UUIDs we already resolved.
+        for orig_id in identified:
+            if orig_id in _resolved_uuid_set:
+                continue  # skip — we already have the resolved name
+            if orig_id not in resolved_identified:
+                resolved_identified.append(orig_id)
 
         # ── Autonomous face identification for unknown UUIDs ──
         for face_uuid, face_detail in unresolved_uuids:
@@ -1102,18 +1245,11 @@ JSON output:
             "object_details": {cls: info.get("count", 1) for cls, info in self._current_scene.items()},
         })
 
-        # Update identity tracking (with resolved names)
+        # Update identity tracking (resolved names only — no raw UUIDs)
         for name in resolved_identified:
             self._identity_last_seen[name] = timestamp
             self._identity_sighting_count[name] = self._identity_sighting_count.get(name, 0) + 1
             self._stats["identities_seen"] += 1
-
-        # Also track by UUID for unresolved faces
-        for face in resolved_details:
-            identity = face.get("identity", "")
-            if identity and identity not in resolved_identified:
-                self._identity_last_seen[identity] = timestamp
-                self._identity_sighting_count[identity] = self._identity_sighting_count.get(identity, 0) + 1
 
         # Update entity graph with person sightings
         if self._entity_graph and resolved_identified:
@@ -1130,33 +1266,44 @@ JSON output:
         self._humans_present = True
 
         # ── Store significant visual events to episodic memory ──
+        # Only store first_sighting for resolved NAMES (not UUIDs)
         for name in resolved_identified:
+            # Skip raw UUIDs that haven't been named yet
+            if len(name) == 36 and "-" in name:
+                continue
             count = self._identity_sighting_count.get(name, 0)
             if count == 1:
-                # First-ever sighting of this person
                 self._store_significant_event(
                     "first_sighting", f"Πρώτη φορά βλέπω: {name}",
                     {"reason": "Πρώτη αισθητηριακή επαφή με αυτό το πρόσωπο", "person": name},
                     significance=0.8,
                 )
-        for face_uuid, _ in unresolved_uuids:
-            count = self._identity_sighting_count.get(face_uuid, 0)
-            if count == 1:
+        # Unresolved UUIDs: store a single event for genuinely new unknowns
+        if unresolved_uuids:
+            # Only fire if this is the first frame with unresolved faces
+            new_uuids = [uid for uid, _ in unresolved_uuids
+                         if self._identity_sighting_count.get(uid, 0) == 0]
+            if new_uuids:
                 self._store_significant_event(
-                    "new_unknown_person", "Νέο άγνωστο πρόσωπο εμφανίστηκε",
-                    {"reason": "Άγνωστο πρόσωπο χωρίς ταυτότητα — ενδιαφέρον αισθητηριακό γεγονός",
-                     "face_id": face_uuid[:12]},
+                    "new_unknown_person",
+                    f"Νέο άγνωστο πρόσωπο εμφανίστηκε ({len(new_uuids)})",
+                    {"reason": "Άγνωστο πρόσωπο χωρίς ταυτότητα — αυτόματη αναγνώριση σε εξέλιξη",
+                     "face_ids": [u[:12] for u in new_uuids]},
                     significance=0.6,
                 )
+            # Track unresolved UUIDs separately for cooldown/dedup
+            for face_uuid, _ in unresolved_uuids:
+                self._identity_sighting_count[face_uuid] = \
+                    self._identity_sighting_count.get(face_uuid, 0) + 1
 
         # ── Check for genuine arrivals (per-person, not global cooldown) ──
+        # Use ONLY resolved names — never raw UUIDs.  Unresolved UUIDs are
+        # being auto-identified in the background and will trigger an arrival
+        # (under their assigned name) once identification completes and the
+        # next detection frame arrives.
         now = time.time()
-        all_persons = list(resolved_identified)
-        # Also include unresolved UUIDs as "persons" for presence tracking
-        for face in resolved_details:
-            identity = face.get("identity", "")
-            if identity and identity not in all_persons:
-                all_persons.append(identity)
+        all_persons = [p for p in resolved_identified
+                       if not (len(p) == 36 and "-" in p)]
 
         arrivals = self._check_arrivals(all_persons, now)
 
@@ -1296,8 +1443,9 @@ JSON output:
     def update_scene(self, scene: dict):
         """Update current scene from browser COCO-SSD detection.
 
-        Actively tracks objects over time: logs appearances, detects new objects,
-        and maintains per-class statistics for Αίολος' perception memory.
+        Uses temporal smoothing to eliminate COCO-SSD flicker: objects persist
+        for a grace period after last detection, requiring multiple consecutive
+        hits to be confirmed. Tracks cooccurrence patterns and scene stability.
 
         Args:
             scene: Dict with 'objects' (class → {count, max_conf}),
@@ -1305,16 +1453,105 @@ JSON output:
         """
         new_objects = scene.get("objects", {})
         timestamp = scene.get("timestamp", datetime.now(ATHENS_TZ).isoformat())
+        now = time.time()
 
         self._stats["scene_updates"] += 1
 
-        # ── Detect new and departed objects ──
-        new_classes = set(new_objects.keys())
-        old_classes = self._previous_scene_classes
-        appeared = new_classes - old_classes
-        departed = old_classes - new_classes
+        # ══════════════════════════════════════════════════════════════
+        # 1. TEMPORAL SMOOTHING — eliminates per-frame flicker
+        # ══════════════════════════════════════════════════════════════
+        raw_classes = set(new_objects.keys())
 
-        # ── Update per-class object tracking ──
+        # Update smoothed scene: objects currently detected get refreshed
+        for cls, info in new_objects.items():
+            count = info.get("count", 1)
+            conf = info.get("max_conf", 0)
+            if cls in self._smoothed_scene:
+                entry = self._smoothed_scene[cls]
+                entry["count"] = count
+                entry["max_conf"] = max(entry["max_conf"], conf)
+                entry["last_seen_ts"] = now
+                entry["consecutive_hits"] += 1
+                entry["consecutive_misses"] = 0
+            else:
+                self._smoothed_scene[cls] = {
+                    "count": count,
+                    "max_conf": conf,
+                    "first_seen_ts": now,
+                    "last_seen_ts": now,
+                    "consecutive_hits": 1,
+                    "consecutive_misses": 0,
+                }
+
+        # Increment miss counter for objects NOT in this frame
+        for cls in list(self._smoothed_scene.keys()):
+            if cls not in raw_classes:
+                self._smoothed_scene[cls]["consecutive_misses"] += 1
+
+        # Prune expired objects (grace period exceeded)
+        expired = []
+        for cls, entry in list(self._smoothed_scene.items()):
+            if cls not in raw_classes and (now - entry["last_seen_ts"]) > self._object_grace_period:
+                expired.append(cls)
+                del self._smoothed_scene[cls]
+
+        # Build the stable scene: only objects with enough consecutive hits
+        # (or that were previously confirmed and are within grace period)
+        stable_scene: dict = {}
+        for cls, entry in self._smoothed_scene.items():
+            is_confirmed = entry["consecutive_hits"] >= self._object_confirm_frames
+            was_confirmed_recently = (
+                entry["consecutive_misses"] < (self._object_grace_period / 3)
+                and (now - entry["first_seen_ts"]) > 6  # existed for >6s total
+            )
+            if is_confirmed or was_confirmed_recently:
+                stable_scene[cls] = {
+                    "count": entry["count"],
+                    "max_conf": entry["max_conf"],
+                    "duration_s": round(now - entry["first_seen_ts"], 1),
+                    "stability": round(
+                        entry["consecutive_hits"]
+                        / max(1, entry["consecutive_hits"] + entry["consecutive_misses"]),
+                        2,
+                    ),
+                }
+
+        # ══════════════════════════════════════════════════════════════
+        # 2. DETECT MEANINGFUL CHANGES (using smoothed, not raw)
+        # ══════════════════════════════════════════════════════════════
+        new_stable_classes = set(stable_scene.keys())
+        old_stable_classes = self._previous_scene_classes
+        appeared = new_stable_classes - old_stable_classes
+        departed = old_stable_classes - new_stable_classes
+
+        # ══════════════════════════════════════════════════════════════
+        # 3. COOCCURRENCE TRACKING — learn what objects appear together
+        # ══════════════════════════════════════════════════════════════
+        non_person_stable = [c for c in new_stable_classes if c != "person"]
+        if len(non_person_stable) >= 2:
+            for i, obj_a in enumerate(non_person_stable):
+                if obj_a not in self._object_cooccurrence:
+                    self._object_cooccurrence[obj_a] = {}
+                for obj_b in non_person_stable[i + 1:]:
+                    self._object_cooccurrence[obj_a][obj_b] = (
+                        self._object_cooccurrence[obj_a].get(obj_b, 0) + 1
+                    )
+                    if obj_b not in self._object_cooccurrence:
+                        self._object_cooccurrence[obj_b] = {}
+                    self._object_cooccurrence[obj_b][obj_a] = (
+                        self._object_cooccurrence[obj_b].get(obj_a, 0) + 1
+                    )
+
+        # ══════════════════════════════════════════════════════════════
+        # 4. SCENE STABILITY METRIC
+        # ══════════════════════════════════════════════════════════════
+        self._scene_snapshots.append(new_stable_classes)
+        if len(self._scene_snapshots) > self._max_scene_snapshots:
+            self._scene_snapshots = self._scene_snapshots[-self._max_scene_snapshots:]
+
+        # ══════════════════════════════════════════════════════════════
+        # 5. PER-CLASS LIFETIME TRACKING (long-term memory)
+        # ══════════════════════════════════════════════════════════════
         for cls, info in new_objects.items():
             count = info.get("count", 1)
             conf = info.get("max_conf", 0)
@@ -1339,6 +1576,7 @@ JSON output:
             "timestamp": timestamp,
             "objects": {cls: {"count": info.get("count", 1), "max_conf": info.get("max_conf", 0)}
                         for cls, info in new_objects.items()},
+            "stable_objects": {cls: stable_scene[cls] for cls in non_person_stable if cls in stable_scene},
             "total_detections": scene.get("total_detections", 0),
             "appeared": list(appeared),
             "departed": list(departed),
@@ -1347,47 +1585,86 @@ JSON output:
         if len(self._object_log) > self._max_object_log:
             self._object_log = self._object_log[-self._max_object_log:]
 
-        # ── Log new objects appearing (non-person) for proactive awareness ──
+        # ══════════════════════════════════════════════════════════════
+        # 6. LOG SIGNIFICANT CHANGES (smoothed — much less noisy)
+        # ══════════════════════════════════════════════════════════════
         non_person_appeared = [c for c in appeared if c != "person"]
-        now = time.time()
         if non_person_appeared and (now - self._last_object_event_time) > self._object_event_cooldown:
             self._last_object_event_time = now
             self._stats["object_events"] += 1
-            obj_desc = ", ".join(f"{new_objects[c].get('count',1)}x {c} ({new_objects[c].get('max_conf',0):.0%})"
-                                 for c in non_person_appeared)
-            logger.info("[VisionInteg] 🆕 New objects detected: %s", obj_desc)
+            obj_desc = ", ".join(
+                f"{stable_scene[c].get('count', 1)}x {c} ({stable_scene[c].get('max_conf', 0):.0%})"
+                for c in non_person_appeared if c in stable_scene
+            )
+            if obj_desc:
+                logger.info("[VisionInteg] 🆕 New objects confirmed: %s", obj_desc)
 
-            # Persist to visual memory journal
-            self._write_journal({
-                "type": "new_objects_detected",
+                self._write_journal({
+                    "type": "new_objects_detected",
+                    "timestamp": timestamp,
+                    "appeared": list(non_person_appeared),
+                    "departed": list(departed) if departed else [],
+                    "full_scene": {cls: info.get("count", 1) for cls, info in stable_scene.items()},
+                })
+
+                if self._entity_graph:
+                    try:
+                        self._entity_graph.ingest_headline(
+                            f"Objects detected by visual perception: {obj_desc}",
+                            source="VISION/COCO-SSD",
+                        )
+                    except Exception:
+                        pass
+
+        # Log significant departures (confirmed objects leaving after grace period)
+        non_person_departed = [c for c in departed if c != "person"]
+        if non_person_departed:
+            dep_desc = ", ".join(non_person_departed)
+            logger.info("[VisionInteg] 📦 Objects departed (confirmed): %s", dep_desc)
+            self._scene_change_events.append({
                 "timestamp": timestamp,
-                "appeared": list(non_person_appeared),
-                "departed": list(departed) if departed else [],
-                "full_scene": {cls: info.get("count", 1) for cls, info in new_objects.items()},
+                "type": "departed",
+                "objects": list(non_person_departed),
             })
+            if len(self._scene_change_events) > self._max_scene_changes:
+                self._scene_change_events = self._scene_change_events[-self._max_scene_changes:]
 
-            # Feed to entity graph
-            if self._entity_graph:
-                try:
-                    self._entity_graph.ingest_headline(
-                        f"Objects detected by visual perception: {obj_desc}",
-                        source="VISION/COCO-SSD",
-                    )
-                except Exception:
-                    pass
-
-        if departed:
-            dep_desc = ", ".join(departed)
-            logger.debug("[VisionInteg] Objects departed: %s", dep_desc)
-
-        # Update current state
-        self._current_scene = new_objects
+        # ══════════════════════════════════════════════════════════════
+        # 7. UPDATE STATE
+        # ══════════════════════════════════════════════════════════════
+        self._current_scene = stable_scene  # USE SMOOTHED scene, not raw
         self._scene_timestamp = timestamp
-        self._previous_scene_classes = new_classes
+        self._previous_scene_classes = new_stable_classes
 
-        # If persons detected in scene, update humans_present
         if "person" in new_objects:
             self._humans_present = True
+
+    def _compute_scene_stability(self) -> float:
+        """Compute scene stability score (0.0–1.0) from recent snapshots.
+
+        Measures how consistent the detected object set is across recent frames.
+        High stability = same objects every frame. Low = objects flicker in/out.
+        """
+        if len(self._scene_snapshots) < 3:
+            return 0.0
+        recent = self._scene_snapshots[-10:]
+        # Jaccard similarity between consecutive snapshots
+        similarities = []
+        for i in range(1, len(recent)):
+            intersection = len(recent[i] & recent[i - 1])
+            union = len(recent[i] | recent[i - 1])
+            if union > 0:
+                similarities.append(intersection / union)
+        return round(sum(similarities) / len(similarities), 2) if similarities else 0.0
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format seconds into human-readable duration."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds / 60:.0f}m"
+        else:
+            return f"{seconds / 3600:.1f}h"
 
     def to_context_string(self) -> str:
         """Build unified visual perception context for the chat system prompt.
@@ -1395,23 +1672,41 @@ JSON output:
         Combines face identities (with name resolution) and scene objects
         into a single context string that gives Αίολος full awareness of
         what it sees through its camera — both people and objects.
+
+        Enhanced with temporal smoothing data: stability scores, object
+        durations, scene stability, and cooccurrence patterns.
         """
         parts = ["VISUAL PERCEPTION STATUS:"]
 
-        # ── Scene objects from COCO-SSD (80 classes) ──
+        # ── Scene objects from COCO-SSD (temporally smoothed) ──
         if self._current_scene:
             obj_descriptions = []
             for cls, info in sorted(self._current_scene.items(),
                                     key=lambda x: x[1].get("count", 0), reverse=True):
                 count = info.get("count", 1)
                 conf = info.get("max_conf", 0)
-                if count > 1:
-                    obj_descriptions.append(f"{count}x {cls} ({conf:.0%})")
-                else:
-                    obj_descriptions.append(f"{cls} ({conf:.0%})")
-            parts.append(f"  👁 Live scene objects: {', '.join(obj_descriptions)}")
+                duration = info.get("duration_s", 0)
+                stability = info.get("stability", 1.0)
+                # Build rich description: "2x bottle (87%, 45s, stable)"
+                desc = f"{count}x {cls}" if count > 1 else cls
+                detail_parts = [f"{conf:.0%}"]
+                if duration > 5:
+                    detail_parts.append(f"{self._format_duration(duration)}")
+                if stability < 0.8:
+                    detail_parts.append("flickering")
+                elif stability >= 0.95:
+                    detail_parts.append("stable")
+                obj_descriptions.append(f"{desc} ({', '.join(detail_parts)})")
+
+            parts.append(f"  👁 Live scene (smoothed): {', '.join(obj_descriptions)}")
             if self._scene_timestamp:
-                parts.append(f"     Last scene update: {self._scene_timestamp}")
+                parts.append(f"     Last update: {self._scene_timestamp}")
+
+            # Scene stability indicator
+            scene_stab = self._compute_scene_stability()
+            if scene_stab > 0:
+                stab_label = "very stable" if scene_stab > 0.9 else "stable" if scene_stab > 0.7 else "changing" if scene_stab > 0.4 else "volatile"
+                parts.append(f"     Scene stability: {scene_stab:.0%} ({stab_label})")
         else:
             parts.append("  📷 Camera active — no objects detected in current frame")
 
@@ -1425,7 +1720,6 @@ JSON output:
                 det_conf = face.get("detection_confidence", 0)
                 if identity:
                     if face_id:
-                        # Resolved from registry — show name + original ID
                         parts.append(f"    - {identity} (face_id: {face_id[:12]}…, confidence: {conf:.0%})")
                     else:
                         parts.append(f"    - {identity} (confidence: {conf:.0%})")
@@ -1434,7 +1728,7 @@ JSON output:
         elif self._humans_present:
             parts.append("  👤 Humans present (no face details)")
 
-        # ── Object persistence tracking ──
+        # ── Object persistence tracking (long-term memory) ──
         if self._object_tracking:
             non_person_objects = {k: v for k, v in self._object_tracking.items() if k != "person"}
             if non_person_objects:
@@ -1442,10 +1736,27 @@ JSON output:
                 for cls, track in sorted(non_person_objects.items(),
                                          key=lambda x: x[1]["total_detections"], reverse=True)[:10]:
                     parts.append(
-                        f"    - {cls}: {track['total_detections']} detections, "
+                        f"    - {cls}: {track['total_detections']} detections across "
+                        f"{track.get('sessions', 1)} sessions, "
                         f"max_conf {track['max_conf']:.0%}, "
                         f"first seen {track['first_seen']}, last seen {track['last_seen']}"
                     )
+
+        # ── Object cooccurrence patterns (what appears together) ──
+        if self._object_cooccurrence:
+            significant_pairs = []
+            for obj_a, neighbors in self._object_cooccurrence.items():
+                if obj_a == "person":
+                    continue
+                for obj_b, count in neighbors.items():
+                    if obj_b == "person":
+                        continue
+                    if count >= 3 and obj_a < obj_b:  # avoid duplicates
+                        significant_pairs.append((obj_a, obj_b, count))
+            if significant_pairs:
+                significant_pairs.sort(key=lambda x: x[2], reverse=True)
+                pair_descs = [f"{a} + {b} ({c}x)" for a, b, c in significant_pairs[:5]]
+                parts.append(f"  🔗 Objects often seen together: {', '.join(pair_descs)}")
 
         # ── Identity history ──
         if self._identity_last_seen:
@@ -1453,7 +1764,6 @@ JSON output:
             for name, ts in sorted(self._identity_last_seen.items(),
                                    key=lambda x: x[1], reverse=True)[:5]:
                 count = self._identity_sighting_count.get(name, 0)
-                # If name is a UUID, try to resolve it for display
                 display_name = self._face_name_registry.get(name, name) if len(name) == 36 and "-" in name else name
                 parts.append(f"    - {display_name}: last seen {ts}, {count} total sightings")
 
@@ -1497,6 +1807,16 @@ JSON output:
                     parts.append(f"    - [{ts}] Started conversation: {entry.get('topic', '')[:50]}")
                 elif etype == "human_departed":
                     parts.append(f"    - [{ts}] People left the view")
+
+        # ── Recent scene changes (significant object arrivals/departures) ──
+        if self._scene_change_events:
+            recent_changes = self._scene_change_events[-3:]
+            parts.append("  🔄 Recent scene changes:")
+            for ch in recent_changes:
+                ch_type = ch.get("type", "?")
+                ch_ts = ch.get("timestamp", "?")
+                ch_objs = ", ".join(ch.get("objects", []))
+                parts.append(f"    - [{ch_ts}] {ch_type}: {ch_objs}")
 
         parts.append(f"  Stats: {self._stats['events_received']} face events, "
                      f"{self._stats['scene_updates']} scene updates, "

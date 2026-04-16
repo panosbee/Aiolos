@@ -3547,6 +3547,30 @@ async def delete_bf_template(name: str):
 # ══════════════════════════════════════════════════════════════
 
 
+@app.get("/xdart/voice/config")
+async def voice_config():
+    """Return ElevenLabs configuration for browser-side voice engine.
+
+    The browser connects DIRECTLY to ElevenLabs WebSocket for TTS
+    (lowest latency) and uses the REST API for STT. The API key is
+    stored server-side and served only to the authenticated client.
+    """
+    if not ELEVENLABS_API_KEY:
+        return {"enabled": False, "reason": "ELEVENLABS_API_KEY not set"}
+
+    return {
+        "enabled": True,
+        "api_key": ELEVENLABS_API_KEY,
+        "voice_id": ELEVENLABS_VOICE_ID,
+        "model_tts": ELEVENLABS_MODEL_TTS,
+        "model_stt": ELEVENLABS_MODEL_STT,
+        "tts_settings": {
+            "stability": 0.70,
+            "similarity_boost": 0.75,
+        },
+    }
+
+
 class TTSRequest(BaseModel):
     text: str = Field(description="Text to convert to speech")
     voice_id: str = Field(default="", description="Override default voice ID")
@@ -3556,9 +3580,10 @@ class TTSRequest(BaseModel):
 async def text_to_speech(req: TTSRequest):
     """Convert text to speech using ElevenLabs TTS streaming.
 
-    DISABLED — voice has been turned off.
+    Fallback server-side proxy — used when browser WebSocket is unavailable.
     """
-    raise HTTPException(status_code=503, detail="Voice is disabled")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=503, detail="ELEVENLABS_API_KEY not configured")
 
     text = req.text.strip()
     if not text:
@@ -3628,11 +3653,9 @@ async def text_to_speech(req: TTSRequest):
 
 @app.post("/xdart/voice/stt")
 async def speech_to_text(file: UploadFile = File(...)):
-    """Transcribe audio to text using ElevenLabs Scribe v2.
-
-    DISABLED — voice has been turned off.
-    """
-    raise HTTPException(status_code=503, detail="Voice is disabled")
+    """Transcribe audio to text using ElevenLabs Scribe v2."""
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=503, detail="ELEVENLABS_API_KEY not configured")
 
     audio_bytes = await file.read()
     if len(audio_bytes) < 100:
