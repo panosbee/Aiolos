@@ -1062,6 +1062,79 @@ async def chat(req: ChatRequest):
     )
 
 
+@app.post("/xdart/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """Streaming chat — returns Server-Sent Events as the LLM generates text.
+
+    Events:
+      event: routing    — {action, reasoning} — router decision
+      event: chunk      — {text} — incremental text delta
+      event: done       — {full_text, action, reasoning} — final cleaned response
+      event: pipeline   — {problem, reasoning} — redirect to full pipeline
+      event: error      — {message} — error occurred
+    """
+    if not _framework:
+        raise HTTPException(status_code=503, detail="Framework not initialized")
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+    proactive_context = ""
+    if _proactive_engine:
+        proactive_context = _proactive_engine.get_recent_context_for_chat(max_items=10)
+
+    async def event_generator():
+        import json as _json
+
+        def _stream():
+            return list(_framework.chat_stream(
+                message=req.message,
+                history=history_dicts,
+                proactive_context=proactive_context,
+                proactive=req.proactive,
+            ))
+
+        # Run the synchronous generator in a thread pool
+        # We collect events from the generator and yield them as SSE
+        loop = asyncio.get_event_loop()
+
+        # Use a queue to bridge sync generator → async SSE
+        import queue
+        q: queue.Queue = queue.Queue()
+        sentinel = object()
+
+        def _produce():
+            try:
+                for ev in _framework.chat_stream(
+                    message=req.message,
+                    history=history_dicts,
+                    proactive_context=proactive_context,
+                    proactive=req.proactive,
+                ):
+                    q.put(ev)
+            except Exception as exc:
+                q.put({"event": "error", "data": {"message": str(exc)}})
+            finally:
+                q.put(sentinel)
+
+        import threading
+        threading.Thread(target=_produce, daemon=True, name="chat-stream-producer").start()
+
+        while True:
+            # Non-blocking poll with small sleep to yield to event loop
+            try:
+                item = await loop.run_in_executor(None, q.get, True, 0.05)
+            except queue.Empty:
+                continue
+            if item is sentinel:
+                break
+            event_name = item.get("event", "chunk")
+            event_data = item.get("data", {})
+            yield {"event": event_name, "data": _json.dumps(event_data, ensure_ascii=False)}
+
+    return EventSourceResponse(event_generator())
+
+
 @app.get("/xdart/self-prompt")
 async def get_self_prompt():
     """View the AI's current self-written prompt."""

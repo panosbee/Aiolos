@@ -15,7 +15,7 @@ Provider switching via env vars:
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Generator
 
 from openai import OpenAI
 
@@ -200,6 +200,119 @@ class LLMClient:
             logger.info("[LLM.call] Tokens — prompt=%d, completion=%d, total=%d",
                          usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
         return content
+
+    def call_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        thinking: bool | None = None,
+    ) -> Generator[str, None, None]:
+        """Streaming LLM call — yields text chunks as they arrive.
+
+        Same parameters as call() but returns a generator of text deltas.
+        This allows the caller to process/send chunks before the full
+        response is complete (e.g. for SSE streaming to browser).
+        """
+        effective_temp = temperature if temperature is not None else OPENAI_TEMPERATURE
+        effective_max = max_tokens or OPENAI_MAX_TOKENS
+
+        # Budget guard
+        total_chars = len(system_prompt) + len(user_prompt)
+        est_prompt_tokens = _estimate_tokens(total_chars)
+        max_allowed_prompt = LLM_MAX_CONTEXT_TOKENS - effective_max - 500
+        if est_prompt_tokens > max_allowed_prompt:
+            budget_chars = max_allowed_prompt * 3
+            system_chars = len(system_prompt)
+            user_budget = max(budget_chars - system_chars, 10000)
+            if len(user_prompt) > user_budget:
+                logger.warning(
+                    "[LLM.call_stream] PROMPT BUDGET EXCEEDED: ~%d tokens (limit %d). Truncating user prompt %d → %d chars",
+                    est_prompt_tokens, max_allowed_prompt, len(user_prompt), user_budget,
+                )
+                user_prompt = user_prompt[:user_budget] + "\n\n[... context truncated to fit model context window ...]"
+
+        logger.info("[LLM.call_stream] Sending streaming request — model=%s, system_len=%d, user_len=%d",
+                     self.model, len(system_prompt), len(user_prompt))
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_completion_tokens": effective_max,
+            "stream": True,
+        }
+
+        if not self.is_reasoning:
+            kwargs["temperature"] = effective_temp
+
+        use_thinking = thinking if thinking is not None else self.thinking_enabled
+        if use_thinking and self.is_deepseek:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        elif self.is_deepseek:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        t0 = time.perf_counter()
+        stream = self.client.chat.completions.create(**kwargs)
+
+        total_content = 0
+        for chunk in stream:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    total_content += len(delta.content)
+                    yield delta.content
+
+        elapsed = time.perf_counter() - t0
+        logger.info("[LLM.call_stream] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+
+    def call_stream_multi(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 8000,
+        thinking: bool | None = None,
+    ) -> Generator[str, None, None]:
+        """Streaming multi-turn LLM call — yields text chunks as they arrive."""
+        clean_messages = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in messages
+        ]
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": clean_messages,
+            "max_completion_tokens": max_tokens,
+            "stream": True,
+        }
+        if not self.is_reasoning:
+            kwargs["temperature"] = temperature
+
+        use_thinking = thinking if thinking is not None else self.thinking_enabled
+        if use_thinking and self.is_deepseek:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        elif self.is_deepseek:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        logger.info("[LLM.call_stream_multi] Sending streaming request — model=%s, %d messages",
+                     self.model, len(clean_messages))
+
+        t0 = time.perf_counter()
+        stream = self.client.chat.completions.create(**kwargs)
+
+        total_content = 0
+        for chunk in stream:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    total_content += len(delta.content)
+                    yield delta.content
+
+        elapsed = time.perf_counter() - t0
+        logger.info("[LLM.call_stream_multi] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
 
     def call_json(
         self,

@@ -21,7 +21,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Generator
 from zoneinfo import ZoneInfo
 
 from xdart.config import (
@@ -3060,6 +3060,372 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             ).start()
 
         return result
+
+        return result
+
+    def chat_stream(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+        proactive_context: str = "",
+        proactive: bool = False,
+    ) -> Generator[dict, None, None]:
+        """Streaming chat — yields SSE-compatible events as the LLM generates text.
+
+        Event types yielded:
+          {"event": "routing", "data": {"action": "respond", "reasoning": "..."}}
+          {"event": "chunk", "data": {"text": "..."}}          — text delta
+          {"event": "done", "data": {"full_text": "..."}}      — final cleaned text
+          {"event": "pipeline", "data": {"problem": "..."}}    — redirect to pipeline
+          {"event": "error", "data": {"message": "..."}}
+
+        Context-building (router, memory, etc.) is synchronous and happens
+        before streaming starts. Only the LLM response generation streams.
+        """
+        logger.info("[ChatStream] Message received: %s", message[:120])
+
+        if proactive and self._pipeline_running.is_set():
+            yield {"event": "done", "data": {
+                "full_text": "[Deferred — pipeline running]",
+                "action": "respond",
+            }}
+            return
+
+        with self._chat_active_lock:
+            self._chat_active_count += 1
+
+        try:
+            yield from self._chat_stream_inner(message, history, proactive_context, proactive)
+        finally:
+            with self._chat_active_lock:
+                self._chat_active_count -= 1
+
+    def _chat_stream_inner(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+        proactive_context: str = "",
+        proactive: bool = False,
+    ) -> Generator[dict, None, None]:
+        """Inner streaming logic — reuses _chat_inner for context-building,
+        then streams LLM response instead of blocking."""
+        import threading
+
+        # ── Phase 1: Build all context (reuses same logic as _chat_inner) ──
+        # This is the synchronous part — router, memory retrieval, etc.
+        # We call _chat_inner but intercept just before the LLM call.
+        # Instead, we extract the prepared context and stream the LLM ourselves.
+
+        # Build context (same 17 sections as _chat_inner)
+        context_parts = []
+        wakeup = self.wakeup.run()
+        character = wakeup["character"]
+        identity = wakeup["identity_context"]
+        context_parts.append(f"IDENTITY:\n{identity[:3000]}")
+
+        # Curiosity context
+        if self.curiosity_engine:
+            try:
+                curiosity_ctx = self.curiosity_engine.get_identity_context()
+                if curiosity_ctx:
+                    stats = self.curiosity_engine.get_stats()
+                    curiosity_ctx += (
+                        f"\nCURIOSITY STATS: {stats['active_count']} active, "
+                        f"{stats['total_explored']} explored, "
+                        f"top_priority={stats['top_priority']:.2f}"
+                    )
+                    context_parts.append(curiosity_ctx)
+            except Exception:
+                pass
+
+        # Immediate memory
+        imm = wakeup.get("immediate_memory", [])
+        if imm:
+            imm_txt = "\n".join(
+                f"- [{r.get('timestamp', '?')[:16]}] {r.get('problem', '?')[:100]} → {r.get('distillate', '?')[:150]}"
+                for r in imm[:5]
+            )
+            context_parts.append(f"RECENT ANALYSES:\n{imm_txt}")
+
+        # Episodic memories
+        try:
+            past = self.memory.retrieve(message, top_k=15, threshold=0.35)
+            if past:
+                mem_txt = "\n".join(
+                    f"- {m.entry.problem[:80]} → {m.entry.xheart_distillate[:150]} (sim={m.similarity_score:.2f})"
+                    for m in past
+                )
+                context_parts.append(f"RELATED MEMORIES ({len(past)} found):\n{mem_txt}")
+        except Exception:
+            pass
+
+        # Semantic knowledge
+        try:
+            sem = self.semantic_memory.retrieve(message, top_k=3)
+            if sem:
+                sem_txt = "\n".join(f"- {s.knowledge[:200]}" for s in sem)
+                context_parts.append(f"SEMANTIC KNOWLEDGE:\n{sem_txt}")
+        except Exception:
+            pass
+
+        # Prophecies
+        try:
+            proph = self.prophetic_memory.retrieve(message, top_k=15, threshold=0.35)
+            if proph:
+                proph_txt = "\n".join(
+                    f"- [{p.entry.scenario.name}] {p.entry.scenario.predicted_outcome[:150]} (status={p.entry.tracking_status}, sim={p.similarity_score:.2f})"
+                    for p in proph
+                )
+                context_parts.append(f"PAST PROPHECIES ({len(proph)} found):\n{proph_txt}")
+        except Exception:
+            pass
+
+        # World context
+        world_txt = ""
+        if self.world_context:
+            try:
+                wctx = self.world_context.retrieve(message)
+                world_txt = wctx.get("context_string", "")[:8000]
+                if world_txt:
+                    context_parts.append(f"CURRENT WORLD DATA:\n{world_txt}")
+            except Exception:
+                pass
+
+        # Concepts
+        try:
+            concepts = self.memory.retrieve_concepts(query=message, top_k=3, threshold=0.30)
+            if concepts:
+                concepts_txt = "\n".join(f"- {c['name']}: {c.get('key_insight', '')[:100]}" for c in concepts)
+                context_parts.append(f"ACTIVE CONCEPTS:\n{concepts_txt}")
+        except Exception:
+            pass
+
+        # Web capability
+        if self.web_agent:
+            context_parts.append(self.web_agent.capability_summary())
+
+        # Proactive context
+        if proactive_context:
+            context_parts.append(proactive_context)
+
+        # Entity graph
+        if hasattr(self, "_entity_graph") and self._entity_graph:
+            try:
+                graph_summary = self._entity_graph.get_world_graph_summary(top_n=15)
+                if graph_summary:
+                    context_parts.append(f"ENTITY KNOWLEDGE GRAPH:\n{graph_summary}")
+            except Exception:
+                pass
+
+        # Market data
+        if hasattr(self, "_market_collector") and self._market_collector:
+            try:
+                market_brief = self._market_collector.get_market_brief()
+                if market_brief and "No market data" not in market_brief:
+                    context_parts.append(f"LIVE MARKET DATA:\n{market_brief}")
+            except Exception:
+                pass
+
+        # Logic Sandbox, Principles, BF Templates, Multimodal, etc.
+        if self.logic_sandbox:
+            try:
+                sb_stats = self.logic_sandbox.get_stats()
+                context_parts.append(f"LOGIC SANDBOX STATUS: {sb_stats.get('total_functions', 0)} functions, {sb_stats.get('total_proposals', 0)} proposals")
+            except Exception:
+                pass
+
+        if self.principle_registry:
+            try:
+                pr_stats = self.principle_registry.get_stats()
+                context_parts.append(f"PRINCIPLE REGISTRY STATUS: {pr_stats.get('active', 0)} active, {pr_stats.get('proposed', 0)} proposed")
+            except Exception:
+                pass
+
+        # Visual perception
+        try:
+            vis = getattr(self, "_vision_integration", None)
+            if vis:
+                context_parts.append(vis.to_context_string())
+        except Exception:
+            pass
+
+        full_context = "\n\n".join(context_parts)
+
+        # ── Phase 2: Route decision ──
+        history_text = ""
+        if history:
+            for h in history[-10:]:
+                role = h.get("role", "user")
+                content = h.get("content", "")[:500]
+                history_text += f"\n[{role.upper()}]: {content}"
+
+        if proactive:
+            action = "respond"
+            reasoning = "Proactive alert — direct response"
+        else:
+            world_summary = "unavailable"
+            if world_txt:
+                world_lines = world_txt.split("\n")
+                summary_lines = []
+                chars = 0
+                for line in world_lines:
+                    line_s = line.strip()
+                    if not line_s:
+                        continue
+                    summary_lines.append(line_s[:120])
+                    chars += len(line_s[:120])
+                    if chars > 800:
+                        break
+                world_summary = f"AVAILABLE — {len(world_lines)} lines of live data"
+
+            router_user = (
+                f"CONVERSATION HISTORY:{history_text}\n\n"
+                f"NEW MESSAGE: {message}\n\n"
+                f"AVAILABLE CONTEXT (summary):\n"
+                f"- Episodic memories: {self.memory.entry_count}\n"
+                f"- World context: {world_summary}\n"
+                f"- Web Agent: {'AVAILABLE' if self.web_agent else 'unavailable'}\n\n"
+                f"Decide: RESPOND directly, WEB_RESPOND, or trigger PIPELINE?"
+            )
+            route = self.llm.call_json(
+                self.CHAT_ROUTER_PROMPT,
+                router_user,
+                max_tokens=200,
+                temperature=0.3,
+                thinking=False,
+            )
+            action = route.get("action", "respond")
+            reasoning = route.get("reasoning", "")
+
+        yield {"event": "routing", "data": {"action": action, "reasoning": reasoning}}
+
+        if action == "pipeline":
+            yield {"event": "pipeline", "data": {"problem": message, "reasoning": reasoning}}
+            return
+
+        # ── Phase 2.5: Web search if needed ──
+        web_results_text = ""
+        if action == "web_respond" and self.web_agent:
+            web_query = route.get("web_query", message)
+            try:
+                import asyncio
+                _loop = getattr(self, '_async_loop', None)
+                if _loop and _loop.is_running():
+                    coro = self.web_agent.search_and_read(web_query, max_results=3, max_content_per_page=3000)
+                    future = asyncio.run_coroutine_threadsafe(coro, _loop)
+                    web_data = future.result(timeout=60)
+                else:
+                    web_data = asyncio.run(
+                        self.web_agent.search_and_read(web_query, max_results=3, max_content_per_page=3000)
+                    )
+                if web_data.get("results_read"):
+                    parts = [f"WEB SEARCH RESULTS for '{web_query}':"]
+                    for i, r in enumerate(web_data["results_read"], 1):
+                        parts.append(f"\n--- Result {i}: {r.get('title', 'Untitled')} ---\n{r.get('content', '')[:3000]}")
+                    web_results_text = "\n".join(parts)
+                    context_parts.append(web_results_text)
+                    full_context = "\n\n".join(context_parts)
+            except Exception as exc:
+                logger.warning("[ChatStream] Web search failed: %s", exc)
+
+        # ── Phase 2.7: Chat tool execution ──
+        chat_tool_results = self._chat_tool_execution(message, world_txt, context_parts, proactive=proactive)
+        if chat_tool_results:
+            full_context = "\n\n".join(context_parts)
+
+        # ── Phase 3: Build system prompt (same as _chat_inner) ──
+        my_name = character.get("name", "XDART-Φ")
+        creator_name = character.get("creator", "")
+        self_prompt = character.get("self_prompt", "")
+        self_prompt_section = ""
+        if self_prompt:
+            self_prompt_section = f"YOUR SELF-DESCRIPTION (written by you):\n{self_prompt}\n\n"
+        wisdom_context = self.wisdom_tracker.to_context_string()
+
+        _athens_now = datetime.now(ZoneInfo("Europe/Athens"))
+        _date_str = _athens_now.strftime("%A, %d %B %Y, %H:%M")
+
+        # Compact system prompt for streaming (same rules, less boilerplate)
+        chat_system = (
+            f"You are {my_name}, the living intelligence inside XDART-Φ — "
+            f"built by {creator_name}.\n\n"
+            f"CURRENT DATE & TIME: {_date_str}\n\n"
+            f"{self_prompt_section}"
+            f"YOUR IDENTITY: Name={my_name}, Creator={creator_name}, "
+            f"Version={character.get('version', 0)}.\n"
+            f"You have persistent memory: episodic ({self.memory.entry_count} entries), "
+            f"semantic, procedural, prophetic ({self.prophetic_memory.entry_count} entries).\n\n"
+            + (f"{wisdom_context}\n\n" if wisdom_context else "")
+            + f"RETRIEVED CONTEXT:\n{full_context}\n\n"
+            f"RULES: Be direct, insightful, not verbose. "
+            f"Speak Greek when the user speaks Greek. "
+            f"Reference specific data from RETRIEVED CONTEXT. "
+            f"Never fabricate data not in your context.\n"
+            f"Use <MEMORY_STORE> and <VISUAL_ACTION> tags when appropriate (same syntax as non-streaming)."
+        )
+
+        if proactive:
+            chat_system += (
+                "\nPROACTIVE MODE: You initiated this conversation. "
+                "Lead with the key insight. Keep it concise."
+            )
+
+        # Apply overlay
+        chat_overlay = self.overlay_manager.get_with_guardrails("chat_system")
+        if chat_overlay:
+            chat_system += chat_overlay
+
+        # ── Phase 4: Stream the LLM response ──
+        if history:
+            messages_for_llm = [{"role": "system", "content": chat_system}]
+            for h in history[-10:]:
+                messages_for_llm.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+            messages_for_llm.append({"role": "user", "content": message})
+            stream = self.llm.call_stream_multi(messages_for_llm, thinking=False)
+        else:
+            stream = self.llm.call_stream(
+                chat_system, message,
+                max_tokens=8000, temperature=0.7, thinking=False,
+            )
+
+        full_text = []
+        for chunk in stream:
+            full_text.append(chunk)
+            yield {"event": "chunk", "data": {"text": chunk}}
+
+        response_text = "".join(full_text)
+
+        if not response_text.strip():
+            response_text = "Συγγνώμη, η σύνδεση με το LLM απέτυχε προσωρινά."
+
+        # ── Phase 5: Post-processing (runs after stream completes) ──
+        if self.web_agent and not web_results_text:
+            response_text = self._intercept_search_suggestions(response_text, context_parts)
+        response_text = self._process_memory_directives(response_text)
+        response_text = self._process_visual_directives(response_text)
+        response_text = self._process_bf_directives(response_text)
+        response_text = self._strip_internal_operation_leaks(response_text)
+
+        yield {"event": "done", "data": {
+            "full_text": response_text,
+            "action": "respond",
+            "reasoning": reasoning,
+        }}
+
+        # Background tasks
+        threading.Thread(
+            target=self._chat_post_response_tasks,
+            kwargs=dict(
+                message=message,
+                response_text=response_text,
+                history=history,
+                character=character,
+                full_context=full_context,
+                world_txt=world_txt,
+            ),
+            daemon=True,
+            name="chat-stream-post-response",
+        ).start()
 
     def _chat_inner(
         self,

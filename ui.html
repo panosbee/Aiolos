@@ -5635,8 +5635,60 @@ async function sendChat() {
 
   document.getElementById('problemInput').value = '';
 
+  // Prepare streaming response container
+  const responseId = 'chat-stream-' + Date.now();
+  let responseDiv = null;
+  let responseTextEl = null;
+  let streamedText = '';
+
+  // ── TTS sentence queue: speak sentences as they arrive ──
+  let _ttsSentenceBuffer = '';
+  let _ttsSentenceQueue = [];
+  let _ttsSpeakingStream = false;
+
+  function _flushSentenceToTTS(sentence) {
+    if (!_voiceAutoPlay || !_voiceEnabled || !sentence.trim()) return;
+    _ttsSentenceQueue.push(sentence.trim());
+    if (!_ttsSpeakingStream) _playNextSentence();
+  }
+
+  async function _playNextSentence() {
+    if (_ttsSentenceQueue.length === 0) {
+      _ttsSpeakingStream = false;
+      return;
+    }
+    _ttsSpeakingStream = true;
+    const sentence = _ttsSentenceQueue.shift();
+    try {
+      await speakText(sentence);
+    } catch (e) {
+      console.warn('[Voice/Stream] Sentence TTS failed:', e);
+    }
+    // Play next sentence after current one finishes
+    _playNextSentence();
+  }
+
+  function _checkSentenceBoundary(text) {
+    // Accumulate text and flush complete sentences to TTS
+    _ttsSentenceBuffer += text;
+    // Split on sentence boundaries: . ! ? ; followed by space or end
+    const sentenceRegex = /([^.!?;]+[.!?;]+)\s*/g;
+    let match;
+    let lastIndex = 0;
+    while ((match = sentenceRegex.exec(_ttsSentenceBuffer)) !== null) {
+      const sentence = match[1].trim();
+      if (sentence.length > 5) {  // Skip very short fragments
+        _flushSentenceToTTS(sentence);
+      }
+      lastIndex = sentenceRegex.lastIndex;
+    }
+    // Keep the remainder (incomplete sentence)
+    _ttsSentenceBuffer = _ttsSentenceBuffer.substring(lastIndex);
+  }
+
   try {
-    const res = await fetch(`${API_BASE}/xdart/chat`, {
+    // ═══ SSE Streaming Chat ═══
+    const res = await fetch(`${API_BASE}/xdart/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5644,35 +5696,155 @@ async function sendChat() {
         history: chatHistory.slice(-20),
       }),
     });
-    const data = await res.json();
 
-    // Remove thinking indicator
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let gotDone = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE events from buffer
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() || '';  // Keep incomplete line in buffer
+
+      let currentEvent = 'message';
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEvent = line.substring(6).trim();
+        } else if (line.startsWith('data:')) {
+          const dataStr = line.substring(5).trim();
+          if (!dataStr) continue;
+
+          let data;
+          try { data = JSON.parse(dataStr); } catch { continue; }
+
+          // ── Handle SSE events ──
+          if (currentEvent === 'routing') {
+            // Router decided — update thinking indicator
+            const thinkEl = document.getElementById(thinkingId);
+            if (thinkEl) {
+              if (data.action === 'web_respond') {
+                thinkEl.querySelector('div').textContent = '🌐 Searching web...';
+              } else {
+                thinkEl.querySelector('div').textContent = 'Generating...';
+              }
+            }
+          }
+
+          else if (currentEvent === 'pipeline') {
+            // Pipeline redirect
+            const thinkEl = document.getElementById(thinkingId);
+            if (thinkEl) thinkEl.remove();
+
+            chatHistory.push({ role: 'user', content: message });
+            chatHistory.push({ role: 'assistant', content: `[PIPELINE TRIGGERED] ${data.reasoning || ''}` });
+
+            conversation.innerHTML += `
+              <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.06);border-radius:10px;border-left:3px solid #ffd740;max-width:85%;margin-left:auto">
+                <div style="font-size:11px;color:#ffd740;margin-bottom:4px">🔮 Prophet Mode Activated</div>
+                <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(data.reasoning || '')}</div>
+              </div>`;
+            conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+            isChatting = false;
+            document.getElementById('btnChat').disabled = false;
+            document.getElementById('btnChat').textContent = 'Chat';
+            document.getElementById('problemInput').value = data.problem || message;
+            startAnalysis();
+            return;
+          }
+
+          else if (currentEvent === 'chunk') {
+            // ── Streaming text chunk ──
+            const chunkText = data.text || '';
+            streamedText += chunkText;
+
+            // Create response bubble on first chunk
+            if (!responseDiv) {
+              const thinkEl = document.getElementById(thinkingId);
+              if (thinkEl) thinkEl.remove();
+
+              conversation.innerHTML += `
+                <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
+                  <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
+                  <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
+                </div>`;
+              responseDiv = document.getElementById(responseId);
+              responseTextEl = document.getElementById(`${responseId}-text`);
+            }
+
+            // Update text incrementally
+            responseTextEl.textContent = streamedText;
+            responseDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+            // Feed text to sentence-level TTS
+            _checkSentenceBoundary(chunkText);
+          }
+
+          else if (currentEvent === 'done') {
+            gotDone = true;
+            const finalText = data.full_text || streamedText;
+
+            // Update with final cleaned text (post-processed: directives removed)
+            if (responseTextEl) {
+              responseTextEl.textContent = finalText;
+            }
+
+            chatHistory.push({ role: 'user', content: message });
+            chatHistory.push({ role: 'assistant', content: finalText });
+
+            // Flush remaining sentence buffer to TTS
+            if (_ttsSentenceBuffer.trim().length > 5) {
+              _flushSentenceToTTS(_ttsSentenceBuffer);
+              _ttsSentenceBuffer = '';
+            }
+
+            // Check if self-prompt was updated (async, non-blocking)
+            checkSelfPromptUpdate(conversation);
+          }
+
+          else if (currentEvent === 'error') {
+            console.error('[Chat/Stream] Server error:', data.message);
+          }
+
+          currentEvent = 'message';  // Reset for next event
+        }
+      }
+    }
+
+    // If no done event came, still clean up
+    if (!gotDone && streamedText) {
+      chatHistory.push({ role: 'user', content: message });
+      chatHistory.push({ role: 'assistant', content: streamedText });
+    }
+
+    // Remove thinking indicator if still present
     const thinkEl = document.getElementById(thinkingId);
     if (thinkEl) thinkEl.remove();
 
-    if (data.action === 'pipeline') {
-      // Router decided full pipeline is needed
-      chatHistory.push({ role: 'user', content: message });
-      chatHistory.push({ role: 'assistant', content: `[PIPELINE TRIGGERED] ${data.reasoning}` });
+  } catch (err) {
+    const thinkEl = document.getElementById(thinkingId);
+    if (thinkEl) thinkEl.remove();
 
-      conversation.innerHTML += `
-        <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.06);border-radius:10px;border-left:3px solid #ffd740;max-width:85%;margin-left:auto">
-          <div style="font-size:11px;color:#ffd740;margin-bottom:4px">🔮 Prophet Mode Activated</div>
-          <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(data.reasoning)}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:6px;font-style:italic">Starting full prophetic analysis...</div>
-        </div>`;
-      conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    // Fallback: try non-streaming endpoint
+    console.warn('[Chat] Stream failed, falling back to non-streaming:', err.message);
+    try {
+      const res = await fetch(`${API_BASE}/xdart/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, history: chatHistory.slice(-20) }),
+      });
+      const data = await res.json();
 
-      // Auto-trigger full pipeline
-      isChatting = false;
-      document.getElementById('btnChat').disabled = false;
-      document.getElementById('btnChat').textContent = 'Chat';
-      document.getElementById('problemInput').value = data.problem || message;
-      startAnalysis();
-      return;
-
-    } else {
-      // Direct response
       chatHistory.push({ role: 'user', content: message });
       chatHistory.push({ role: 'assistant', content: data.response || '' });
 
@@ -5680,25 +5852,15 @@ async function sendChat() {
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
           <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
           <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(data.response || '')}</div>
-          ${data.reasoning ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;font-style:italic">[${esc(data.reasoning)}]</div>` : ''}
         </div>`;
-      conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-      // Auto-speak the response if voice is enabled
       autoSpeak(data.response || '');
-
-      // Check if self-prompt was updated (async, non-blocking)
-      checkSelfPromptUpdate(conversation);
+    } catch (fallbackErr) {
+      conversation.innerHTML += `
+        <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
+          <div style="font-size:13px;color:var(--red)">Chat error: ${esc(err.message)}</div>
+        </div>`;
     }
-
-  } catch (err) {
-    const thinkEl = document.getElementById(thinkingId);
-    if (thinkEl) thinkEl.remove();
-
-    conversation.innerHTML += `
-      <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
-        <div style="font-size:13px;color:var(--red)">Chat error: ${esc(err.message)}</div>
-      </div>`;
   }
 
   isChatting = false;
