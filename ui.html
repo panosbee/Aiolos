@@ -5138,7 +5138,7 @@ let _ttsQueue = [];             // Queue of decoded AudioBuffers
 let _ttsPlaying = false;        // Currently playing audio
 let _ttsSources = [];           // ALL scheduled AudioBufferSourceNodes (for clean stop)
 let _ttsSpeaking = false;       // True while TTS is active (queuing or playing)
-const _ttsPlaybackRate = 1.15;  // Speech speed multiplier (1.0 = normal, 1.15 = ~15% faster)
+const _ttsPlaybackRate = 1.30;  // Speech speed multiplier (1.0 = normal, 1.30 = 30% faster)
 
 // ── Initialize Voice System ──
 async function _initVoice() {
@@ -5197,6 +5197,29 @@ function _splitIntoSentences(text) {
   // Split on sentence boundaries (., !, ?, ;) but keep the punctuation
   const parts = text.match(/[^.!?;]+[.!?;]+\s*/g) || [text];
   return parts.map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Strip internal directive tags from displayed text (client-side).
+ * Handles: <VISUAL_ACTION>...</VISUAL_ACTION>, <MEMORY_STORE ... />,
+ * <BAYESIAN_FUZZY_ENGINE>...</BAYESIAN_FUZZY_ENGINE>, and self-closing variants.
+ * Used during streaming to hide tags before post-processing runs on server.
+ */
+function _stripInternalTags(text) {
+  // Block-style tags: <TAG>...</TAG>
+  text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*?<\/VISUAL_ACTION\s*>/gi, '');
+  text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*?<\/MEMORY_STORE\s*>/gi, '');
+  text = text.replace(/<BAYESIAN_FUZZY_ENGINE\b[^>]*>[\s\S]*?<\/BAYESIAN_FUZZY_ENGINE\s*>/gi, '');
+  // Self-closing tags: <TAG ... />
+  text = text.replace(/<VISUAL_ACTION\s+[^>]*\/?>/gi, '');
+  text = text.replace(/<MEMORY_STORE\s+[^>]*\/?>/gi, '');
+  text = text.replace(/<BAYESIAN_FUZZY_ENGINE\s+[^>]*\/?>/gi, '');
+  // Incomplete block tags at end of stream (opening tag without closing)
+  text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*$/gi, '');
+  // Clean up multiple blank lines
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
 }
 
 /**
@@ -5782,12 +5805,13 @@ async function sendChat() {
               responseTextEl = document.getElementById(`${responseId}-text`);
             }
 
-            // Update text incrementally
-            responseTextEl.textContent = streamedText;
+            // Strip internal tags before displaying (they'll be processed server-side on "done")
+            responseTextEl.textContent = _stripInternalTags(streamedText);
             responseDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-            // Feed text to sentence-level TTS
-            _checkSentenceBoundary(chunkText);
+            // Feed CLEANED text to sentence-level TTS (no tags in speech)
+            const cleanChunk = _stripInternalTags(chunkText);
+            if (cleanChunk) _checkSentenceBoundary(cleanChunk);
           }
 
           else if (currentEvent === 'done') {

@@ -4790,30 +4790,62 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         """
         vis = getattr(self, "_vision_integration", None)
         if not vis:
-            return response_text
+            # Still strip tags even without vision integration
+            import re
+            response_text = re.sub(
+                r'<VISUAL_ACTION\b[^>]*>.*?</VISUAL_ACTION\s*>',
+                '', response_text, flags=re.DOTALL | re.IGNORECASE,
+            )
+            response_text = re.sub(
+                r'<VISUAL_ACTION\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            response_text = re.sub(r'<VISUAL_ACTION\b.*$', '', response_text, flags=re.DOTALL).rstrip()
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
 
         import re
-        pattern = re.compile(
+
+        # ── Format A: self-closing attribute-style ──
+        # <VISUAL_ACTION action="register_face" face_id="uuid" name="Πάνος" />
+        pattern_self_closing = re.compile(
             r'<VISUAL_ACTION\s+((?:[^">/]|"[^"]*")*)\s*/?>',
             re.IGNORECASE | re.DOTALL,
         )
 
-        matches = list(pattern.finditer(response_text))
-        if not matches:
-            # Strip truncated tags
-            response_text = re.sub(r'<VISUAL_ACTION\b.*$', '', response_text, flags=re.DOTALL).rstrip()
-            return response_text
+        # ── Format B: block-style with JSON body ──
+        # <VISUAL_ACTION>\n{ "action": "...", ... }\n</VISUAL_ACTION>
+        pattern_block = re.compile(
+            r'<VISUAL_ACTION\s*>\s*(\{.*?\})\s*</VISUAL_ACTION\s*>',
+            re.IGNORECASE | re.DOTALL,
+        )
 
         confirmations = []
-        for match in matches:
+
+        # Process block-style tags (JSON body)
+        for match in pattern_block.finditer(response_text):
+            try:
+                import json as _json
+                attrs = _json.loads(match.group(1))
+                action_type = attrs.pop("action", "").strip()
+                if not action_type:
+                    continue
+                str_attrs = {k: str(v) for k, v in attrs.items()}
+                result = vis.execute_visual_action(action_type, str_attrs)
+                if result.get("success"):
+                    confirmations.append(f"✓ {result['description']}")
+                    logger.info("[Chat.VisualAction] %s: %s", action_type, result['description'])
+                else:
+                    confirmations.append(f"✗ {result['description']}")
+            except Exception as e:
+                logger.warning("[Chat.VisualAction] Block-style parse error: %s", e)
+
+        # Process self-closing tags (attribute-style)
+        for match in pattern_self_closing.finditer(response_text):
             attrs_str = match.group(1)
             attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
             action_type = attrs.pop("action", "").strip()
-
             if not action_type:
-                logger.warning("[Chat.VisualAction] No action type in directive")
                 continue
-
             try:
                 result = vis.execute_visual_action(action_type, attrs)
                 if result.get("success"):
@@ -4826,16 +4858,16 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 logger.warning("[Chat.VisualAction] %s error: %s", action_type, e)
                 confirmations.append(f"✗ Σφάλμα: {e}")
 
-        # Strip directives from visible response
-        clean_text = pattern.sub("", response_text).strip()
+        # Strip ALL visual action tags from visible response
+        clean_text = pattern_block.sub("", response_text)
+        clean_text = pattern_self_closing.sub("", clean_text)
         clean_text = re.sub(r'<VISUAL_ACTION\b.*$', '', clean_text, flags=re.DOTALL).rstrip()
-        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
 
-        # Append confirmation block
         if confirmations:
             clean_text += "\n\n" + "\n".join(confirmations)
 
-        logger.info("[Chat.VisualAction] Processed %d visual directives", len(matches))
+        logger.info("[Chat.VisualAction] Processed %d visual directives", len(confirmations))
         return clean_text
 
     def _process_bf_directives(self, response_text: str) -> str:
@@ -5115,6 +5147,19 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             response_text,
             flags=re.DOTALL,
         )
+
+        # 5. Strip any remaining internal tags that slipped through earlier processors
+        # Block-style: <TAG>...</TAG>
+        for tag in ('VISUAL_ACTION', 'MEMORY_STORE', 'BAYESIAN_FUZZY_ENGINE'):
+            response_text = re.sub(
+                rf'<{tag}\b[^>]*>.*?</{tag}\s*>',
+                '', response_text, flags=re.DOTALL | re.IGNORECASE,
+            )
+            # Self-closing: <TAG ... />
+            response_text = re.sub(
+                rf'<{tag}\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
 
         # Clean up excessive newlines and trailing whitespace
         response_text = re.sub(r'\n{3,}', '\n\n', response_text).strip()
