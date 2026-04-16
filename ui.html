@@ -5946,9 +5946,17 @@ document.getElementById('problemInput').addEventListener('keydown', (e) => {
 });
 
 // ── Proactive Conversation: Αίολος initiates chat ──
+let _proactiveChatRunning = false;  // Lock to prevent stacking proactive chats
+
 async function initiateProactiveChat(notif) {
   const conversation = document.getElementById('conversation');
   if (!conversation) return;
+
+  // If another proactive chat is running, kill its TTS and let the new one take over
+  if (_proactiveChatRunning) {
+    stopSpeaking();
+  }
+  _proactiveChatRunning = true;
 
   // Remove empty state if present
   const empty = document.getElementById('emptyState');
@@ -5986,11 +5994,21 @@ async function initiateProactiveChat(notif) {
     'and what Πάνος should watch for. Be direct and analytical.',
   ].filter(Boolean).join('\n');
 
-  // Add to chatHistory as a system-initiated "user" message (so Αίολος has context)
   chatHistory.push({ role: 'user', content: proactiveMsg });
 
+  // ── Stop any previous TTS and start fresh generation for this proactive message ──
+  stopSpeaking();
+  const myGen = ++_ttsSentenceGen;
+
+  // Streaming response container
+  const responseId = 'proactive-stream-' + Date.now();
+  let responseDiv = null;
+  let responseTextEl = null;
+  let streamedText = '';
+
   try {
-    const res = await fetch(`${API_BASE}/xdart/chat`, {
+    // ═══ SSE Streaming (same as sendChat) — voice starts as text arrives ═══
+    const res = await fetch(`${API_BASE}/xdart/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5999,35 +6017,135 @@ async function initiateProactiveChat(notif) {
         proactive: true,
       }),
     });
-    const data = await res.json();
 
-    // Remove thinking indicator
+    if (!res.ok || !res.body) throw new Error(`Stream error: ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let currentEvent = 'message';
+    let gotDone = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEvent = line.substring(6).trim();
+          continue;
+        }
+        if (!line.startsWith('data:')) continue;
+
+        let data;
+        try { data = JSON.parse(line.substring(5).trim()); } catch { continue; }
+
+        if (currentEvent === 'chunk') {
+          const chunkText = data.text || '';
+          streamedText += chunkText;
+
+          // Create response bubble on first chunk
+          if (!responseDiv) {
+            const thinkEl = document.getElementById(thinkingId);
+            if (thinkEl) thinkEl.remove();
+
+            conversation.innerHTML += `
+              <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
+                <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
+                <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
+              </div>`;
+            responseDiv = document.getElementById(responseId);
+            responseTextEl = document.getElementById(`${responseId}-text`);
+          }
+
+          responseTextEl.textContent = _stripInternalTags(streamedText);
+          responseDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+          // Feed cleaned chunks to TTS immediately — voice starts with first sentence
+          const cleanChunk = _stripInternalTags(chunkText);
+          if (cleanChunk && myGen === _ttsSentenceGen) {
+            _checkSentenceBoundary(cleanChunk, myGen);
+          }
+        }
+
+        else if (currentEvent === 'done') {
+          gotDone = true;
+          const finalText = data.full_text || streamedText;
+          if (responseTextEl) responseTextEl.textContent = finalText;
+
+          chatHistory.push({ role: 'assistant', content: finalText });
+
+          // Flush remaining sentence buffer
+          if (_ttsSentenceBuffer.trim().length > 5 && myGen === _ttsSentenceGen) {
+            _flushSentenceToTTS(_ttsSentenceBuffer, myGen);
+            _ttsSentenceBuffer = '';
+          }
+        }
+
+        else if (currentEvent === 'pipeline') {
+          // Proactive messages sometimes trigger pipeline — ignore for now
+        }
+
+        currentEvent = 'message';
+      }
+    }
+
+    if (!gotDone && streamedText) {
+      chatHistory.push({ role: 'assistant', content: streamedText });
+    }
+
+    // Remove thinking indicator if still present
     const thinkEl = document.getElementById(thinkingId);
     if (thinkEl) thinkEl.remove();
 
-    const response = _stripInternalTags(data.response || data.reasoning || 'Could not analyze at this time.');
-    chatHistory.push({ role: 'assistant', content: response });
-
-    conversation.innerHTML += `
-      <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
-        <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
-        <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(response)}</div>
-      </div>`;
-    conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-
-    // Auto-speak the proactive response if voice is enabled
-    autoSpeak(response);
-
-    console.log('[Proactive] Αίολος conversation initiated successfully:', notif.headline);
+    console.log('[Proactive] Streaming conversation completed:', notif.headline);
 
   } catch (err) {
-    const thinkEl = document.getElementById(thinkingId);
-    if (thinkEl) thinkEl.remove();
+    // Fallback: non-streaming endpoint
+    console.warn('[Proactive] Stream failed, falling back:', err.message);
+    try {
+      const res = await fetch(`${API_BASE}/xdart/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: proactiveMsg,
+          history: chatHistory.slice(-20),
+          proactive: true,
+        }),
+      });
+      const data = await res.json();
 
-    conversation.innerHTML += `
-      <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
-        <div style="font-size:13px;color:var(--red)">Proactive analysis failed: ${esc(err.message)}</div>
-      </div>`;
+      const thinkEl = document.getElementById(thinkingId);
+      if (thinkEl) thinkEl.remove();
+
+      const response = _stripInternalTags(data.response || data.reasoning || 'Could not analyze at this time.');
+      chatHistory.push({ role: 'assistant', content: response });
+
+      conversation.innerHTML += `
+        <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
+          <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
+          <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(response)}</div>
+        </div>`;
+      conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+      autoSpeak(response);
+    } catch (fallbackErr) {
+      const thinkEl = document.getElementById(thinkingId);
+      if (thinkEl) thinkEl.remove();
+
+      conversation.innerHTML += `
+        <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
+          <div style="font-size:13px;color:var(--red)">Proactive analysis failed: ${esc(fallbackErr.message)}</div>
+        </div>`;
+    }
+  }
+
+  _proactiveChatRunning = false;
+}
     console.warn('[Proactive] Chat call failed:', err);
   }
 }
