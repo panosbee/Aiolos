@@ -3287,15 +3287,20 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 f"- Web Agent: {'AVAILABLE' if self.web_agent else 'unavailable'}\n\n"
                 f"Decide: RESPOND directly, WEB_RESPOND, or trigger PIPELINE?"
             )
-            route = self.llm.call_json(
-                self.CHAT_ROUTER_PROMPT,
-                router_user,
-                max_tokens=200,
-                temperature=0.3,
-                thinking=False,
-            )
-            action = route.get("action", "respond")
-            reasoning = route.get("reasoning", "")
+            try:
+                route = self.llm.call_json(
+                    self.CHAT_ROUTER_PROMPT,
+                    router_user,
+                    max_tokens=200,
+                    temperature=0.3,
+                    thinking=False,
+                )
+                action = route.get("action", "respond")
+                reasoning = route.get("reasoning", "")
+            except Exception as router_exc:
+                logger.warning("[ChatStream] Router call failed: %s — defaulting to respond", router_exc)
+                action = "respond"
+                reasoning = "Router timeout — direct response"
 
         yield {"event": "routing", "data": {"action": action, "reasoning": reasoning}}
 
@@ -3328,10 +3333,20 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as exc:
                 logger.warning("[ChatStream] Web search failed: %s", exc)
 
-        # ── Phase 2.7: Chat tool execution ──
-        chat_tool_results = self._chat_tool_execution(message, world_txt, context_parts, proactive=proactive)
-        if chat_tool_results:
-            full_context = "\n\n".join(context_parts)
+        # ── Phase 2.7: Chat tool execution (with timeout — must not block streaming) ──
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="chat-tool") as _pool:
+                _tool_future = _pool.submit(
+                    self._chat_tool_execution, message, world_txt, context_parts, proactive,
+                )
+                chat_tool_results = _tool_future.result(timeout=30)  # 30s max for BF/tools
+                if chat_tool_results:
+                    full_context = "\n\n".join(context_parts)
+        except FuturesTimeout:
+            logger.warning("[ChatStream] Tool execution timed out (30s) — skipping BF/tools")
+        except Exception as exc:
+            logger.warning("[ChatStream] Tool execution failed: %s", exc)
 
         # ── Phase 3: Build system prompt (same as _chat_inner) ──
         my_name = character.get("name", "XDART-Φ")

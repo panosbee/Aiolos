@@ -15,6 +15,7 @@ Provider switching via env vars:
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Generator
 
 from openai import OpenAI
@@ -74,8 +75,10 @@ class LLMClient:
         if resolved_base_url:
             client_kwargs["base_url"] = resolved_base_url
 
-        # Timeout: 120s connect + read prevents hanging on DeepSeek stalls
-        client_kwargs["timeout"] = 120.0
+        # Timeout: 60s prevents hanging on DeepSeek stalls
+        # Uses httpx.Timeout with explicit per-phase limits
+        import httpx
+        client_kwargs["timeout"] = httpx.Timeout(60.0, connect=10.0)
 
         self.client = OpenAI(**client_kwargs)
         self.model = model or OPENAI_MODEL
@@ -108,6 +111,24 @@ class LLMClient:
         mode = "reasoning" if self.is_reasoning else "standard"
         logger.info("LLMClient initialized — provider=%s, model=%s, mode=%s, thinking=%s, base_url=%s",
                      provider, self.model, mode, thinking_str, self._base_url)
+
+        # Shared thread pool for hard-timeout API calls (max 4 concurrent)
+        self._timeout_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-timeout")
+
+    # Hard wall-clock timeout for API calls.
+    # httpx read-timeout resets on every byte so DeepSeek keepalives bypass it.
+    # This wrapper gives an absolute ceiling regardless of network activity.
+    _API_CALL_TIMEOUT = 90  # seconds — hard wall-clock limit
+
+    def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
+        """Run client.chat.completions.create with a hard wall-clock timeout."""
+        future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
+        try:
+            return future.result(timeout=self._API_CALL_TIMEOUT)
+        except FuturesTimeout:
+            future.cancel()
+            logger.error("[%s] Hard timeout (%ds) — DeepSeek did not respond in time", label, self._API_CALL_TIMEOUT)
+            raise TimeoutError(f"{label}: API call exceeded {self._API_CALL_TIMEOUT}s wall-clock limit")
 
     def call(
         self,
@@ -172,11 +193,11 @@ class LLMClient:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(**kwargs)
+        response = self._api_call_with_timeout(kwargs, label="LLM.call")
         elapsed = time.perf_counter() - t0
 
         if not response.choices:
-            logger.error("[LLM.call] API returned empty choices (finish_reason may be content_filter or error) — elapsed %.2fs", elapsed)
+            logger.error("[LLM.call] API returned empty choices — elapsed %.2fs", elapsed)
             return ""
 
         message = response.choices[0].message
@@ -376,11 +397,22 @@ class LLMClient:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         t0 = time.perf_counter()
-        response = self.client.chat.completions.create(**kwargs)
+        _max_retries = 2
+        response = None
+        for _attempt in range(_max_retries):
+            try:
+                response = self._api_call_with_timeout(kwargs, label="LLM.call_json")
+                if response.choices:
+                    break
+                logger.warning("[LLM.call_json] Empty choices on attempt %d/%d — retrying", _attempt + 1, _max_retries)
+            except Exception as api_exc:
+                logger.warning("[LLM.call_json] API error on attempt %d/%d: %s", _attempt + 1, _max_retries, api_exc)
+                if _attempt == _max_retries - 1:
+                    raise
         elapsed = time.perf_counter() - t0
 
-        if not response.choices:
-            logger.error("[LLM.call_json] API returned empty choices (finish_reason may be content_filter or error) — elapsed %.2fs", elapsed)
+        if not response or not response.choices:
+            logger.error("[LLM.call_json] API returned empty choices after %d attempts — elapsed %.2fs", _max_retries, elapsed)
             return {}
 
         message = response.choices[0].message
