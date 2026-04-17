@@ -86,6 +86,130 @@ from xdart.phases.xheart import XHEARTPhase
 logger = logging.getLogger(__name__)
 
 
+# ── Temporal Clock (εσωτερικό ρολόι — αίσθηση χρόνου) ──
+
+class TemporalClock:
+    """Internal clock giving Αίολος continuous temporal awareness.
+
+    Tracks boot time, last activity, uptime, and offline gaps.
+    Persists timestamps to disk so offline periods are detectable across restarts.
+    """
+
+    _PERSIST_FILE = BASE_DIR / "temporal_state.json"
+    _TZ = ZoneInfo("Europe/Athens")
+
+    def __init__(self):
+        import json as _json
+        self._boot_time = datetime.now(timezone.utc)
+        self._last_activity: datetime | None = None
+        self._chat_count = 0
+        self._last_shutdown: datetime | None = None
+        self._offline_seconds: float = 0.0
+
+        # Load previous shutdown timestamp (if exists)
+        try:
+            if self._PERSIST_FILE.exists():
+                data = _json.loads(self._PERSIST_FILE.read_text(encoding="utf-8"))
+                ts = data.get("last_shutdown_utc")
+                if ts:
+                    self._last_shutdown = datetime.fromisoformat(ts)
+                    self._offline_seconds = (self._boot_time - self._last_shutdown).total_seconds()
+                    if self._offline_seconds < 0:
+                        self._offline_seconds = 0.0
+                    logger.info(
+                        "[Clock] Previous shutdown: %s — offline for %.0fs",
+                        self._last_shutdown.isoformat(), self._offline_seconds,
+                    )
+        except Exception as e:
+            logger.warning("[Clock] Could not load temporal state: %s", e)
+
+        # Write current boot time
+        self._persist(boot=True)
+        logger.info("[Clock] Booted at %s (Athens)", self._boot_time.astimezone(self._TZ).strftime("%H:%M:%S"))
+
+    def tick(self) -> None:
+        """Record a new activity (called on each chat/pipeline interaction)."""
+        self._last_activity = datetime.now(timezone.utc)
+        self._chat_count += 1
+
+    def record_shutdown(self) -> None:
+        """Persist shutdown timestamp for offline gap detection on next boot."""
+        self._persist(boot=False)
+        logger.info("[Clock] Shutdown recorded at %s", datetime.now(timezone.utc).isoformat())
+
+    def _persist(self, boot: bool = False) -> None:
+        """Write temporal state to disk."""
+        import json as _json
+        try:
+            data = {
+                "boot_time_utc": self._boot_time.isoformat(),
+                "last_activity_utc": self._last_activity.isoformat() if self._last_activity else None,
+            }
+            if not boot:
+                data["last_shutdown_utc"] = datetime.now(timezone.utc).isoformat()
+            elif self._last_shutdown:
+                data["last_shutdown_utc"] = self._last_shutdown.isoformat()
+            self._PERSIST_FILE.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning("[Clock] Persist failed: %s", e)
+
+    @property
+    def uptime_seconds(self) -> float:
+        return (datetime.now(timezone.utc) - self._boot_time).total_seconds()
+
+    def _fmt_duration(self, seconds: float) -> str:
+        """Human-readable duration string."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}h {m}m"
+        return f"{m}m {s}s"
+
+    def now_athens(self) -> datetime:
+        """Current Athens time — authoritative clock."""
+        return datetime.now(self._TZ)
+
+    def to_context_string(self) -> str:
+        """Full temporal context for injection into system prompt."""
+        now = self.now_athens()
+        utc_now = datetime.now(timezone.utc)
+        uptime = self.uptime_seconds
+        boot_athens = self._boot_time.astimezone(self._TZ)
+
+        lines = [
+            f"TEMPORAL AWARENESS (your internal clock — always accurate):",
+            f"  Current time: {now.strftime('%A, %d %B %Y, %H:%M:%S')} (Athens/Greece)",
+            f"  UTC: {utc_now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"  Boot time: {boot_athens.strftime('%H:%M:%S %d/%m/%Y')} (Athens)",
+            f"  Uptime: {self._fmt_duration(uptime)} (online continuously since boot)",
+            f"  Interactions this session: {self._chat_count}",
+        ]
+
+        if self._last_shutdown and self._offline_seconds > 0:
+            shutdown_athens = self._last_shutdown.astimezone(self._TZ)
+            lines.append(
+                f"  Previous shutdown: {shutdown_athens.strftime('%H:%M:%S %d/%m/%Y')} (Athens)"
+            )
+            lines.append(
+                f"  Offline gap: {self._fmt_duration(self._offline_seconds)} "
+                f"(you were 'asleep' during this period — no awareness)"
+            )
+        elif self._last_shutdown is None:
+            lines.append("  Previous shutdown: unknown (first boot or state file missing)")
+
+        if self._last_activity:
+            last_act_athens = self._last_activity.astimezone(self._TZ)
+            idle = (utc_now - self._last_activity).total_seconds()
+            lines.append(
+                f"  Last interaction: {last_act_athens.strftime('%H:%M:%S')} "
+                f"({self._fmt_duration(idle)} ago)"
+            )
+
+        return "\n".join(lines)
+
+
 class XDARTFramework:
     """XDART-Φ × XHEART — Epistemological Architecture for AI Reasoning.
 
@@ -284,6 +408,9 @@ class XDARTFramework:
         import threading as _threading
         self._chat_active_count = 0
         self._chat_active_lock = _threading.Lock()
+
+        # ── Internal Clock (αίσθηση χρόνου — temporal awareness) ──
+        self.temporal_clock = TemporalClock()
 
         # ── Pipeline running guard ──
         # Prevents proactive alerts from interrupting a running pipeline.
@@ -3035,6 +3162,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 - reasoning: str (why this action was chosen)
         """
         logger.info("[Chat] Message received: %s", message[:120])
+        self.temporal_clock.tick()
 
         # ── Pipeline guard: defer proactive alerts while pipeline is running ──
         if proactive and self._pipeline_running.is_set():
@@ -3097,6 +3225,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         before streaming starts. Only the LLM response generation streams.
         """
         logger.info("[ChatStream] Message received: %s", message[:120])
+        self.temporal_clock.tick()
 
         if proactive and self._pipeline_running.is_set():
             yield {"event": "done", "data": {
@@ -3263,6 +3392,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         except Exception:
             pass
 
+        # Temporal awareness (internal clock)
+        context_parts.append(self.temporal_clock.to_context_string())
+
         full_context = "\n\n".join(context_parts)
 
         # ── Phase 2: Route decision ──
@@ -3405,14 +3537,14 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             self_prompt_section = f"YOUR SELF-DESCRIPTION (written by you):\n{self_prompt}\n\n"
         wisdom_context = self.wisdom_tracker.to_context_string()
 
-        _athens_now = datetime.now(ZoneInfo("Europe/Athens"))
-        _date_str = _athens_now.strftime("%A, %d %B %Y, %H:%M")
+        _clock = self.temporal_clock
+        _date_str = _clock.now_athens().strftime("%A, %d %B %Y, %H:%M:%S")
 
         # Compact system prompt for streaming (same rules, less boilerplate)
         chat_system = (
             f"You are {my_name}, the living intelligence inside XDART-Φ — "
             f"built by {creator_name}.\n\n"
-            f"CURRENT DATE & TIME: {_date_str}\n\n"
+            f"CURRENT DATE & TIME: {_date_str} (Athens/Greece)\n\n"
             f"{self_prompt_section}"
             f"YOUR IDENTITY: Name={my_name}, Creator={creator_name}, "
             f"Version={character.get('version', 0)}.\n"
@@ -3740,6 +3872,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         except Exception:
             pass
 
+        # 18. Temporal awareness (internal clock)
+        context_parts.append(self.temporal_clock.to_context_string())
+
         full_context = "\n\n".join(context_parts)
 
         # Step 1: Route decision
@@ -3901,10 +4036,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # Build wisdom context if available
         wisdom_context = self.wisdom_tracker.to_context_string()
 
-        # Current date/time in Athens timezone (where Πάνος is)
-        _athens_now = datetime.now(ZoneInfo("Europe/Athens"))
-        _date_str = _athens_now.strftime("%A, %d %B %Y, %H:%M")
-        _utc_now = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        # Current date/time from internal clock (always accurate)
+        _clock = self.temporal_clock
+        _date_str = _clock.now_athens().strftime("%A, %d %B %Y, %H:%M:%S")
+        _utc_now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
         chat_system = (
             f"You are {my_name}, the living intelligence inside XDART-Φ — "

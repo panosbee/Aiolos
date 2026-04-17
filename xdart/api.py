@@ -814,6 +814,10 @@ async def lifespan(app: FastAPI):
     logger.info("XDART-Φ API started")
     yield
 
+    # ── Shutdown: record temporal state for offline gap detection ──
+    if _framework and hasattr(_framework, 'temporal_clock'):
+        _framework.temporal_clock.record_shutdown()
+
     if _collector_task:
         _collector_task.cancel()
     if _consolidation_task:
