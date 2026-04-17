@@ -5272,7 +5272,7 @@ function startStreamingTTS() {
   _ttsGainNode = ctx.createGain();
   _ttsGainNode.connect(ctx.destination);
 
-  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000&xi_api_key=${encodeURIComponent(apiKey)}`;
 
   const ws = new WebSocket(wsUrl);
   _ttsWs = ws;
@@ -5373,10 +5373,13 @@ function startStreamingTTS() {
   };
 
   ws.onerror = (e) => {
-    console.warn('[Voice/TTS] WebSocket error:', e);
+    console.warn('[Voice/TTS] WebSocket error — readyState:', ws.readyState, 'url:', wsUrl.replace(/xi_api_key=[^&]+/, 'xi_api_key=***'));
   };
 
   ws.onclose = (e) => {
+    if (e.code !== 1000) {
+      console.warn('[Voice/TTS] WebSocket closed abnormally — code:', e.code, 'reason:', e.reason || '(none)');
+    }
     if (_ttsWs === ws) _ttsWs = null;
     // If we got audio but never got isFinal, still wait for playback
     if (gen === _ttsGen && _ttsTotalBytes > 0 && _ttsSpeaking) {
