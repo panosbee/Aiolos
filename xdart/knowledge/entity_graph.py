@@ -252,6 +252,7 @@ class EntityGraph:
         self._persist_path = Path(persist_path) if persist_path else None
         self._total_headlines_ingested = 0
         self._total_entities_extracted = 0
+        self._mongo = None  # MongoStore — set externally for dual-write
 
         # Load persisted graph if available
         if self._persist_path and self._persist_path.exists():
@@ -348,6 +349,18 @@ class EntityGraph:
         for i, (name_a, _) in enumerate(entities):
             for name_b, _ in entities[i + 1:]:
                 self._update_edge(name_a, name_b, ts, headline)
+
+        # Dual-write to MongoDB (non-blocking — failures are silent)
+        if self._mongo:
+            try:
+                for name, etype in entities:
+                    self._mongo.upsert_entity(name, etype, source=source, timestamp=ts)
+                for i, (name_a, _) in enumerate(entities):
+                    for name_b, _ in entities[i + 1:]:
+                        self._mongo.upsert_edge(name_a, name_b, timestamp=ts)
+                        self._mongo.upsert_edge(name_b, name_a, timestamp=ts)
+            except Exception:
+                pass  # MongoDB errors never block perception
 
         # Periodic prune
         if self._total_headlines_ingested % 500 == 0:

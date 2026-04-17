@@ -546,9 +546,15 @@ class SelfEvolutionLoop:
         return {"total_diagnoses": total, "issues_found": issues, "proposals": issues}
 
     def _journal(self, entry: dict) -> None:
-        """Append entry to self-evolution journal (append-only)."""
+        """Append entry to self-evolution journal (append-only) + MongoDB."""
         try:
             with open(JOURNAL_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning("[SelfEvolution] Failed to write journal: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_self_evolution", dict(entry))
+            except Exception:
+                pass

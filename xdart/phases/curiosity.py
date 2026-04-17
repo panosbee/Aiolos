@@ -152,7 +152,7 @@ class CuriosityEngine:
             logger.warning("[Curiosity] Failed to save state: %s", e)
 
     def _journal(self, event_type: str, data: dict) -> None:
-        """Append to immutable curiosity journal."""
+        """Append to immutable curiosity journal + MongoDB."""
         entry = {
             "type": event_type,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -163,6 +163,12 @@ class CuriosityEngine:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning("[Curiosity] Journal write failed: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_curiosity", dict(entry))
+            except Exception:
+                pass
 
     # ══════════════════════════════════════════════════════════════
     #  PHASE 1: GENERATE CURIOSITIES

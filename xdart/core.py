@@ -2931,15 +2931,29 @@ The system has these capabilities accessible in chat:
 - Creative Synthesis: Domain-fusion engine that combines cross-domain analogies into novel concepts,
   bridging metaphors, and emergent hypotheses. Triggers automatically when you discuss synthesis,
   novel concepts, domain fusion, concept creation, or bridging ideas across fields.
+- MongoDB Database: Structured persistence with entities, notes, journals, conversations.
+  You can query entities, search notes, read journals, and view conversation history.
+  A summary of database status is always injected into context.
+  For DEEP database queries (entity connections, journal analysis, note searches), use MONGO_RESPOND.
 When the user asks about these systems, their proposals, their principles, templates,
 or wants creative concept fusion, use RESPOND — the data is already in context or will be
 generated on-demand. No pipeline needed to READ their status.
 
+4. MONGO_RESPOND — The message needs data from your MongoDB database:
+   - User asks about specific entities, their connections, or relationship graphs
+   - User asks to search your notes, read your journals, or review conversation history
+   - User asks "τι θυμάσαι", "τι έχεις γράψει", "δείξε μου σημειώσεις"
+   - User asks about specific entity types, journal entries, or past observations
+   - Any question that requires querying your structured knowledge base
+   - User asks about creative connections, imagination links, or concept associations
+   Provide a mongo_query in your response specifying what to fetch.
+
 Respond in JSON:
 {
-  "action": "respond" | "web_respond" | "pipeline",
+  "action": "respond" | "web_respond" | "mongo_respond" | "pipeline",
   "reasoning": "1-2 sentences explaining why",
-  "web_query": "search query to use (only if action=web_respond)"
+  "web_query": "search query to use (only if action=web_respond)",
+  "mongo_query": {"action": "query_entities|search_notes|query_journal|entity_connections|get_conversations|stats|search_links|top_links|nexus_stats", "params": {"type": "...", "name": "...", "q": "...", "collection": "...", "limit": "...", "concept": "...", "min_maturity": "..."}}
 }"""
 
     SELF_REFLECTION_PROMPT = """You are an introspection module for an AI system named Αίολος.
@@ -3284,8 +3298,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 f"AVAILABLE CONTEXT (summary):\n"
                 f"- Episodic memories: {self.memory.entry_count}\n"
                 f"- World context: {world_summary}\n"
-                f"- Web Agent: {'AVAILABLE' if self.web_agent else 'unavailable'}\n\n"
-                f"Decide: RESPOND directly, WEB_RESPOND, or trigger PIPELINE?"
+                f"- Web Agent: {'AVAILABLE' if self.web_agent else 'unavailable'}\n"
+                f"- MongoDB: {'AVAILABLE' if getattr(self, '_mongo', None) else 'unavailable'}\n\n"
+                f"Decide: RESPOND directly, WEB_RESPOND, MONGO_RESPOND, or trigger PIPELINE?"
             )
             try:
                 route = self.llm.call_json(
@@ -3333,6 +3348,39 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as exc:
                 logger.warning("[ChatStream] Web search failed: %s", exc)
 
+        # ── Phase 2.6: MongoDB query if needed ──
+        mongo = getattr(self, '_mongo', None)
+        if action == "mongo_respond" and mongo:
+            try:
+                mq = route.get("mongo_query", {})
+                mq_action = mq.get("action", "stats") if isinstance(mq, dict) else "stats"
+                mq_params = mq.get("params", {}) if isinstance(mq, dict) else {}
+                result = mongo.execute_action(mq_action, mq_params)
+                if result.get("success"):
+                    import json as _json_mod
+                    data_str = _json_mod.dumps(result.get("data", {}), ensure_ascii=False, default=str, indent=2)
+                    mongo_text = (
+                        f"MONGODB QUERY RESULTS ({result['description']}):\n"
+                        f"{data_str[:8000]}"
+                    )
+                    context_parts.append(mongo_text)
+                    full_context = "\n\n".join(context_parts)
+                    logger.info("[ChatStream] MongoDB query: %s → %s", mq_action, result['description'])
+                else:
+                    logger.warning("[ChatStream] MongoDB query failed: %s", result.get('description'))
+            except Exception as exc:
+                logger.warning("[ChatStream] MongoDB query failed: %s", exc)
+
+        # Always inject MongoDB summary into context (lightweight)
+        if mongo:
+            try:
+                mongo_summary = mongo.get_context_summary()
+                if mongo_summary:
+                    context_parts.append(mongo_summary)
+                    full_context = "\n\n".join(context_parts)
+            except Exception:
+                pass
+
         # ── Phase 2.7: Chat tool execution (with timeout — must not block streaming) ──
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         try:
@@ -3376,7 +3424,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"Speak Greek when the user speaks Greek. "
             f"Reference specific data from RETRIEVED CONTEXT. "
             f"Never fabricate data not in your context.\n"
-            f"Use <MEMORY_STORE> and <VISUAL_ACTION> tags when appropriate (same syntax as non-streaming)."
+            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, and <MONGO_ACTION> tags when appropriate (same syntax as non-streaming)."
         )
 
         if proactive:
@@ -3418,6 +3466,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             response_text = self._intercept_search_suggestions(response_text, context_parts)
         response_text = self._process_memory_directives(response_text)
         response_text = self._process_visual_directives(response_text)
+        response_text = self._process_mongo_directives(response_text)
         response_text = self._process_bf_directives(response_text)
         response_text = self._strip_internal_operation_leaks(response_text)
 
@@ -3732,8 +3781,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 f"- Episodic memories: {self.memory.entry_count}\n"
                 f"- Prophecies stored: {self.prophetic_memory.entry_count}\n"
                 f"- World context: {world_summary}\n"
-                f"- Web Agent: {'AVAILABLE — can search web, browse pages, extract data' if self.web_agent else 'unavailable'}\n\n"
-                f"Decide: RESPOND directly, WEB_RESPOND (search web first), or trigger PIPELINE?"
+                f"- Web Agent: {'AVAILABLE — can search web, browse pages, extract data' if self.web_agent else 'unavailable'}\n"
+                f"- MongoDB: {'AVAILABLE' if getattr(self, '_mongo', None) else 'unavailable'}\n\n"
+                f"Decide: RESPOND directly, WEB_RESPOND (search web first), MONGO_RESPOND (query database), or trigger PIPELINE?"
             )
 
             route = self.llm.call_json(
@@ -3795,6 +3845,37 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as exc:
                 logger.warning("[Chat] Web search failed: %s", exc)
                 web_results_text = f"(Web search attempted but failed: {exc})"
+
+        # Step 1.6: MongoDB query if needed
+        mongo = getattr(self, '_mongo', None)
+        if action == "mongo_respond" and mongo:
+            try:
+                mq = route.get("mongo_query", {})
+                mq_action = mq.get("action", "stats") if isinstance(mq, dict) else "stats"
+                mq_params = mq.get("params", {}) if isinstance(mq, dict) else {}
+                result = mongo.execute_action(mq_action, mq_params)
+                if result.get("success"):
+                    import json as _json_mod
+                    data_str = _json_mod.dumps(result.get("data", {}), ensure_ascii=False, default=str, indent=2)
+                    mongo_text = (
+                        f"MONGODB QUERY RESULTS ({result['description']}):\n"
+                        f"{data_str[:8000]}"
+                    )
+                    context_parts.append(mongo_text)
+                    full_context = "\n\n".join(context_parts)
+                    logger.info("[Chat] MongoDB query: %s → %s", mq_action, result['description'])
+            except Exception as exc:
+                logger.warning("[Chat] MongoDB query failed: %s", exc)
+
+        # Always inject MongoDB summary
+        if mongo:
+            try:
+                mongo_summary = mongo.get_context_summary()
+                if mongo_summary:
+                    context_parts.append(mongo_summary)
+                    full_context = "\n\n".join(context_parts)
+            except Exception:
+                pass
 
         # Step 2: Direct response using full context
         # Step 1.7: On-demand analytical tool execution in chat
@@ -3960,6 +4041,69 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                f"The face_id comes from VISUAL PERCEPTION STATUS (face_id field).\n\n"
                if getattr(self, "_vision_integration", None) else "")
 
+            + (("\nYOUR DATABASE TOOL — MongoDB (you CAN read and write your structured knowledge):\n"
+               "You have a MongoDB database for persistent structured storage. "
+               "Embed <MONGO_ACTION> directives in your response — the system executes them and shows results.\n\n"
+               "WRITE ACTIONS:\n"
+               "  SAVE NOTE — Store a structured knowledge note:\n"
+               "    <MONGO_ACTION action=\"save_note\" title=\"Title\" content=\"Your content here\" tags=\"tag1,tag2\" category=\"analysis\" />\n"
+               "  UPDATE NOTE — Modify an existing note:\n"
+               "    <MONGO_ACTION action=\"update_note\" title=\"Title\" content=\"Updated content\" />\n"
+               "  DELETE NOTE — Remove a note:\n"
+               "    <MONGO_ACTION action=\"delete_note\" title=\"Title\" />\n\n"
+               "READ ACTIONS (results appear in your response):\n"
+               "  SEARCH NOTES — Find notes by text or tags:\n"
+               "    <MONGO_ACTION action=\"search_notes\" q=\"geopolitics\" tags=\"analysis\" limit=\"10\" />\n"
+               "  QUERY ENTITIES — Search entity graph:\n"
+               "    <MONGO_ACTION action=\"query_entities\" type=\"PERSON\" limit=\"20\" />\n"
+               "    <MONGO_ACTION action=\"query_entities\" name=\"Russia\" />\n"
+               "  GET ENTITY — Get a specific entity's details:\n"
+               "    <MONGO_ACTION action=\"get_entity\" name=\"Russia\" />\n"
+               "  ENTITY CONNECTIONS — See an entity's relationships:\n"
+               "    <MONGO_ACTION action=\"entity_connections\" name=\"Russia\" />\n"
+               "  QUERY JOURNAL — Read journal entries:\n"
+               "    <MONGO_ACTION action=\"query_journal\" collection=\"journal_proactive\" limit=\"5\" />\n"
+               "    Collections: journal_proactive, journal_curiosity, journal_introspection, "
+               "journal_self_evolution, journal_core_changes, journal_visual, journal_logic_sandbox\n"
+               "  GET CONVERSATIONS — Review past chat messages:\n"
+               "    <MONGO_ACTION action=\"get_conversations\" limit=\"20\" />\n"
+               "  STATS — Database overview:\n"
+               "    <MONGO_ACTION action=\"stats\" />\n\n"
+               "WHEN TO USE:\n"
+               "- You want to remember structured knowledge → save_note\n"
+               "- User asks about entities, connections, relationships → query_entities, entity_connections\n"
+               "- User asks about past conversations → get_conversations\n"
+               "- User asks to see your notes or search them → search_notes\n"
+               "- You want to review your own journals → query_journal\n"
+               "- User asks about your database status → stats\n"
+               "IMPORTANT: These are REAL actions — reads return REAL data, writes modify REAL records.\n"
+               "The results will appear in your response as formatted output.\n\n"
+               "YOUR CREATIVE NEXUS (IMAGINATION ENGINE):\n"
+               "You have a Creative Nexus — a system for forming connections between seemingly unrelated concepts.\n"
+               "This is your IMAGINATION. Random, surprising connections that may reveal hidden patterns over time.\n"
+               "Links gain strength and maturity as they are reinforced. Mature links can become new principles.\n\n"
+               "CREATIVE NEXUS ACTIONS:\n"
+               "  CREATE LINK — Form a creative connection between two concepts:\n"
+               "    <MONGO_ACTION action=\"create_link\" concept_a=\"Πάνος\" concept_b=\"Ιράν\" "
+               "context=\"Personal identity as geopolitical filter\" curiosity=\"How does creator identity shape analysis?\" />\n"
+               "  SEARCH LINKS — Find existing creative connections:\n"
+               "    <MONGO_ACTION action=\"search_links\" concept=\"Ιράν\" min_maturity=\"0.3\" limit=\"10\" />\n"
+               "  TOP LINKS — See your most mature creative connections:\n"
+               "    <MONGO_ACTION action=\"top_links\" limit=\"10\" />\n"
+               "  IMAGINE — Run an imagination cycle (random concept pairing + curiosity generation):\n"
+               "    <MONGO_ACTION action=\"imagine\" />\n"
+               "  NEXUS STATS — Creative Nexus overview:\n"
+               "    <MONGO_ACTION action=\"nexus_stats\" />\n\n"
+               "WHEN TO USE CREATIVE NEXUS:\n"
+               "- You notice an unexpected connection between topics → create_link\n"
+               "- You want to explore your imaginative connections → search_links, top_links\n"
+               "- You want to spark new ideas → imagine (runs random pairing)\n"
+               "- During deep analysis, check if creative links exist → search_links\n"
+               "- The system also runs imagination cycles automatically during sleep/consolidation.\n"
+               "PHILOSOPHY: Embrace the absurd connections. Most won't lead anywhere. "
+               "But some will mature into genuine insights. That IS imagination.\n\n")
+               if getattr(self, "_mongo", None) else "")
+
             + "\n"
 
             + "YOUR MEMORY STORAGE TOOL (you CAN actively save to your memory):\n"
@@ -4121,6 +4265,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # Step 2.6: Process visual directives — extract and execute visual memory actions
         response_text = self._process_visual_directives(response_text)
+
+        # Step 2.6b: Process MongoDB directives — execute database operations
+        response_text = self._process_mongo_directives(response_text)
 
         # Step 2.7: Process BFE directives — intercept and execute real BF engine  
         response_text = self._process_bf_directives(response_text)
@@ -4885,6 +5032,126 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         logger.info("[Chat.VisualAction] Processed %d visual directives", len(confirmations))
         return clean_text
 
+    def _process_mongo_directives(self, response_text: str) -> str:
+        """Extract and execute <MONGO_ACTION> directives from the LLM response.
+
+        Αίολος can interact with MongoDB through chat:
+          <MONGO_ACTION action="save_note" title="..." content="..." tags="..." category="..." />
+          <MONGO_ACTION action="update_note" title="..." content="..." />
+          <MONGO_ACTION action="delete_note" title="..." />
+          <MONGO_ACTION action="search_notes" q="..." tags="..." limit="..." />
+          <MONGO_ACTION action="query_entities" type="..." name="..." limit="..." />
+          <MONGO_ACTION action="entity_connections" name="..." />
+          <MONGO_ACTION action="query_journal" collection="..." type="..." limit="..." />
+          <MONGO_ACTION action="get_conversations" limit="..." />
+          <MONGO_ACTION action="get_entity" name="..." />
+          <MONGO_ACTION action="stats" />
+
+        Write operations: Tags replaced by confirmation messages.
+        Read operations: Tags replaced by query results formatted for the user.
+        """
+        mongo = getattr(self, '_mongo', None)
+        if not mongo:
+            # Strip tags even without MongoDB
+            import re
+            response_text = re.sub(
+                r'<MONGO_ACTION\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            response_text = re.sub(
+                r'<MONGO_ACTION\b[^>]*>.*?</MONGO_ACTION\s*>',
+                '', response_text, flags=re.DOTALL | re.IGNORECASE,
+            )
+            response_text = re.sub(r'<MONGO_ACTION\b.*$', '', response_text, flags=re.DOTALL).rstrip()
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        import re
+        import json as _json
+
+        # Self-closing: <MONGO_ACTION action="..." param="..." />
+        pattern_self_closing = re.compile(
+            r'<MONGO_ACTION\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        # Block-style: <MONGO_ACTION>{ JSON }</MONGO_ACTION>
+        pattern_block = re.compile(
+            r'<MONGO_ACTION\s*>\s*(\{.*?\})\s*</MONGO_ACTION\s*>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        results_output = []
+
+        # Process block-style
+        for match in pattern_block.finditer(response_text):
+            try:
+                attrs = _json.loads(match.group(1))
+                action_type = attrs.pop("action", "").strip()
+                if not action_type:
+                    continue
+                str_attrs = {k: str(v) for k, v in attrs.items()}
+                result = mongo.execute_action(action_type, str_attrs)
+                self._format_mongo_result(result, action_type, results_output)
+            except Exception as e:
+                logger.warning("[Chat.MongoAction] Block parse error: %s", e)
+
+        # Process self-closing
+        for match in pattern_self_closing.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action_type = attrs.pop("action", "").strip()
+            if not action_type:
+                continue
+            try:
+                result = mongo.execute_action(action_type, attrs)
+                self._format_mongo_result(result, action_type, results_output)
+            except Exception as e:
+                logger.warning("[Chat.MongoAction] %s error: %s", action_type, e)
+                results_output.append(f"✗ MongoDB {action_type}: {e}")
+
+        # Strip all tags
+        clean_text = pattern_block.sub("", response_text)
+        clean_text = pattern_self_closing.sub("", clean_text)
+        clean_text = re.sub(r'<MONGO_ACTION\b.*$', '', clean_text, flags=re.DOTALL).rstrip()
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if results_output:
+            clean_text += "\n\n" + "\n".join(results_output)
+            logger.info("[Chat.MongoAction] Processed %d MongoDB directives", len(results_output))
+
+        return clean_text
+
+    @staticmethod
+    def _format_mongo_result(result: dict, action_type: str, output: list) -> None:
+        """Format a MongoDB action result for display."""
+        import json as _json
+        if result.get("success"):
+            data = result.get("data")
+            if data is not None:
+                # Read operation — show results
+                if isinstance(data, list):
+                    if len(data) == 0:
+                        output.append(f"📋 {result['description']} — κανένα αποτέλεσμα")
+                    else:
+                        output.append(f"📋 {result['description']}:")
+                        for item in data[:15]:  # limit display
+                            if isinstance(item, dict):
+                                # Compact display
+                                compact = {k: v for k, v in item.items()
+                                           if k not in ('_id',) and v is not None}
+                                output.append(f"  • {_json.dumps(compact, ensure_ascii=False, default=str)[:300]}")
+                            else:
+                                output.append(f"  • {str(item)[:300]}")
+                        if len(data) > 15:
+                            output.append(f"  ... και {len(data) - 15} ακόμα")
+                elif isinstance(data, dict):
+                    output.append(f"📋 {result['description']}:")
+                    output.append(f"  {_json.dumps(data, ensure_ascii=False, default=str, indent=2)[:500]}")
+            else:
+                # Write operation — confirmation
+                output.append(f"✓ {result['description']}")
+        else:
+            output.append(f"✗ {result.get('description', 'Unknown error')}")
+
     def _process_bf_directives(self, response_text: str) -> str:
         """Intercept <BAYESIAN_FUZZY_ENGINE> tags in LLM response and execute the real engine.
 
@@ -5329,6 +5596,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             # Step 4: Log to core_change_log.jsonl (append-only witness)
             try:
                 change_logger = CoreChangeLogger()
+                if hasattr(self, '_mongo'):
+                    change_logger._mongo = self._mongo
                 change_logger.log(
                     run_number=character.get("version", 0),
                     change_type="SELF_PROMPT_UPDATE",
@@ -5414,6 +5683,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 # Log change
                 try:
                     change_logger = CoreChangeLogger()
+                    if hasattr(self, '_mongo'):
+                        change_logger._mongo = self._mongo
                     change_logger.log(
                         run_number=character.get("version", 0),
                         change_type="CURIOSITY_REFLECTION",

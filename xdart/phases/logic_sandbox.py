@@ -1308,12 +1308,18 @@ class LogicSandbox:
             logger.error("[LogicSandbox] Failed to save state: %s", e)
 
     def _journal(self, entry: dict) -> None:
-        """Append to the audit journal."""
+        """Append to the audit journal + MongoDB."""
         try:
             with open(JOURNAL_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except Exception as e:
             logger.error("[LogicSandbox] Journal write failed: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_logic_sandbox", dict(entry))
+            except Exception:
+                pass
 
     # ──────────────────────────────────────────────────────────
     #  REGISTER — Dynamic function registration

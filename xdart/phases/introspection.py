@@ -292,12 +292,18 @@ class IntrospectionLayer:
         return sum(scores) / len(scores) if scores else 0.0
 
     def _store(self, report: dict) -> None:
-        """Append introspection report to log file (append-only)."""
+        """Append introspection report to log file (append-only) + MongoDB."""
         try:
             with open(INTROSPECTION_LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(report, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.warning("[Introspection] Failed to write log: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_introspection", dict(report))
+            except Exception:
+                pass
 
     @staticmethod
     def _empty_report(reason: str) -> dict:

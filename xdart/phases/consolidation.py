@@ -102,12 +102,34 @@ class MemoryConsolidationLoop:
                     if k in ("patterns_stored", "curiosities_fed", "predictions_tracked", "distillate_stored")
                 })
 
+        # 5. Creative Nexus — imagination cycle
+        #    Runs every cycle: pick random concepts, form creative links, generate curiosities
+        imagination_result = None
+        mongo = getattr(self, '_mongo', None)
+        if mongo and mongo.available:
+            try:
+                imagination_result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: mongo.run_imagination_cycle(llm=self.llm)
+                )
+                if imagination_result and imagination_result.get("status") == "ok":
+                    stats = imagination_result.get("stats", {})
+                    logger.info(
+                        "[Consolidation] Imagination cycle: %s ↔ %s (total=%d links, %d mature)",
+                        imagination_result.get("concepts", ["?", "?"])[0],
+                        imagination_result.get("concepts", ["?", "?"])[1],
+                        stats.get("total_links", 0),
+                        stats.get("mature_links", 0),
+                    )
+            except Exception as exc:
+                logger.debug("[Consolidation] Imagination cycle failed: %s", exc)
+
         elapsed = time.perf_counter() - cycle_t0
         logger.info(
             "[Consolidation] ═══ Cycle %d complete (%.2fs) — aged=%d prophecies, "
-            "extracted=%d patterns, visual=%d patterns, reflection=%s ═══",
+            "extracted=%d patterns, visual=%d patterns, reflection=%s, imagination=%s ═══",
             self._cycle_count, elapsed, aged, extracted, visual_patterns,
             "yes" if reflection_result else "no",
+            "yes" if imagination_result and imagination_result.get("status") == "ok" else "no",
         )
 
     def _age_prophecies(self) -> int:

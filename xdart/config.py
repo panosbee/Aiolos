@@ -47,6 +47,10 @@ LLM_FALLBACK_API_KEY: str = os.getenv("LLM_FALLBACK_API_KEY", "") or os.getenv("
 LLM_FALLBACK_BASE_URL: str = os.getenv("LLM_FALLBACK_BASE_URL", "")  # empty = OpenAI default
 LLM_FALLBACK_MODEL: str = os.getenv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
 
+# ── MongoDB (Structured Persistence) ──
+MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "aiolos")
+
 # ── Qdrant (Episodic Memory — local embedded mode, zero Docker) ──
 QDRANT_STORAGE_PATH: str = os.getenv("QDRANT_STORAGE_PATH", str(DATA_DIR / "qdrant_storage"))
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "xheart_states")

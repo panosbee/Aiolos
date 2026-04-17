@@ -22,3 +22,5 @@ beautifulsoup4>=4.12.0
 facenet-pytorch>=2.5.0
 opencv-python>=4.9.0
 Pillow>=10.0.0
+# MongoDB structured persistence (entity graph + journals + conversations)
+pymongo>=4.6.0

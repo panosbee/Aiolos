@@ -62,6 +62,13 @@ class CoreChangeLogger:
         with open(CORE_CHANGE_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_core_changes", dict(entry))
+            except Exception:
+                pass
+
         logger.info("[CoreChangeLog] Entry logged: %s", entry_id)
         logger.info("[CoreChangeLog] Type: %s | Target: %s", change_type, target)
         logger.info("[CoreChangeLog] Applied: %s", applied)

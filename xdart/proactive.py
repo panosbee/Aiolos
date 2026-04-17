@@ -2132,7 +2132,7 @@ class ProactiveEngine:
     # ══════════════════════════════════════════════════════════════
 
     def _log_notification(self, notification: Notification) -> None:
-        """Append notification to persistent JSONL log."""
+        """Append notification to persistent JSONL log + MongoDB."""
         entry = {
             "type": "notification",
             "timestamp": notification.created_at,
@@ -2143,6 +2143,12 @@ class ProactiveEngine:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as exc:
             logger.warning("[Proactive] Log write failed: %s", exc)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_proactive", dict(entry))
+            except Exception:
+                pass
 
     def _load_log(self) -> None:
         """Load recent notifications from persistent log."""

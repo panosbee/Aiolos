@@ -139,6 +139,31 @@ async def lifespan(app: FastAPI):
     global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration
     _framework = XDARTFramework()
 
+    # ── MongoDB Structured Persistence ──
+    _mongo_store = None
+    try:
+        from xdart.knowledge.mongo import MongoStore
+        from xdart.config import MONGO_URI, MONGO_DB_NAME
+        _mongo_store = MongoStore(uri=MONGO_URI, db_name=MONGO_DB_NAME)
+        if _mongo_store.available:
+            _framework._mongo = _mongo_store
+            # Wire MongoDB into all subsystems of the framework
+            if hasattr(_framework, 'curiosity_engine') and _framework.curiosity_engine:
+                _framework.curiosity_engine._mongo = _mongo_store
+            if hasattr(_framework, 'introspection') and _framework.introspection:
+                _framework.introspection._mongo = _mongo_store
+            if hasattr(_framework, 'self_evolution') and _framework.self_evolution:
+                _framework.self_evolution._mongo = _mongo_store
+            if hasattr(_framework, 'logic_sandbox') and _framework.logic_sandbox:
+                _framework.logic_sandbox._mongo = _mongo_store
+            # Wire LLM into MongoStore for creative imagination cycles
+            _mongo_store._llm = _framework.llm
+            logger.info("MongoDB connected — db=%s", MONGO_DB_NAME)
+        else:
+            logger.warning("MongoDB unavailable — running without database")
+    except Exception as e:
+        logger.warning("MongoDB init failed (continuing without): %s", e)
+
     # ── Initialize Proactive Communication Engine ──
     _proactive_task = None
     if PROACTIVE_ENABLED and _framework:
@@ -262,6 +287,18 @@ async def lifespan(app: FastAPI):
                 entity_graph = EntityGraph(persist_path=entity_graph_path)
                 logger.info("Entity Knowledge Graph initialized (%d nodes, %d edges)",
                             entity_graph.node_count, entity_graph.edge_count)
+                # Wire MongoDB for dual-write
+                if _mongo_store and _mongo_store.available:
+                    entity_graph._mongo = _mongo_store
+                    # Import existing JSON graph into MongoDB on first run
+                    if entity_graph_path.exists() and _mongo_store.entity_stats().get("total_entities", 0) == 0:
+                        try:
+                            import json as _json
+                            _graph_data = _json.loads(entity_graph_path.read_text(encoding="utf-8"))
+                            _imported = _mongo_store.import_entity_graph_from_json(_graph_data)
+                            logger.info("Entity graph imported to MongoDB: %d entities", _imported)
+                        except Exception as _ie:
+                            logger.warning("Entity graph MongoDB import failed: %s", _ie)
             except Exception as e:
                 logger.warning("Entity graph init failed (continuing without): %s", e)
 
@@ -279,6 +316,8 @@ async def lifespan(app: FastAPI):
             if _proactive_engine:
                 _proactive_engine.entity_graph = entity_graph
                 _proactive_engine.market_collector = market_collector
+                if _mongo_store and _mongo_store.available:
+                    _proactive_engine._mongo = _mongo_store
 
             # Wire into framework for chat mode access
             if _framework:
@@ -585,6 +624,8 @@ async def lifespan(app: FastAPI):
             )
             if _framework:
                 _framework._vision_integration = _vision_integration
+            if _mongo_store and _mongo_store.available:
+                _vision_integration._mongo = _mongo_store
             logger.info("Vision integration initialized (cooldown=%ds, llm=%s, curiosity=%s, "
                         "episodic=%s, semantic=%s, wisdom=%s)",
                         VISION_PRESENCE_COOLDOWN,
@@ -609,9 +650,13 @@ async def lifespan(app: FastAPI):
             interval_minutes=30,
             vision_integration=_vision_integration,
         )
+        # Wire MongoDB for imagination cycles
+        if _mongo_store and _mongo_store.available:
+            consolidation._mongo = _mongo_store
         _consolidation_task = asyncio.create_task(consolidation.run_forever())
-        logger.info("Memory consolidation loop started (30min interval, vision=%s)",
-                     "yes" if _vision_integration else "no")
+        logger.info("Memory consolidation loop started (30min interval, vision=%s, imagination=%s)",
+                     "yes" if _vision_integration else "no",
+                     "yes" if _mongo_store and _mongo_store.available else "no")
     except Exception as e:
         logger.warning("Memory consolidation loop failed to start: %s", e)
 
@@ -1083,8 +1128,16 @@ async def chat_stream(req: ChatRequest):
     if _proactive_engine:
         proactive_context = _proactive_engine.get_recent_context_for_chat(max_items=10)
 
+    # Log user message to MongoDB
+    if _mongo_store and _mongo_store.available:
+        try:
+            _mongo_store.log_message("user", req.message)
+        except Exception:
+            pass
+
     async def event_generator():
         import json as _json
+        full_response = []
 
         def _stream():
             return list(_framework.chat_stream(
@@ -1130,6 +1183,14 @@ async def chat_stream(req: ChatRequest):
                 break
             event_name = item.get("event", "chunk")
             event_data = item.get("data", {})
+            # Log AI response to MongoDB on completion
+            if event_name == "done" and _mongo_store and _mongo_store.available:
+                try:
+                    ai_text = event_data.get("full_text", "") if isinstance(event_data, dict) else ""
+                    if ai_text:
+                        _mongo_store.log_message("assistant", ai_text, {"action": event_data.get("action")})
+                except Exception:
+                    pass
             yield {"event": event_name, "data": _json.dumps(event_data, ensure_ascii=False)}
 
     return EventSourceResponse(event_generator())
@@ -1148,6 +1209,54 @@ async def get_self_prompt():
         "version": character.get("version", 0),
         "has_self_prompt": bool(character.get("self_prompt", "")),
     }
+
+
+# ── MongoDB Stats & Notes API ──
+
+@app.get("/xdart/mongo/stats")
+async def mongo_stats():
+    """MongoDB statistics — collection sizes, total documents."""
+    if not _mongo_store or not _mongo_store.available:
+        return {"available": False, "message": "MongoDB not connected"}
+    try:
+        stats = _mongo_store.stats()
+        return {"available": True, **stats}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@app.get("/xdart/mongo/conversations")
+async def mongo_conversations(limit: int = 50):
+    """Recent conversation history from MongoDB."""
+    if not _mongo_store or not _mongo_store.available:
+        return {"available": False, "messages": []}
+    messages = _mongo_store.get_conversation_history(limit=limit)
+    return {"available": True, "count": len(messages), "messages": messages}
+
+
+@app.post("/xdart/mongo/notes")
+async def mongo_save_note(data: dict):
+    """Save or update a note (Αίολος' structured knowledge)."""
+    if not _mongo_store or not _mongo_store.available:
+        raise HTTPException(status_code=503, detail="MongoDB not available")
+    title = data.get("title", "")
+    content = data.get("content", "")
+    tags = data.get("tags", [])
+    category = data.get("category", "general")
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="title and content required")
+    result = _mongo_store.save_note(title=title, content=content, tags=tags, category=category)
+    return {"ok": True, "note_id": str(result)}
+
+
+@app.get("/xdart/mongo/notes")
+async def mongo_search_notes(q: str = "", tags: str = ""):
+    """Search notes by text query and/or tags."""
+    if not _mongo_store or not _mongo_store.available:
+        return {"available": False, "notes": []}
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+    notes = _mongo_store.search_notes(text_query=q or None, tags=tag_list)
+    return {"available": True, "count": len(notes), "notes": notes}
 
 
 @app.get("/xdart/introspection")

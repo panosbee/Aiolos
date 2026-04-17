@@ -403,6 +403,12 @@ class VisionIntegration:
                 self._stats["journal_entries"] += 1
         except Exception as e:
             logger.debug("[VisionInteg] Journal write failed: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_visual", dict(entry))
+            except Exception:
+                pass
 
     def get_journal(self, last_n: int = 50) -> list[dict]:
         """Read the last N entries from the visual memory journal."""
@@ -446,13 +452,19 @@ class VisionIntegration:
             logger.debug("[VisionCog] Prediction save failed: %s", e)
 
     def _write_reflection_journal(self, entry: dict):
-        """Append to the visual reflection journal (distinct from raw event journal)."""
+        """Append to the visual reflection journal (distinct from raw event journal) + MongoDB."""
         try:
             with self._reflection_lock:
                 with open(self._reflection_journal_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except Exception as e:
             logger.debug("[VisionCog] Reflection journal write failed: %s", e)
+        # Dual-write to MongoDB
+        if hasattr(self, '_mongo') and self._mongo:
+            try:
+                self._mongo.log_journal("journal_visual_reflection", dict(entry))
+            except Exception:
+                pass
 
     # ── 1. VISUAL REFLECTION (periodic "what did I see today?") ──
 
