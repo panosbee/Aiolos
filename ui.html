@@ -5141,6 +5141,8 @@ let _ttsFirstChunk = false;     // Whether first audio chunk has been scheduled
 let _ttsGen = 0;                // Generation counter — bumped on each new message/stop
 let _ttsDoneResolve = null;     // Resolve function for end-of-stream waiting
 let _ttsTotalBytes = 0;         // Total audio bytes received in current stream
+let _ttsPendingText = '';       // Text buffered while WebSocket is still connecting
+let _ttsEosPending = false;     // Whether endStreamingTTS was called before WS opened
 const _ttsPlaybackRate = 1.30;  // Speech speed multiplier (1.0 = normal, 1.30 = 30% faster)
 
 // ── Initialize Voice System ──
@@ -5260,6 +5262,8 @@ function startStreamingTTS() {
   _ttsNextPlayTime = 0;
   _ttsFirstChunk = false;
   _ttsTotalBytes = 0;
+  _ttsPendingText = '';
+  _ttsEosPending = false;
   _ttsSpeaking = true;
   _ttsDoneResolve = null;
   _updateSpeakingIndicator(true);
@@ -5288,6 +5292,25 @@ function startStreamingTTS() {
       },
     }));
     console.log('[Voice/TTS] WebSocket opened for streaming');
+
+    // Flush any text that arrived while WebSocket was connecting
+    if (_ttsPendingText) {
+      try {
+        ws.send(JSON.stringify({ text: _ttsPendingText }));
+        console.log('[Voice/TTS] Flushed %d chars of pending text', _ttsPendingText.length);
+      } catch (e) {
+        console.warn('[Voice/TTS] Pending text flush failed:', e);
+      }
+      _ttsPendingText = '';
+    }
+    // If EOS was requested while still connecting, send it now
+    if (_ttsEosPending) {
+      try {
+        ws.send(JSON.stringify({ text: '' }));
+        console.log('[Voice/TTS] Flushed pending EOS');
+      } catch (e) {}
+      _ttsEosPending = false;
+    }
   };
 
   ws.onmessage = (event) => {
@@ -5390,15 +5413,21 @@ function startStreamingTTS() {
  */
 function feedStreamingTTS(text, gen) {
   if (!text || gen !== _ttsGen) return;
-  if (!_ttsWs || _ttsWs.readyState !== WebSocket.OPEN) return;
+  if (!_ttsWs) return;
 
   const clean = _cleanTextForSpeech(text);
   if (!clean) return;
 
-  try {
-    _ttsWs.send(JSON.stringify({ text: clean + ' ' }));
-  } catch (e) {
-    console.warn('[Voice/TTS] Send failed:', e);
+  if (_ttsWs.readyState === WebSocket.OPEN) {
+    // WebSocket is open — send immediately
+    try {
+      _ttsWs.send(JSON.stringify({ text: clean + ' ' }));
+    } catch (e) {
+      console.warn('[Voice/TTS] Send failed:', e);
+    }
+  } else if (_ttsWs.readyState === WebSocket.CONNECTING) {
+    // WebSocket still connecting — buffer text for flush on open
+    _ttsPendingText += clean + ' ';
   }
 }
 
@@ -5416,6 +5445,9 @@ function endStreamingTTS(gen) {
     } catch (e) {
       console.warn('[Voice/TTS] EOS send failed:', e);
     }
+  } else if (_ttsWs && _ttsWs.readyState === WebSocket.CONNECTING) {
+    // WS still connecting — mark EOS as pending, will flush on open
+    _ttsEosPending = true;
   }
 
   // Return promise that resolves when isFinal is received and audio finishes
@@ -5513,6 +5545,8 @@ function _killTTSStream() {
     try { _ttsWs.close(); } catch(e) {}
     _ttsWs = null;
   }
+  _ttsPendingText = '';
+  _ttsEosPending = false;
   for (const src of _ttsSources) {
     try { src.stop(); } catch(e) {}
   }
