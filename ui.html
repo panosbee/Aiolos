@@ -2801,6 +2801,7 @@
       <h4>👤 Αναγνωρισμένα πρόσωπα</h4>
       <div id="visionIdentityList"><em style="color:var(--text-dim)">Δεν έχουν εντοπιστεί πρόσωπα ακόμα</em></div>
     </div>
+    <div id="visionDataFlow" style="padding:4px 12px;font-size:11px;color:var(--text-dim)"></div>
     <div class="vision-controls">
       <button id="visionStartBtn" onclick="visionStart()">▶ Start</button>
       <button id="visionStopBtn" onclick="visionStop()">⏹ Stop</button>
@@ -8264,8 +8265,10 @@ function renderEgraph(data) {
    VISION — Browser COCO-SSD (80 objects) + Server FaceNet (face ID)
    ══════════════════════════════════════════════════════════════ */
 
-const VISION_BASE = 'http://localhost:8100';
-const XDART_API = 'http://localhost:8000';
+// Dynamic URLs — use same origin as the page for XDART API,
+// and derive FaceNet URL from current hostname (port 8100).
+const VISION_BASE = window.location.protocol + '//' + window.location.hostname + ':8100';
+const XDART_API = API_BASE;   // reuse the dynamic API_BASE already defined above
 let visionOpen = false;
 let _cocoModel = null;
 let _visionStream = null;
@@ -8273,6 +8276,9 @@ let _visionRunning = false;
 let _visionAnimId = null;
 let _visionFrameCount = 0;
 let _visionLastFpsTime = 0;
+let _visionSceneSentCount = 0;    // track scene reports sent
+let _visionSceneFailCount = 0;    // track scene report failures
+let _visionFaceSentCount = 0;     // track face crop sends
 let _visionFps = 0;
 let _visionLastSceneReport = 0;
 const SCENE_REPORT_INTERVAL = 3000;
@@ -8448,20 +8454,36 @@ async function _reportScene(predictions) {
     objects[p.class].count++;
     objects[p.class].max_conf = Math.max(objects[p.class].max_conf, p.score);
   }
+  const objNames = Object.keys(objects).join(', ');
   try {
-    await fetch(XDART_API + '/xdart/vision/scene', {
+    const res = await fetch(XDART_API + '/xdart/vision/scene', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ timestamp: new Date().toISOString(), objects, total_detections: predictions.length, source: 'browser_coco_ssd' }),
     });
-  } catch (e) { /* XDART may not be running */ }
+    _visionSceneSentCount++;
+    if (!res.ok) {
+      _visionSceneFailCount++;
+      console.warn('[Vision] Scene report failed:', res.status, await res.text());
+    } else if (_visionSceneSentCount <= 3 || _visionSceneSentCount % 20 === 0) {
+      console.log('[Vision] Scene #' + _visionSceneSentCount + ' sent → [' + objNames + ']');
+    }
+  } catch (e) {
+    _visionSceneFailCount++;
+    console.warn('[Vision] Scene report error:', e.message, '— URL:', XDART_API + '/xdart/vision/scene');
+  }
+  _updateVisionDataFlow();
 }
+
+// Reusable off-screen canvas for face crops (avoids creating one every 2s)
+let _faceCropCanvas = null;
 
 async function _sendFaceCrops(video, personDetections) {
   if (!personDetections.length) return;
 
   // Send the FULL video frame — MTCNN is designed to find faces in full images.
   // Cropping person bboxes loses resolution and context, making MTCNN fail.
-  const tc = document.createElement('canvas');
+  if (!_faceCropCanvas) _faceCropCanvas = document.createElement('canvas');
+  const tc = _faceCropCanvas;
   const tctx = tc.getContext('2d');
   tc.width = video.videoWidth;
   tc.height = video.videoHeight;
@@ -8470,10 +8492,11 @@ async function _sendFaceCrops(video, personDetections) {
   try {
     const blob = await new Promise(r => tc.toBlob(r, 'image/jpeg', 0.92));
     const fd = new FormData(); fd.append('image', blob, 'full_frame.jpg');
+    _visionFaceSentCount++;
     const res = await fetch(VISION_BASE + '/detect', { method: 'POST', body: fd });
     if (res.ok) {
       const data = await res.json();
-      console.log('[Vision] /detect response:', data.faces_count, 'faces', data.faces);
+      console.log('[Vision] /detect #' + _visionFaceSentCount + ':', data.faces_count, 'faces', data.faces?.map(f => f.identity || 'unknown'));
       if (data.faces && data.faces.length > 0) {
         const identified = data.faces.filter(f => f.identity);
         const unknown = data.faces.filter(f => !f.identity);
@@ -8495,7 +8518,7 @@ async function _sendFaceCrops(video, personDetections) {
             unknown_count: unknown.length,
             details: data.faces,
           }),
-        }).catch(() => {});
+        }).catch(err => console.warn('[Vision] human_detected event failed:', err.message));
       } else {
         // No faces found in this frame — clear identity list
         _visionKnownIdentities = [];
@@ -8505,7 +8528,8 @@ async function _sendFaceCrops(video, personDetections) {
       console.warn('[Vision] /detect error:', res.status, await res.text());
     }
   } catch (e) {
-    console.warn('[Vision] FaceNet request failed:', e.message);
+    if (_visionFaceSentCount <= 3 || _visionFaceSentCount % 30 === 0)
+      console.warn('[Vision] FaceNet request failed (#' + _visionFaceSentCount + '):', e.message, '— URL:', VISION_BASE + '/detect');
   }
 }
 
@@ -8518,6 +8542,38 @@ function _updateIdentityList() {
   } else {
     el.innerHTML = '<em style="color:var(--text-dim)">\u0394\u03b5\u03bd \u03ad\u03c7\u03bf\u03c5\u03bd \u03b5\u03bd\u03c4\u03bf\u03c0\u03b9\u03c3\u03c4\u03b5\u03af \u03c0\u03c1\u03cc\u03c3\u03c9\u03c0\u03b1 \u03b1\u03ba\u03cc\u03bc\u03b1</em>';
   }
+}
+
+function _updateVisionDataFlow() {
+  const el = document.getElementById('visionDataFlow');
+  if (!el) return;
+  const ok = _visionSceneFailCount === 0 || _visionSceneSentCount > _visionSceneFailCount * 2;
+  el.innerHTML = '<span style="color:' + (ok ? 'var(--accent)' : '#f44') + '">\u{1F4E1} Backend: ' +
+    _visionSceneSentCount + ' sent' +
+    (_visionSceneFailCount > 0 ? ', <b>' + _visionSceneFailCount + ' failed</b>' : '') +
+    ' | Faces: ' + _visionFaceSentCount + '</span>' +
+    '<span id="visionBackendState" style="display:block;color:var(--text-dim);margin-top:2px"></span>';
+  // Poll backend scene state every 10 reports
+  if (_visionSceneSentCount > 0 && _visionSceneSentCount % 5 === 0) {
+    _pollBackendVisionState();
+  }
+}
+
+async function _pollBackendVisionState() {
+  try {
+    const res = await fetch(XDART_API + '/xdart/vision/debug');
+    if (!res.ok) return;
+    const d = await res.json();
+    const el = document.getElementById('visionBackendState');
+    if (!el) return;
+    const sceneKeys = Object.keys(d.current_scene || {});
+    const smoothedKeys = Object.keys(d.smoothed_scene || {});
+    el.innerHTML = '\u{1F9E0} Αίολος sees: <b>' +
+      (sceneKeys.length > 0 ? sceneKeys.join(', ') : 'nothing yet') +
+      '</b> (smoothed: ' + smoothedKeys.join(', ') +
+      ') | updates: ' + (d.scene_updates || 0);
+    el.style.color = sceneKeys.length > 0 ? '#4caf50' : 'var(--text-dim)';
+  } catch (e) { /* non-critical */ }
 }
 
 function visionSnapshot() {

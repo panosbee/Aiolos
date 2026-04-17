@@ -1468,6 +1468,17 @@ JSON output:
         now = time.time()
 
         self._stats["scene_updates"] += 1
+        n_upd = self._stats["scene_updates"]
+
+        # Periodic logging so we can see the full flow
+        if n_upd <= 3 or n_upd % 30 == 0:
+            logger.info(
+                "[VisionInteg] update_scene #%d — raw: %s | stable: %s | current_scene keys: %s",
+                n_upd,
+                list(new_objects.keys()),
+                list(self._current_scene.keys()),
+                list(self._current_scene.keys()),
+            )
 
         # ══════════════════════════════════════════════════════════════
         # 1. TEMPORAL SMOOTHING — eliminates per-frame flicker
@@ -1647,6 +1658,15 @@ JSON output:
         self._current_scene = stable_scene  # USE SMOOTHED scene, not raw
         self._scene_timestamp = timestamp
         self._previous_scene_classes = new_stable_classes
+
+        # Periodic log of stable scene after smoothing
+        if n_upd <= 5 or n_upd % 30 == 0:
+            logger.info(
+                "[VisionInteg] After smoothing #%d — stable_scene: %s (smoothed keys: %s)",
+                n_upd,
+                {k: v.get("count", 1) for k, v in stable_scene.items()},
+                list(self._smoothed_scene.keys()),
+            )
 
         if "person" in new_objects:
             self._humans_present = True

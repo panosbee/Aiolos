@@ -3213,6 +3213,11 @@ async def vision_scene(scene: dict):
     """
     if not _vision_integration:
         raise HTTPException(status_code=503, detail="Vision system not active")
+    obj_names = list((scene.get("objects") or {}).keys())
+    total = scene.get("total_detections", 0)
+    n = _vision_integration._stats.get("scene_updates", 0) + 1
+    if n <= 3 or n % 30 == 0:
+        logger.info("[Vision/scene] #%d received — %d objects: %s", n, total, obj_names)
     _vision_integration.update_scene(scene)
     return {"status": "ok"}
 
@@ -3265,6 +3270,27 @@ async def vision_objects():
         "tracking": _vision_integration.object_tracking,
         "recent_log": _vision_integration.object_log[-20:],
         "scene_timestamp": _vision_integration.stats.get("scene_timestamp", ""),
+    }
+
+
+@app.get("/xdart/vision/debug")
+async def vision_debug():
+    """Full vision debug view — smoothed scene, raw state, stats, context string."""
+    if not _vision_integration:
+        return {"status": "disabled"}
+    vi = _vision_integration
+    return {
+        "status": "ok",
+        "current_scene": vi._current_scene,
+        "smoothed_scene": {k: {kk: vv for kk, vv in v.items() if kk != "first_seen_ts" and kk != "last_seen_ts"}
+                           for k, v in vi._smoothed_scene.items()},
+        "scene_timestamp": vi._scene_timestamp,
+        "scene_updates": vi._stats.get("scene_updates", 0),
+        "object_events": vi._stats.get("object_events", 0),
+        "humans_present": vi._humans_present,
+        "current_faces_count": len(vi._current_faces),
+        "object_tracking_keys": list(vi._object_tracking.keys()),
+        "context_string": vi.to_context_string(),
     }
 
 
