@@ -5885,7 +5885,7 @@ async function sendChat() {
 
           else if (currentEvent === 'done') {
             gotDone = true;
-            const finalText = data.full_text || streamedText;
+            const finalText = _stripInternalTags(data.full_text || streamedText);
 
             // Update with final cleaned text (post-processed: directives removed)
             if (responseTextEl) {
@@ -6103,7 +6103,7 @@ async function initiateProactiveChat(notif) {
 
         else if (currentEvent === 'done') {
           gotDone = true;
-          const finalText = data.full_text || streamedText;
+          const finalText = _stripInternalTags(data.full_text || streamedText);
           if (responseTextEl) responseTextEl.textContent = finalText;
 
           chatHistory.push({ role: 'assistant', content: finalText });

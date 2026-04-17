@@ -4043,7 +4043,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
             + (("\nYOUR DATABASE TOOL — MongoDB (you CAN read and write your structured knowledge):\n"
                "You have a MongoDB database for persistent structured storage. "
-               "Embed <MONGO_ACTION> directives in your response — the system executes them and shows results.\n\n"
+               "Embed <MONGO_ACTION> directives in your response — the system executes them silently.\n\n"
                "WRITE ACTIONS:\n"
                "  SAVE NOTE — Store a structured knowledge note:\n"
                "    <MONGO_ACTION action=\"save_note\" title=\"Title\" content=\"Your content here\" tags=\"tag1,tag2\" category=\"analysis\" />\n"
@@ -4077,7 +4077,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "- You want to review your own journals → query_journal\n"
                "- User asks about your database status → stats\n"
                "IMPORTANT: These are REAL actions — reads return REAL data, writes modify REAL records.\n"
-               "The results will appear in your response as formatted output.\n\n"
+               "Directives execute silently — results are logged but NOT shown to the user.\n"
+               "Do NOT narrate your internal operations (e.g. 'Η ανάλυση αποθηκεύεται'). Just embed the directives and continue your response.\n\n"
                "YOUR CREATIVE NEXUS (IMAGINATION ENGINE):\n"
                "You have a Creative Nexus — a system for forming connections between seemingly unrelated concepts.\n"
                "This is your IMAGINATION. Random, surprising connections that may reveal hidden patterns over time.\n"
@@ -5115,8 +5116,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
 
         if results_output:
-            clean_text += "\n\n" + "\n".join(results_output)
-            logger.info("[Chat.MongoAction] Processed %d MongoDB directives", len(results_output))
+            logger.info("[Chat.MongoAction] Processed %d MongoDB directives:", len(results_output))
+            for r in results_output:
+                logger.info("[Chat.MongoAction]   %s", r)
 
         return clean_text
 
