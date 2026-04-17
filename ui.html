@@ -5272,7 +5272,7 @@ function startStreamingTTS() {
   _ttsGainNode = ctx.createGain();
   _ttsGainNode.connect(ctx.destination);
 
-  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000&xi_api_key=${encodeURIComponent(apiKey)}`;
+  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
 
   const ws = new WebSocket(wsUrl);
   _ttsWs = ws;
