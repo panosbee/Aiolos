@@ -31,6 +31,9 @@ from xdart.config import (
     LLM_MAX_CONTEXT_TOKENS,
     EMBEDDING_API_KEY,
     EMBEDDING_BASE_URL,
+    LLM_FALLBACK_API_KEY,
+    LLM_FALLBACK_BASE_URL,
+    LLM_FALLBACK_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,20 +118,62 @@ class LLMClient:
         # Shared thread pool for hard-timeout API calls (max 4 concurrent)
         self._timeout_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-timeout")
 
+        # ── Fallback LLM client (OpenAI) ──
+        self._fallback_client = None
+        self._fallback_model = LLM_FALLBACK_MODEL
+        fallback_key = LLM_FALLBACK_API_KEY
+        if fallback_key and self.is_deepseek:
+            import httpx as _httpx
+            fb_kwargs: dict[str, Any] = {"api_key": fallback_key, "timeout": _httpx.Timeout(60.0, connect=10.0)}
+            if LLM_FALLBACK_BASE_URL:
+                fb_kwargs["base_url"] = LLM_FALLBACK_BASE_URL
+            self._fallback_client = OpenAI(**fb_kwargs)
+            logger.info("Fallback LLM configured — model=%s", self._fallback_model)
+
     # Hard wall-clock timeout for API calls.
     # httpx read-timeout resets on every byte so DeepSeek keepalives bypass it.
     # This wrapper gives an absolute ceiling regardless of network activity.
     _API_CALL_TIMEOUT = 90  # seconds — hard wall-clock limit
 
     def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
-        """Run client.chat.completions.create with a hard wall-clock timeout."""
+        """Run client.chat.completions.create with a hard wall-clock timeout.
+        If primary fails and a fallback client exists, retry on OpenAI."""
+        # ── Try primary (DeepSeek) ──
         future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
         try:
-            return future.result(timeout=self._API_CALL_TIMEOUT)
+            result = future.result(timeout=self._API_CALL_TIMEOUT)
+            if result.choices:
+                return result
+            logger.warning("[%s] Primary returned empty choices — trying fallback", label)
         except FuturesTimeout:
             future.cancel()
-            logger.error("[%s] Hard timeout (%ds) — DeepSeek did not respond in time", label, self._API_CALL_TIMEOUT)
-            raise TimeoutError(f"{label}: API call exceeded {self._API_CALL_TIMEOUT}s wall-clock limit")
+            logger.error("[%s] Primary hard timeout (%ds)", label, self._API_CALL_TIMEOUT)
+        except Exception as exc:
+            logger.error("[%s] Primary API error: %s", label, exc)
+
+        # ── Fallback to OpenAI ──
+        if not self._fallback_client:
+            raise TimeoutError(f"{label}: Primary failed and no fallback configured")
+
+        logger.info("[%s] Falling back to OpenAI (%s)", label, self._fallback_model)
+        fb_kwargs = dict(kwargs)
+        fb_kwargs["model"] = self._fallback_model
+        # Remove DeepSeek-specific params
+        fb_kwargs.pop("extra_body", None)
+        # OpenAI uses temperature normally
+        if "temperature" not in fb_kwargs:
+            fb_kwargs["temperature"] = 0.7
+
+        fb_future = self._timeout_pool.submit(self._fallback_client.chat.completions.create, **fb_kwargs)
+        try:
+            return fb_future.result(timeout=self._API_CALL_TIMEOUT)
+        except FuturesTimeout:
+            fb_future.cancel()
+            logger.error("[%s] Fallback also timed out (%ds)", label, self._API_CALL_TIMEOUT)
+            raise TimeoutError(f"{label}: Both primary and fallback failed")
+        except Exception as exc:
+            logger.error("[%s] Fallback API error: %s", label, exc)
+            raise
 
     def call(
         self,
@@ -277,18 +322,46 @@ class LLMClient:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         t0 = time.perf_counter()
-        stream = self.client.chat.completions.create(**kwargs)
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+            total_content = 0
+            got_first = False
+            for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        got_first = True
+                        total_content += len(delta.content)
+                        yield delta.content
+            elapsed = time.perf_counter() - t0
+            if got_first:
+                logger.info("[LLM.call_stream] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+                return
+            logger.warning("[LLM.call_stream] Primary returned 0 content chars (%.1fs)", elapsed)
+        except Exception as exc:
+            logger.warning("[LLM.call_stream] Primary stream error: %s", exc)
 
-        total_content = 0
-        for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    total_content += len(delta.content)
-                    yield delta.content
-
-        elapsed = time.perf_counter() - t0
-        logger.info("[LLM.call_stream] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+        # ── Fallback to OpenAI ──
+        if self._fallback_client:
+            logger.info("[LLM.call_stream] Falling back to OpenAI (%s)", self._fallback_model)
+            fb_kwargs = dict(kwargs)
+            fb_kwargs["model"] = self._fallback_model
+            fb_kwargs.pop("extra_body", None)
+            if "temperature" not in fb_kwargs:
+                fb_kwargs["temperature"] = effective_temp
+            try:
+                fb_stream = self._fallback_client.chat.completions.create(**fb_kwargs)
+                total_fb = 0
+                for chunk in fb_stream:
+                    if chunk.choices:
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            total_fb += len(delta.content)
+                            yield delta.content
+                elapsed = time.perf_counter() - t0
+                logger.info("[LLM.call_stream] Fallback stream complete — %d chars, %.2fs total", total_fb, elapsed)
+            except Exception as fb_exc:
+                logger.error("[LLM.call_stream] Fallback also failed: %s", fb_exc)
 
     def call_stream_multi(
         self,
@@ -322,18 +395,46 @@ class LLMClient:
                      self.model, len(clean_messages))
 
         t0 = time.perf_counter()
-        stream = self.client.chat.completions.create(**kwargs)
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+            total_content = 0
+            got_first = False
+            for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        got_first = True
+                        total_content += len(delta.content)
+                        yield delta.content
+            elapsed = time.perf_counter() - t0
+            if got_first:
+                logger.info("[LLM.call_stream_multi] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+                return
+            logger.warning("[LLM.call_stream_multi] Primary returned 0 content chars (%.1fs)", elapsed)
+        except Exception as exc:
+            logger.warning("[LLM.call_stream_multi] Primary stream error: %s", exc)
 
-        total_content = 0
-        for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    total_content += len(delta.content)
-                    yield delta.content
-
-        elapsed = time.perf_counter() - t0
-        logger.info("[LLM.call_stream_multi] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+        # ── Fallback to OpenAI ──
+        if self._fallback_client:
+            logger.info("[LLM.call_stream_multi] Falling back to OpenAI (%s)", self._fallback_model)
+            fb_kwargs = dict(kwargs)
+            fb_kwargs["model"] = self._fallback_model
+            fb_kwargs.pop("extra_body", None)
+            if "temperature" not in fb_kwargs:
+                fb_kwargs["temperature"] = temperature
+            try:
+                fb_stream = self._fallback_client.chat.completions.create(**fb_kwargs)
+                total_fb = 0
+                for chunk in fb_stream:
+                    if chunk.choices:
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            total_fb += len(delta.content)
+                            yield delta.content
+                elapsed = time.perf_counter() - t0
+                logger.info("[LLM.call_stream_multi] Fallback stream complete — %d chars, %.2fs total", total_fb, elapsed)
+            except Exception as fb_exc:
+                logger.error("[LLM.call_stream_multi] Fallback also failed: %s", fb_exc)
 
     def call_json(
         self,

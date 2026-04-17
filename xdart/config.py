@@ -41,6 +41,12 @@ LLM_THINKING_ENABLED: bool = os.getenv("LLM_THINKING_ENABLED", "true").lower() i
 EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "")
 
+# ── LLM Fallback Provider ──
+# If primary LLM (e.g. DeepSeek) fails/times out, fall back to this provider.
+LLM_FALLBACK_API_KEY: str = os.getenv("LLM_FALLBACK_API_KEY", "") or os.getenv("EMBEDDING_API_KEY", "")
+LLM_FALLBACK_BASE_URL: str = os.getenv("LLM_FALLBACK_BASE_URL", "")  # empty = OpenAI default
+LLM_FALLBACK_MODEL: str = os.getenv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
+
 # ── Qdrant (Episodic Memory — local embedded mode, zero Docker) ──
 QDRANT_STORAGE_PATH: str = os.getenv("QDRANT_STORAGE_PATH", str(DATA_DIR / "qdrant_storage"))
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "xheart_states")
