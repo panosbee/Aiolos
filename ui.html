@@ -5111,8 +5111,8 @@ let isChatting = false;
 //
 //  Architecture:
 //    TTS: Browser → ElevenLabs WebSocket → AudioContext (streaming)
-//         Text is chunked by sentence, sent via WebSocket.
-//         Audio chunks are decoded and queued for gapless playback.
+//         ONE WebSocket per message — text chunks fed progressively.
+//         Audio chunks are decoded and scheduled for gapless playback.
 //         Fallback: server-side proxy via /xdart/voice/tts
 //
 //    STT: Browser MediaRecorder → POST /xdart/voice/stt → ElevenLabs Scribe v2
@@ -5130,21 +5130,18 @@ let _audioChunks = [];          // Recorded audio chunks
 let _voiceCfg = null;           // {api_key, voice_id, model_tts, model_stt, tts_settings}
 let _voiceEnabled = false;      // True once config is loaded and valid
 
-// ── TTS WebSocket State ──
-let _ttsWs = null;              // Current WebSocket connection
+// ── TTS Streaming State ──
+let _ttsWs = null;              // Current WebSocket connection (ONE per message)
 let _ttsAudioCtx = null;        // AudioContext for playback
 let _ttsGainNode = null;        // Master gain node — all sources route through this
-let _ttsQueue = [];             // Queue of decoded AudioBuffers
-let _ttsPlaying = false;        // Currently playing audio
 let _ttsSources = [];           // ALL scheduled AudioBufferSourceNodes (for clean stop)
-let _ttsSpeaking = false;       // True while TTS is active (queuing or playing)
+let _ttsSpeaking = false;       // True while TTS is active (WebSocket open or audio playing)
+let _ttsNextPlayTime = 0;       // AudioContext time when last scheduled chunk finishes
+let _ttsFirstChunk = false;     // Whether first audio chunk has been scheduled
+let _ttsGen = 0;                // Generation counter — bumped on each new message/stop
+let _ttsDoneResolve = null;     // Resolve function for end-of-stream waiting
+let _ttsTotalBytes = 0;         // Total audio bytes received in current stream
 const _ttsPlaybackRate = 1.30;  // Speech speed multiplier (1.0 = normal, 1.30 = 30% faster)
-
-// ── Global Sentence Queue (prevents overlap between messages) ──
-let _ttsSentenceQueue = [];     // Global queue of sentences waiting to be spoken
-let _ttsSpeakingStream = false; // True while sentence queue is actively playing
-let _ttsSentenceGen = 0;        // Generation counter — bumped on each new message
-let _ttsSentenceBuffer = '';    // Accumulates text until sentence boundary
 
 // ── Initialize Voice System ──
 async function _initVoice() {
@@ -5196,16 +5193,6 @@ function _cleanTextForSpeech(text) {
 }
 
 /**
- * Split text into sentences for streaming TTS.
- * Sends each sentence as it arrives for lower perceived latency.
- */
-function _splitIntoSentences(text) {
-  // Split on sentence boundaries (., !, ?, ;) but keep the punctuation
-  const parts = text.match(/[^.!?;]+[.!?;]+\s*/g) || [text];
-  return parts.map(s => s.trim()).filter(s => s.length > 0);
-}
-
-/**
  * Strip internal directive tags from displayed text (client-side).
  * Handles: <VISUAL_ACTION>...</VISUAL_ACTION>, <MEMORY_STORE ... />,
  * <BAYESIAN_FUZZY_ENGINE>...</BAYESIAN_FUZZY_ENGINE>, and self-closing variants.
@@ -5222,194 +5209,264 @@ function _stripInternalTags(text) {
   text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*?<\/VISUAL_ACTION\s*>/gi, '');
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*?<\/MEMORY_STORE\s*>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\b[^>]*>[\s\S]*?<\/BAYESIAN_FUZZY_ENGINE\s*>/gi, '');
+  text = text.replace(/<MONGO_ACTION\b[^>]*>[\s\S]*?<\/MONGO_ACTION\s*>/gi, '');
   // Self-closing tags: <TAG ... />
   text = text.replace(/<VISUAL_ACTION\s+[^>]*\/?>/gi, '');
   text = text.replace(/<MEMORY_STORE\s+[^>]*\/?>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\s+[^>]*\/?>/gi, '');
+  text = text.replace(/<MONGO_ACTION\s+[^>]*\/?>/gi, '');
   // Incomplete block tags at end of stream (opening tag without closing)
   text = text.replace(/<run(?:_\w+)?\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<execute\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<MONGO_ACTION\b[^>]*>[\s\S]*$/gi, '');
   // Clean up multiple blank lines
   text = text.replace(/\n{3,}/g, '\n\n');
   return text.trim();
 }
 
+// ── Streaming TTS: ONE WebSocket per message ─────────────────
+//
+//  Flow:
+//   1. startStreamingTTS() — opens WebSocket, sends BOS
+//   2. feedStreamingTTS(chunk) — sends cleaned text chunks as they arrive
+//   3. endStreamingTTS() — sends EOS, waits for all audio to finish
+//   4. stopSpeaking() — kills everything immediately
+//
+//  Audio playback uses AudioContext with precise scheduling for gapless output.
+//  All audio flows through a master GainNode for instant mute/stop.
+// ─────────────────────────────────────────────────────────────
+
 /**
- * Speak text via ElevenLabs WebSocket streaming.
- * Audio chunks arrive as raw PCM/mp3, decoded and played via AudioContext.
+ * Open a WebSocket to ElevenLabs and prepare for streaming TTS.
+ * Returns the generation number for this stream.
+ * Call feedStreamingTTS(chunk) to send text, endStreamingTTS() when done.
+ */
+function startStreamingTTS() {
+  if (!_voiceEnabled || !_voiceCfg) return 0;
+
+  // Kill any previous stream
+  _killTTSStream();
+
+  const gen = ++_ttsGen;
+  const ctx = _ensureAudioContext();
+  const voiceId = _voiceCfg.voice_id;
+  const modelId = _voiceCfg.model_tts;
+  const apiKey = _voiceCfg.api_key;
+
+  // Reset playback state
+  _ttsSources = [];
+  _ttsNextPlayTime = 0;
+  _ttsFirstChunk = false;
+  _ttsTotalBytes = 0;
+  _ttsSpeaking = true;
+  _ttsDoneResolve = null;
+  _updateSpeakingIndicator(true);
+
+  // Create master gain node for this stream
+  _ttsGainNode = ctx.createGain();
+  _ttsGainNode.connect(ctx.destination);
+
+  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+
+  const ws = new WebSocket(wsUrl);
+  _ttsWs = ws;
+
+  ws.onopen = () => {
+    if (gen !== _ttsGen) { ws.close(); return; }
+    // Send BOS (Beginning of Stream) with voice settings
+    ws.send(JSON.stringify({
+      text: ' ',
+      voice_settings: {
+        stability: _voiceCfg.tts_settings?.stability ?? 0.70,
+        similarity_boost: _voiceCfg.tts_settings?.similarity_boost ?? 0.75,
+      },
+      xi_api_key: apiKey,
+      generation_config: {
+        chunk_length_schedule: [120, 160, 250, 290],
+      },
+    }));
+    console.log('[Voice/TTS] WebSocket opened for streaming');
+  };
+
+  ws.onmessage = (event) => {
+    if (gen !== _ttsGen) return;
+    try {
+      const msg = JSON.parse(event.data);
+
+      if (msg.audio) {
+        // Decode base64 PCM 24kHz 16-bit mono → Float32
+        const binaryStr = atob(msg.audio);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        _ttsTotalBytes += bytes.length;
+
+        const samples = new Float32Array(bytes.length / 2);
+        const view = new DataView(bytes.buffer);
+        for (let i = 0; i < samples.length; i++) {
+          samples[i] = view.getInt16(i * 2, true) / 32768;
+        }
+
+        // Create AudioBuffer and schedule gapless playback
+        const audioBuffer = ctx.createBuffer(1, samples.length, 24000);
+        audioBuffer.getChannelData(0).set(samples);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.playbackRate.value = _ttsPlaybackRate;
+        source.connect(_ttsGainNode);
+
+        const now = ctx.currentTime;
+        if (!_ttsFirstChunk) {
+          _ttsNextPlayTime = now + 0.02;  // 20ms initial delay
+          _ttsFirstChunk = true;
+        }
+
+        const startAt = Math.max(_ttsNextPlayTime, now);
+        source.start(startAt);
+        _ttsNextPlayTime = startAt + (audioBuffer.duration / _ttsPlaybackRate);
+
+        _ttsSources.push(source);
+      }
+
+      if (msg.isFinal) {
+        // All audio chunks received — wait for playback to finish
+        const remainingMs = Math.max(0, (_ttsNextPlayTime - ctx.currentTime) * 1000) + 150;
+        console.log('[Voice/TTS] isFinal received, waiting %.0fms for playback', remainingMs);
+        setTimeout(() => {
+          if (gen === _ttsGen) {
+            _ttsSpeaking = false;
+            _updateSpeakingIndicator(false);
+          }
+          if (_ttsDoneResolve) { _ttsDoneResolve(); _ttsDoneResolve = null; }
+        }, remainingMs);
+      }
+    } catch (decodeErr) {
+      console.warn('[Voice/TTS] Chunk decode error:', decodeErr);
+    }
+  };
+
+  ws.onerror = (e) => {
+    console.warn('[Voice/TTS] WebSocket error:', e);
+  };
+
+  ws.onclose = (e) => {
+    if (_ttsWs === ws) _ttsWs = null;
+    // If we got audio but never got isFinal, still wait for playback
+    if (gen === _ttsGen && _ttsTotalBytes > 0 && _ttsSpeaking) {
+      const ctx2 = _ttsAudioCtx;
+      const remainingMs = ctx2 ? Math.max(0, (_ttsNextPlayTime - ctx2.currentTime) * 1000) + 150 : 0;
+      setTimeout(() => {
+        if (gen === _ttsGen) {
+          _ttsSpeaking = false;
+          _updateSpeakingIndicator(false);
+        }
+        if (_ttsDoneResolve) { _ttsDoneResolve(); _ttsDoneResolve = null; }
+      }, remainingMs);
+    } else if (_ttsDoneResolve) {
+      _ttsDoneResolve();
+      _ttsDoneResolve = null;
+    }
+  };
+
+  // Safety timeout: 60s max per stream
+  setTimeout(() => {
+    if (gen === _ttsGen && _ttsWs === ws && ws.readyState === WebSocket.OPEN) {
+      console.warn('[Voice/TTS] Safety timeout — closing WebSocket');
+      try { ws.send(JSON.stringify({ text: '' })); } catch(e) {}
+      setTimeout(() => { try { ws.close(); } catch(e) {} }, 2000);
+    }
+  }, 60000);
+
+  return gen;
+}
+
+/**
+ * Feed a text chunk into the open TTS WebSocket.
+ * Called for each SSE streaming chunk (after cleaning).
+ */
+function feedStreamingTTS(text, gen) {
+  if (!text || gen !== _ttsGen) return;
+  if (!_ttsWs || _ttsWs.readyState !== WebSocket.OPEN) return;
+
+  const clean = _cleanTextForSpeech(text);
+  if (!clean) return;
+
+  try {
+    _ttsWs.send(JSON.stringify({ text: clean + ' ' }));
+  } catch (e) {
+    console.warn('[Voice/TTS] Send failed:', e);
+  }
+}
+
+/**
+ * Signal end of text stream — sends EOS to WebSocket.
+ * Returns a Promise that resolves when all audio has finished playing.
+ */
+function endStreamingTTS(gen) {
+  if (gen !== _ttsGen) return Promise.resolve();
+
+  // Send EOS (empty string closes the generation)
+  if (_ttsWs && _ttsWs.readyState === WebSocket.OPEN) {
+    try {
+      _ttsWs.send(JSON.stringify({ text: '' }));
+    } catch (e) {
+      console.warn('[Voice/TTS] EOS send failed:', e);
+    }
+  }
+
+  // Return promise that resolves when isFinal is received and audio finishes
+  return new Promise((resolve) => {
+    _ttsDoneResolve = resolve;
+    // Safety: resolve after 15s even if isFinal never comes
+    setTimeout(() => {
+      if (_ttsDoneResolve === resolve) {
+        _ttsDoneResolve = null;
+        resolve();
+      }
+    }, 15000);
+  });
+}
+
+/**
+ * Speak a complete text block (non-streaming).
+ * Used for fallback/non-streaming responses and autoSpeak.
  */
 async function speakText(text) {
   if (!_voiceEnabled || !text || text.length < 2) return;
-
-  // Stop current audio playback (but NOT the sentence queue)
-  _stopCurrentAudio();
 
   const cleanText = _cleanTextForSpeech(text);
   if (cleanText.length < 2) return;
   const textToSend = cleanText.length > 5000 ? cleanText.substring(0, 5000) : cleanText;
 
-  _ttsSpeaking = true;
-  _updateSpeakingIndicator(true);
+  // Open a streaming TTS, feed the entire text, then close
+  const gen = startStreamingTTS();
+  if (!gen) return;
 
-  // Try WebSocket streaming first, fall back to server proxy
-  try {
-    await _speakViaWebSocket(textToSend);
-  } catch (wsErr) {
-    console.warn('[Voice/TTS] WebSocket failed, falling back to server proxy:', wsErr.message);
-    try {
-      await _speakViaServerProxy(textToSend);
-    } catch (proxyErr) {
-      console.warn('[Voice/TTS] Server proxy also failed:', proxyErr.message);
-    }
+  // Wait for WebSocket to open (max 3s)
+  let waited = 0;
+  while ((!_ttsWs || _ttsWs.readyState !== WebSocket.OPEN) && waited < 3000) {
+    await new Promise(r => setTimeout(r, 50));
+    waited += 50;
+    if (gen !== _ttsGen) return;
   }
 
-  _ttsSpeaking = false;
-  _updateSpeakingIndicator(false);
-}
+  if (!_ttsWs || _ttsWs.readyState !== WebSocket.OPEN) {
+    console.warn('[Voice/TTS] WebSocket failed to open, trying server proxy');
+    try {
+      await _speakViaServerProxy(textToSend);
+    } catch (e) {
+      console.warn('[Voice/TTS] Server proxy also failed:', e);
+    }
+    return;
+  }
 
-/**
- * Primary TTS: Browser connects directly to ElevenLabs WebSocket.
- * Text is sent in one shot; audio chunks stream back and are played
- * through AudioContext with buffered scheduling for gapless output.
- */
-function _speakViaWebSocket(text) {
-  return new Promise((resolve, reject) => {
-    const ctx = _ensureAudioContext();
-    const voiceId = _voiceCfg.voice_id;
-    const modelId = _voiceCfg.model_tts;
-    const apiKey = _voiceCfg.api_key;
-
-    const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
-
-    _ttsQueue = [];
-    _ttsPlaying = false;
-    _ttsSources = [];             // Reset tracked sources for this new stream
-    let totalBytes = 0;
-    let audioBuffers = [];
-    let nextPlayTime = 0;
-    let firstChunkPlayed = false;
-    let wsOpen = false;
-    let resolved = false;
-
-    const ws = new WebSocket(wsUrl);
-    _ttsWs = ws;
-
-    ws.onopen = () => {
-      wsOpen = true;
-      // Send BOS (Beginning of Stream) message with settings
-      ws.send(JSON.stringify({
-        text: ' ',
-        voice_settings: {
-          stability: _voiceCfg.tts_settings?.stability ?? 0.70,
-          similarity_boost: _voiceCfg.tts_settings?.similarity_boost ?? 0.75,
-        },
-        xi_api_key: apiKey,
-        generation_config: {
-          chunk_length_schedule: [120, 160, 250, 290],
-        },
-      }));
-
-      // Send the full text
-      ws.send(JSON.stringify({ text: text }));
-
-      // Send EOS (End of Stream)
-      ws.send(JSON.stringify({ text: '' }));
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-
-        if (msg.audio) {
-          // Decode base64 audio chunk (PCM 24kHz 16-bit mono)
-          const binaryStr = atob(msg.audio);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let i = 0; i < binaryStr.length; i++) {
-            bytes[i] = binaryStr.charCodeAt(i);
-          }
-          totalBytes += bytes.length;
-
-          // Convert PCM 16-bit LE to Float32 for AudioContext
-          const samples = new Float32Array(bytes.length / 2);
-          const view = new DataView(bytes.buffer);
-          for (let i = 0; i < samples.length; i++) {
-            samples[i] = view.getInt16(i * 2, true) / 32768;
-          }
-
-          // Create AudioBuffer
-          const audioBuffer = ctx.createBuffer(1, samples.length, 24000);
-          audioBuffer.getChannelData(0).set(samples);
-
-          // Schedule playback with precise timing for gapless output
-          const source = ctx.createBufferSource();
-          source.buffer = audioBuffer;
-          source.playbackRate.value = _ttsPlaybackRate;  // Speed up speech
-
-          // Route through master gain node for clean cutoff
-          if (!_ttsGainNode || _ttsGainNode.context !== ctx) {
-            _ttsGainNode = ctx.createGain();
-            _ttsGainNode.connect(ctx.destination);
-          }
-          source.connect(_ttsGainNode);
-
-          const now = ctx.currentTime;
-          if (!firstChunkPlayed) {
-            nextPlayTime = now + 0.02;
-            firstChunkPlayed = true;
-          }
-
-          const startAt = Math.max(nextPlayTime, now);
-          source.start(startAt);
-          // Adjust duration for playback rate
-          nextPlayTime = startAt + (audioBuffer.duration / _ttsPlaybackRate);
-
-          _ttsSources.push(source);
-        }
-
-        if (msg.isFinal) {
-          // Stream complete — wait for all audio to finish playing
-          const remainingTime = Math.max(0, nextPlayTime - ctx.currentTime);
-          setTimeout(() => {
-            if (!resolved) { resolved = true; resolve(); }
-          }, remainingTime * 1000 + 100);
-        }
-      } catch (decodeErr) {
-        console.warn('[Voice/TTS] Chunk decode error:', decodeErr);
-      }
-    };
-
-    ws.onerror = (e) => {
-      console.warn('[Voice/TTS] WebSocket error:', e);
-      if (!resolved) { resolved = true; reject(new Error('WebSocket error')); }
-    };
-
-    ws.onclose = (e) => {
-      _ttsWs = null;
-      if (!resolved) {
-        if (totalBytes > 0) {
-          // Got some audio, wait for it to play
-          const remainingTime = Math.max(0, nextPlayTime - (ctx?.currentTime || 0));
-          setTimeout(() => {
-            if (!resolved) { resolved = true; resolve(); }
-          }, remainingTime * 1000 + 100);
-        } else {
-          resolved = true;
-          reject(new Error(`WebSocket closed: code=${e.code}`));
-        }
-      }
-    };
-
-    // Safety timeout: 30 seconds max per TTS call
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        if (ws.readyState === WebSocket.OPEN) ws.close();
-        resolve(); // partial playback is fine
-      }
-    }, 30000);
-  });
+  // Feed entire text and close
+  feedStreamingTTS(textToSend, gen);
+  await endStreamingTTS(gen);
 }
 
 /**
@@ -5427,7 +5484,6 @@ async function _speakViaServerProxy(text) {
     throw new Error(`Server TTS error: ${res.status}`);
   }
 
-  // Collect all chunks into a blob
   const reader = res.body.getReader();
   const chunks = [];
   while (true) {
@@ -5450,13 +5506,9 @@ async function _speakViaServerProxy(text) {
 }
 
 /**
- * Stop any currently playing TTS audio.
+ * Kill the current TTS stream — WebSocket + audio + state.
  */
-/**
- * Stop current audio playback WITHOUT killing the sentence queue.
- * Used by speakText() between sentences in the queue.
- */
-function _stopCurrentAudio() {
+function _killTTSStream() {
   if (_ttsWs) {
     try { _ttsWs.close(); } catch(e) {}
     _ttsWs = null;
@@ -5469,26 +5521,17 @@ function _stopCurrentAudio() {
     try { _ttsGainNode.disconnect(); } catch(e) {}
     _ttsGainNode = null;
   }
+  if (_ttsDoneResolve) { _ttsDoneResolve(); _ttsDoneResolve = null; }
 }
 
 /**
- * Stop ALL TTS — current audio AND the sentence queue.
+ * Stop ALL TTS — kills the stream and resets state.
  * Used when a new message starts or user explicitly stops.
  */
 function stopSpeaking() {
+  _ttsGen++;
+  _killTTSStream();
   _ttsSpeaking = false;
-
-  // ── Kill the sentence queue — prevents queued sentences from playing ──
-  _ttsSentenceGen++;             // Bump generation — any running _playNextSentence will bail
-  _ttsSentenceQueue = [];
-  _ttsSpeakingStream = false;
-  _ttsSentenceBuffer = '';
-
-  // Stop current audio
-  _stopCurrentAudio();
-
-  _ttsQueue = [];
-  _ttsPlaying = false;
   _updateSpeakingIndicator(false);
 }
 
@@ -5657,55 +5700,6 @@ function autoSpeak(text) {
   }
 }
 
-/**
- * Global sentence-level TTS queue for streaming responses.
- * Uses generation counter to prevent overlap between messages.
- */
-function _flushSentenceToTTS(sentence, gen) {
-  if (!_voiceAutoPlay || !_voiceEnabled || !sentence.trim()) return;
-  if (gen !== _ttsSentenceGen) return;  // Stale generation — skip
-  _ttsSentenceQueue.push(sentence.trim());
-  if (!_ttsSpeakingStream) _playNextSentence(gen);
-}
-
-async function _playNextSentence(gen) {
-  // Check generation — if bumped, another message started, bail out
-  if (gen !== _ttsSentenceGen) {
-    _ttsSpeakingStream = false;
-    return;
-  }
-  if (_ttsSentenceQueue.length === 0) {
-    _ttsSpeakingStream = false;
-    _updateSpeakingIndicator(false);
-    return;
-  }
-  _ttsSpeakingStream = true;
-  const sentence = _ttsSentenceQueue.shift();
-  try {
-    await speakText(sentence);
-  } catch (e) {
-    console.warn('[Voice/Stream] Sentence TTS failed:', e);
-  }
-  // Continue with next sentence (re-check generation)
-  _playNextSentence(gen);
-}
-
-function _checkSentenceBoundary(text, gen) {
-  if (gen !== _ttsSentenceGen) return;  // Stale generation
-  _ttsSentenceBuffer += text;
-  const sentenceRegex = /([^.!?;·]+[.!?;·]+)\s*/g;
-  let match;
-  let lastIndex = 0;
-  while ((match = sentenceRegex.exec(_ttsSentenceBuffer)) !== null) {
-    const sentence = match[1].trim();
-    if (sentence.length > 5) {
-      _flushSentenceToTTS(sentence, gen);
-    }
-    lastIndex = sentenceRegex.lastIndex;
-  }
-  _ttsSentenceBuffer = _ttsSentenceBuffer.substring(lastIndex);
-}
-
 async function sendChat() {
   const message = document.getElementById('problemInput').value.trim();
   if (!message || isRunning || isChatting) return;
@@ -5743,9 +5737,12 @@ async function sendChat() {
   let responseTextEl = null;
   let streamedText = '';
 
-  // ── Stop any previous TTS and reset global sentence queue ──
+  // ── Stop any previous TTS and start streaming TTS for this message ──
   stopSpeaking();
-  const myGen = ++_ttsSentenceGen;  // Capture THIS message's generation
+  let myGen = 0;
+  if (_voiceAutoPlay && _voiceEnabled) {
+    myGen = startStreamingTTS();
+  }
 
   try {
     // ═══ SSE Streaming Chat ═══
@@ -5847,9 +5844,9 @@ async function sendChat() {
             responseTextEl.textContent = _stripInternalTags(streamedText);
             responseDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-            // Feed CLEANED text to sentence-level TTS (no tags in speech)
+            // Feed CLEANED text chunk to streaming TTS
             const cleanChunk = _stripInternalTags(chunkText);
-            if (cleanChunk) _checkSentenceBoundary(cleanChunk, myGen);
+            if (cleanChunk && myGen) feedStreamingTTS(cleanChunk, myGen);
           }
 
           else if (currentEvent === 'done') {
@@ -5864,11 +5861,8 @@ async function sendChat() {
             chatHistory.push({ role: 'user', content: message });
             chatHistory.push({ role: 'assistant', content: finalText });
 
-            // Flush remaining sentence buffer to TTS
-            if (_ttsSentenceBuffer.trim().length > 5 && myGen === _ttsSentenceGen) {
-              _flushSentenceToTTS(_ttsSentenceBuffer, myGen);
-              _ttsSentenceBuffer = '';
-            }
+            // Signal end of streaming TTS
+            if (myGen) endStreamingTTS(myGen);
 
             // Check if self-prompt was updated (async, non-blocking)
             checkSelfPromptUpdate(conversation);
@@ -5996,9 +5990,12 @@ async function initiateProactiveChat(notif) {
 
   chatHistory.push({ role: 'user', content: proactiveMsg });
 
-  // ── Stop any previous TTS and start fresh generation for this proactive message ──
+  // ── Stop any previous TTS and start streaming TTS for proactive message ──
   stopSpeaking();
-  const myGen = ++_ttsSentenceGen;
+  let myGen = 0;
+  if (_voiceAutoPlay && _voiceEnabled) {
+    myGen = startStreamingTTS();
+  }
 
   // Streaming response container
   const responseId = 'proactive-stream-' + Date.now();
@@ -6065,11 +6062,9 @@ async function initiateProactiveChat(notif) {
           responseTextEl.textContent = _stripInternalTags(streamedText);
           responseDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-          // Feed cleaned chunks to TTS immediately — voice starts with first sentence
+          // Feed cleaned chunks to streaming TTS
           const cleanChunk = _stripInternalTags(chunkText);
-          if (cleanChunk && myGen === _ttsSentenceGen) {
-            _checkSentenceBoundary(cleanChunk, myGen);
-          }
+          if (cleanChunk && myGen) feedStreamingTTS(cleanChunk, myGen);
         }
 
         else if (currentEvent === 'done') {
@@ -6079,11 +6074,8 @@ async function initiateProactiveChat(notif) {
 
           chatHistory.push({ role: 'assistant', content: finalText });
 
-          // Flush remaining sentence buffer
-          if (_ttsSentenceBuffer.trim().length > 5 && myGen === _ttsSentenceGen) {
-            _flushSentenceToTTS(_ttsSentenceBuffer, myGen);
-            _ttsSentenceBuffer = '';
-          }
+          // Signal end of streaming TTS
+          if (myGen) endStreamingTTS(myGen);
         }
 
         else if (currentEvent === 'pipeline') {
