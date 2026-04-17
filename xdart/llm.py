@@ -133,7 +133,7 @@ class LLMClient:
     # Hard wall-clock timeout for API calls.
     # httpx read-timeout resets on every byte so DeepSeek keepalives bypass it.
     # This wrapper gives an absolute ceiling regardless of network activity.
-    _API_CALL_TIMEOUT = 90  # seconds — hard wall-clock limit
+    _API_CALL_TIMEOUT = 120  # seconds — hard wall-clock limit
 
     def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
         """Run client.chat.completions.create with a hard wall-clock timeout.

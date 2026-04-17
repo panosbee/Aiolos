@@ -131,12 +131,13 @@ _collector_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _proactive_engine = None  # ProactiveEngine — stored for notification endpoints
 _vision_integration = None  # VisionIntegration — stored for vision endpoints
+_mongo_store = None  # MongoStore — structured persistence layer
 _last_audit_result: dict = {}  # Latest system audit results — populated by audit loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration
+    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration, _mongo_store
     _framework = XDARTFramework()
 
     # ── MongoDB Structured Persistence ──
