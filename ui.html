@@ -5254,7 +5254,7 @@ function startStreamingTTS() {
   const gen = ++_ttsGen;
   const ctx = _ensureAudioContext();
   const voiceId = _voiceCfg.voice_id;
-  const modelId = _voiceCfg.model_tts;
+  const modelId = _voiceCfg.model_tts_ws || _voiceCfg.model_tts;
   const apiKey = _voiceCfg.api_key;
 
   // Reset playback state

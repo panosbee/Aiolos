@@ -37,12 +37,13 @@ from xdart.config import (
 try:
     from xdart.config import (
         ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID,
-        ELEVENLABS_MODEL_TTS, ELEVENLABS_MODEL_STT,
+        ELEVENLABS_MODEL_TTS, ELEVENLABS_MODEL_TTS_WS, ELEVENLABS_MODEL_STT,
     )
 except ImportError:
     ELEVENLABS_API_KEY = ""
     ELEVENLABS_VOICE_ID = ""
-    ELEVENLABS_MODEL_TTS = "eleven_multilingual_v2"
+    ELEVENLABS_MODEL_TTS = "eleven_v3"
+    ELEVENLABS_MODEL_TTS_WS = "eleven_multilingual_v2"
     ELEVENLABS_MODEL_STT = "scribe_v2"
 try:
     from xdart.config import PROACTIVE_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -3746,6 +3747,7 @@ async def voice_config():
         "api_key": ELEVENLABS_API_KEY,
         "voice_id": ELEVENLABS_VOICE_ID,
         "model_tts": ELEVENLABS_MODEL_TTS,
+        "model_tts_ws": ELEVENLABS_MODEL_TTS_WS,
         "model_stt": ELEVENLABS_MODEL_STT,
         "tts_settings": {
             "stability": 0.70,
