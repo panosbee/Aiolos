@@ -3129,7 +3129,7 @@ let isRunning = false;
 let timerInterval = null;
 let timerStart = 0;
 let _lastAnalysisData = null; // stored for PDF export
-let _deferredProactiveAlerts = []; // proactive alerts queued during pipeline
+let _deferredProactiveAlerts = []; // kept for legacy compat — queue now handles ordering
 
 // ── Health check ──
 async function checkHealth() {
@@ -5018,16 +5018,6 @@ async function startAnalysis() {
   document.getElementById('problemInput').value = '';
   document.getElementById('problemInput').focus();
   checkHealth();
-
-  // Replay deferred proactive alerts that arrived during pipeline
-  if (_deferredProactiveAlerts.length > 0) {
-    console.log('[Proactive] Pipeline done — replaying', _deferredProactiveAlerts.length, 'deferred alerts');
-    const deferred = [..._deferredProactiveAlerts];
-    _deferredProactiveAlerts = [];
-    for (const notif of deferred) {
-      initiateProactiveChat(notif);
-    }
-  }
 }
 
 function handleSSEEvent(type, dataStr, container) {
@@ -5106,6 +5096,51 @@ function handleSSEEvent(type, dataStr, container) {
 // ── Chat History & Chat Mode ──
 let chatHistory = [];
 let isChatting = false;
+
+// ── Serialized Chat Queue ──
+// All proactive + user chat requests stream one at a time — no parallel SSE streams.
+// When 3 proactive alerts fire at once, they queue up and play sequentially.
+const _chatQueue = [];       // {type:'proactive'|'user', ...}
+let _chatQueueBusy = false;
+
+function _enqueueChatItem(item) {
+  _chatQueue.push(item);
+  _drainChatQueue();
+}
+
+function _drainChatQueue() {
+  if (_chatQueueBusy || !_chatQueue.length) return;
+  _chatQueueBusy = true;
+  isChatting = true;
+  document.getElementById('btnChat').disabled = true;
+  document.getElementById('btnChat').textContent = '...';
+  document.getElementById('btnRun').disabled = true;
+
+  const item = _chatQueue.shift();
+  if (_chatQueue.length > 0) {
+    console.log(`[ChatQueue] Processing — ${_chatQueue.length} more item(s) waiting`);
+  }
+
+  const done = () => {
+    _chatQueueBusy = false;
+    if (_chatQueue.length === 0) {
+      isChatting = false;
+      document.getElementById('btnChat').disabled = false;
+      document.getElementById('btnChat').textContent = 'Chat';
+      if (!isRunning) document.getElementById('btnRun').disabled = false;
+      document.getElementById('problemInput').focus();
+    } else {
+      // More items waiting — keep UI locked, drain after a short pause for readability
+      setTimeout(_drainChatQueue, 400);
+    }
+  };
+
+  if (item.type === 'proactive') {
+    _runInitiateProactiveChat(item.notif).finally(done);
+  } else {
+    _runSendChat(item.message).finally(done);
+  }
+}
 
 // ══════════════════════════════════════════════════════════════
 //  VOICE ENGINE — ElevenLabs TTS (WebSocket) + STT (Scribe v2)
@@ -5804,15 +5839,15 @@ function autoSpeak(text) {
   }
 }
 
-async function sendChat() {
+// ── Public entry point: enqueue user message ──
+function sendChat() {
   const message = document.getElementById('problemInput').value.trim();
   if (!message || isRunning || isChatting) return;
+  document.getElementById('problemInput').value = '';
+  _enqueueChatItem({ type: 'user', message });
+}
 
-  isChatting = true;
-  document.getElementById('btnChat').disabled = true;
-  document.getElementById('btnChat').textContent = '...';
-  document.getElementById('btnRun').disabled = true;
-
+async function _runSendChat(message) {
   // Remove empty state
   const empty = document.getElementById('emptyState');
   if (empty) empty.remove();
@@ -5832,8 +5867,6 @@ async function sendChat() {
       <div style="font-size:12px;color:var(--text-dim);font-style:italic">Thinking...</div>
     </div>`);
   conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-
-  document.getElementById('problemInput').value = '';
 
   // Prepare streaming response container
   const responseId = 'chat-stream-' + Date.now();
@@ -5917,9 +5950,7 @@ async function sendChat() {
               </div>`);
             conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-            isChatting = false;
-            document.getElementById('btnChat').disabled = false;
-            document.getElementById('btnChat').textContent = 'Chat';
+            // Pipeline redirect — release queue so it can drain, then start pipeline
             document.getElementById('problemInput').value = data.problem || message;
             startAnalysis();
             return;
@@ -6026,11 +6057,6 @@ async function sendChat() {
     }
   }
 
-  isChatting = false;
-  document.getElementById('btnChat').disabled = false;
-  document.getElementById('btnChat').textContent = 'Chat';
-  document.getElementById('btnRun').disabled = false;
-  document.getElementById('problemInput').focus();
 }
 
 // ── Keyboard shortcut ──
@@ -6045,18 +6071,14 @@ document.getElementById('problemInput').addEventListener('keydown', (e) => {
   }
 });
 
-// ── Proactive Conversation: Αίολος initiates chat ──
-let _proactiveChatRunning = false;  // Lock to prevent stacking proactive chats
+// ── Public entry point: enqueue proactive notification ──
+function initiateProactiveChat(notif) {
+  _enqueueChatItem({ type: 'proactive', notif });
+}
 
-async function initiateProactiveChat(notif) {
+async function _runInitiateProactiveChat(notif) {
   const conversation = document.getElementById('conversation');
   if (!conversation) return;
-
-  // If another proactive chat is running, kill its TTS and let the new one take over
-  if (_proactiveChatRunning) {
-    stopSpeaking();
-  }
-  _proactiveChatRunning = true;
 
   // Remove empty state if present
   const empty = document.getElementById('emptyState');
@@ -6243,8 +6265,6 @@ async function initiateProactiveChat(notif) {
         </div>`);
     }
   }
-
-  _proactiveChatRunning = false;
 }
 
 // ── Self-Prompt Watcher ──
@@ -7010,12 +7030,9 @@ function connectNotificationSSE() {
       // Proactive conversation: send data to Αίολος and let him respond
       // BUT NOT while the pipeline is running — defer until pipeline completes
       if (notif.conversation_start) {
-        if (isRunning) {
-          console.log('[Proactive] Pipeline running — deferring proactive chat:', notif.headline);
-          _deferredProactiveAlerts.push(notif);
-        } else {
-          initiateProactiveChat(notif);
-        }
+        // Always enqueue — queue drains sequentially, even if pipeline is running
+        initiateProactiveChat(notif);
+        console.log('[Proactive] Enqueued:', notif.headline, `(queue size: ${_chatQueue.length})`);
       }
     } catch (err) {
       console.warn('[Proactive] SSE parse error:', err);
