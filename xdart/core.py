@@ -3584,7 +3584,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 self._chat_tool_execution, message, world_txt, context_parts, proactive,
             )
             try:
-                chat_tool_results = _tool_future.result(timeout=30)  # 30s max for BF/tools
+                chat_tool_results = _tool_future.result(timeout=60)  # 60s max for BF/tools
                 if chat_tool_results:
                     full_context = "\n\n".join(context_parts)
             except FuturesTimeout:
@@ -5239,7 +5239,21 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                         logger.info("[Chat.MemoryStore] Working: '%s'", content[:60])
 
                 else:
-                    logger.warning("[Chat.MemoryStore] Unknown layer: '%s'", layer)
+                    if layer == "":
+                        # LLM emitted <MEMORY_STORE layer="" content="..."> — fallback to episodic
+                        content = attrs.get("content", "")
+                        if content:
+                            self.memory.store(
+                                problem=f"[Chat directive] {content[:100]}",
+                                reframed_problem=content,
+                                xheart_distillate=content,
+                                domain_tags=[t.strip() for t in attrs.get("tags", "general").split(",")],
+                                layer_score=0.5,
+                                self_generated_layers=None,
+                            )
+                            logger.info("[Chat.MemoryStore] Empty-layer fallback → episodic: '%s'", content[:80])
+                    else:
+                        logger.warning("[Chat.MemoryStore] Unknown layer: '%s'", layer)
 
             except Exception as e:
                 logger.warning("[Chat.MemoryStore] Failed for layer '%s': %s", layer, e)
