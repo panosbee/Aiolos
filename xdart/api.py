@@ -3923,6 +3923,55 @@ async def speech_to_text(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ══════════════════════════════════════════════════════════════
+#  SHELL EXECUTOR — Local command execution
+# ══════════════════════════════════════════════════════════════
+
+
+@app.get("/xdart/shell/status")
+async def shell_status():
+    """Get Shell Executor status, stats, and recent audit log."""
+    if not _framework or not _framework.shell_executor:
+        return {"status": "disabled", "message": "Shell Executor not active"}
+    se = _framework.shell_executor
+    return {
+        "status": "enabled",
+        "stats": se.get_stats(),
+        "audit_log": se.get_audit_log(limit=20),
+    }
+
+
+class ShellExecuteRequest(BaseModel):
+    command: str = Field(description="Command to execute")
+    shell_type: str = Field(default="powershell", description="Shell type: powershell or cmd")
+    timeout: int = Field(default=30, description="Timeout in seconds", ge=1, le=300)
+
+
+@app.post("/xdart/shell/execute")
+async def shell_execute(req: ShellExecuteRequest):
+    """Execute a shell command directly via API."""
+    if not _framework or not _framework.shell_executor:
+        raise HTTPException(status_code=503, detail="Shell Executor is disabled")
+    result = _framework.shell_executor.execute(
+        req.command, timeout=req.timeout, shell_type=req.shell_type
+    )
+    return result
+
+
+class ShellPythonRequest(BaseModel):
+    code: str = Field(description="Python code to execute")
+    timeout: int = Field(default=30, description="Timeout in seconds", ge=1, le=300)
+
+
+@app.post("/xdart/shell/python")
+async def shell_python(req: ShellPythonRequest):
+    """Execute Python code directly via API."""
+    if not _framework or not _framework.shell_executor:
+        raise HTTPException(status_code=503, detail="Shell Executor is disabled")
+    result = _framework.shell_executor.execute_python(req.code, timeout=req.timeout)
+    return result
+
+
 @app.get("/static/{filename}")
 async def serve_static(filename: str):
     """Serve static assets (page-agent.js etc.)."""

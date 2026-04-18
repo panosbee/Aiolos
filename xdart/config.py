@@ -128,6 +128,12 @@ BRAVE_SEARCH_API_KEY: str = os.getenv("BRAVE_SEARCH_API_KEY", "")
 # and parallel branching.
 META_ORCHESTRATOR_ENABLED: bool = os.getenv("META_ORCHESTRATOR_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# ── Shell Executor (Αίολος' hands on the local system) ──
+# When enabled, Αίολος can execute PowerShell commands, run Python scripts,
+# browse the filesystem, and manage processes on the local machine.
+SHELL_EXECUTOR_ENABLED: bool = os.getenv("SHELL_EXECUTOR_ENABLED", "true").lower() in ("true", "1", "yes")
+SHELL_EXECUTOR_TIMEOUT: int = int(os.getenv("SHELL_EXECUTOR_TIMEOUT", "30"))
+
 # ── Proactive Communication Engine ──
 # When enabled, Αίολος can initiate contact with the user autonomously.
 # Evaluates findings from curiosity, perception, prophecy resolution for importance.

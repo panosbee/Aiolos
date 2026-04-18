@@ -32,6 +32,7 @@ from xdart.config import (
     META_ORCHESTRATOR_ENABLED, CURIOSITY_ENABLED,
     CURIOSITY_JOURNAL_PATH, CURIOSITY_STATE_PATH,
     LOGIC_SANDBOX_ENABLED, PRINCIPLE_REGISTRY_ENABLED,
+    SHELL_EXECUTOR_ENABLED, SHELL_EXECUTOR_TIMEOUT,
 )
 from xdart.core_change_logger import CoreChangeLogger
 from xdart.llm import LLMClient
@@ -328,6 +329,19 @@ class XDARTFramework:
                 logger.info("Web Agent enabled (CDP=%s)", LIGHTPANDA_CDP_URL or "none/httpx-only")
             except Exception as e:
                 logger.warning("Web Agent init failed: %s", e)
+
+        # ── Shell Executor (Αίολος' hands — local command execution) ──
+        self.shell_executor = None
+        if SHELL_EXECUTOR_ENABLED:
+            try:
+                from xdart.tools.shell_executor import ShellExecutor
+                self.shell_executor = ShellExecutor(
+                    working_dir=str(BASE_DIR),
+                    default_timeout=SHELL_EXECUTOR_TIMEOUT,
+                )
+                logger.info("Shell Executor enabled (cwd=%s, timeout=%ds)", BASE_DIR, SHELL_EXECUTOR_TIMEOUT)
+            except Exception as e:
+                logger.warning("Shell Executor init failed: %s", e)
 
         logger.info(
             "XDART-Φ initialized (model=%s, memories=%d, prophecies=%d)",
@@ -3395,6 +3409,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # Temporal awareness (internal clock)
         context_parts.append(self.temporal_clock.to_context_string())
 
+        # Shell Executor status
+        if self.shell_executor:
+            context_parts.append(self.shell_executor.to_context_string())
+
         full_context = "\n\n".join(context_parts)
 
         # ── Phase 2: Route decision ──
@@ -3556,7 +3574,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"Speak Greek when the user speaks Greek. "
             f"Reference specific data from RETRIEVED CONTEXT. "
             f"Never fabricate data not in your context.\n"
-            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, and <MONGO_ACTION> tags when appropriate (same syntax as non-streaming)."
+            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, <MONGO_ACTION>, and <SHELL_ACTION> tags when appropriate (same syntax as non-streaming)."
         )
 
         if proactive:
@@ -3599,6 +3617,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         response_text = self._process_memory_directives(response_text)
         response_text = self._process_visual_directives(response_text)
         response_text = self._process_mongo_directives(response_text)
+        response_text = self._process_shell_directives(response_text)
         response_text = self._process_bf_directives(response_text)
         response_text = self._strip_internal_operation_leaks(response_text)
 
@@ -3874,6 +3893,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # 18. Temporal awareness (internal clock)
         context_parts.append(self.temporal_clock.to_context_string())
+
+        # 19. Shell Executor status
+        if self.shell_executor:
+            context_parts.append(self.shell_executor.to_context_string())
 
         full_context = "\n\n".join(context_parts)
 
@@ -4240,6 +4263,42 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "But some will mature into genuine insights. That IS imagination.\n\n")
                if getattr(self, "_mongo", None) else "")
 
+            + (("YOUR SHELL EXECUTOR TOOL (you CAN execute commands on the local machine):\n"
+               "You have direct access to the local system through PowerShell and Python.\n"
+               "Embed <SHELL_ACTION> directives in your response — the system executes them and returns results.\n\n"
+               "AVAILABLE ACTIONS:\n"
+               "  EXECUTE — Run a PowerShell command:\n"
+               "    <SHELL_ACTION action=\"execute\" command=\"Get-Process | Select-Object -First 5\" />\n"
+               "    <SHELL_ACTION action=\"execute\" command=\"Get-ChildItem C:\\Users\" timeout=\"15\" />\n"
+               "  PYTHON — Run Python code:\n"
+               "    <SHELL_ACTION action=\"python\" code=\"import sys; print(sys.version)\" />\n"
+               "    <SHELL_ACTION action=\"python\" code=\"for i in range(5): print(i**2)\" timeout=\"20\" />\n"
+               "  LIST_DIR — List directory contents:\n"
+               "    <SHELL_ACTION action=\"list_dir\" path=\"C:\\Users\\Panos\" />\n"
+               "  READ_FILE — Read a file from disk:\n"
+               "    <SHELL_ACTION action=\"read_file\" path=\"C:\\Users\\Panos\\notes.txt\" />\n"
+               "  SYSTEM_INFO — Get system information (OS, CPU, memory, disk):\n"
+               "    <SHELL_ACTION action=\"system_info\" />\n"
+               "  GIT_STATUS — Check git repository status:\n"
+               "    <SHELL_ACTION action=\"git_status\" />\n"
+               "  PROCESS_LIST — List running processes:\n"
+               "    <SHELL_ACTION action=\"process_list\" />\n"
+               "  DISK_USAGE — Show disk space usage:\n"
+               "    <SHELL_ACTION action=\"disk_usage\" />\n"
+               "  PIP_INSTALL — Install a Python package:\n"
+               "    <SHELL_ACTION action=\"pip_install\" package=\"requests\" />\n"
+               "  WEB_REQUEST — Fetch a URL:\n"
+               "    <SHELL_ACTION action=\"web_request\" url=\"https://api.example.com/data\" />\n\n"
+               "WHEN TO USE:\n"
+               "- User asks about the system state (processes, disk, files) → system_info, process_list, disk_usage\n"
+               "- User asks to check or modify files → read_file, list_dir, execute\n"
+               "- User asks you to run a command → execute with the command\n"
+               "- User asks to install something → pip_install\n"
+               "- You need to verify something on the system → appropriate action\n"
+               "- You want to check your own git repo → git_status\n"
+               "IMPORTANT: Results appear in the next context cycle. Use wisely — don't spam commands.\n\n")
+               if self.shell_executor else "")
+
             + "\n"
 
             + "YOUR MEMORY STORAGE TOOL (you CAN actively save to your memory):\n"
@@ -4404,6 +4463,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # Step 2.6b: Process MongoDB directives — execute database operations
         response_text = self._process_mongo_directives(response_text)
+
+        # Step 2.6c: Process Shell directives — execute local commands
+        response_text = self._process_shell_directives(response_text)
 
         # Step 2.7: Process BFE directives — intercept and execute real BF engine  
         response_text = self._process_bf_directives(response_text)
@@ -5288,6 +5350,176 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 output.append(f"✓ {result['description']}")
         else:
             output.append(f"✗ {result.get('description', 'Unknown error')}")
+
+    # ── Shell Executor directive processing ──────────────────────────
+    def _process_shell_directives(self, response_text: str) -> str:
+        """Extract and execute <SHELL_ACTION> directives from the LLM response.
+
+        Αίολος can execute local commands through chat:
+          <SHELL_ACTION action="execute" command="Get-Process | Select-Object -First 5" />
+          <SHELL_ACTION action="python" code="print('hello')" />
+          <SHELL_ACTION action="list_dir" path="C:\\Users" />
+          <SHELL_ACTION action="read_file" path="notes.txt" />
+          <SHELL_ACTION action="system_info" />
+          <SHELL_ACTION action="git_status" />
+          <SHELL_ACTION action="process_list" />
+          <SHELL_ACTION action="disk_usage" />
+          <SHELL_ACTION action="pip_install" package="requests" />
+          <SHELL_ACTION action="web_request" url="https://example.com" />
+
+        Returns the response text with directives replaced by execution results.
+        """
+        import re
+
+        if not self.shell_executor:
+            # Strip tags even without shell executor
+            response_text = re.sub(
+                r'<SHELL_ACTION\b[^>]*>.*?</SHELL_ACTION\s*>',
+                '', response_text, flags=re.DOTALL | re.IGNORECASE,
+            )
+            response_text = re.sub(
+                r'<SHELL_ACTION\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        # ── Self-closing attribute-style ──
+        pattern = re.compile(
+            r'<SHELL_ACTION\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        confirmations = []
+
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action = attrs.pop("action", "").strip().lower()
+            if not action:
+                continue
+
+            try:
+                result = self._execute_shell_action(action, attrs)
+                confirmations.append(result)
+                logger.info("[Chat.ShellAction] %s → %s", action, result[:120])
+            except Exception as e:
+                msg = f"✗ shell({action}): {e}"
+                confirmations.append(msg)
+                logger.warning("[Chat.ShellAction] %s error: %s", action, e)
+
+        # Strip all SHELL_ACTION tags
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(
+            r'<SHELL_ACTION\b[^>]*>.*?</SHELL_ACTION\s*>',
+            '', clean_text, flags=re.DOTALL | re.IGNORECASE,
+        )
+        clean_text = re.sub(r'<SHELL_ACTION\b.*$', '', clean_text, flags=re.DOTALL).rstrip()
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+
+        if confirmations:
+            logger.info("[Chat.ShellAction] Processed %d shell directives", len(confirmations))
+        return clean_text
+
+    def _execute_shell_action(self, action: str, attrs: dict) -> str:
+        """Route a shell action to the appropriate ShellExecutor method."""
+        se = self.shell_executor
+
+        if action == "execute":
+            command = attrs.get("command", "")
+            if not command:
+                return "✗ shell(execute): no command specified"
+            timeout = int(attrs.get("timeout", se.default_timeout))
+            result = se.execute(command, timeout=timeout)
+            if result["success"]:
+                output = result["stdout"].strip() or "(no output)"
+                return f"🖥️ `{command}`:\n```\n{output}\n```"
+            else:
+                return f"✗ `{command}`: {result.get('stderr', result.get('error', 'failed'))}"
+
+        elif action == "python":
+            code = attrs.get("code", "")
+            if not code:
+                return "✗ shell(python): no code specified"
+            timeout = int(attrs.get("timeout", se.default_timeout))
+            result = se.execute_python(code, timeout=timeout)
+            if result["success"]:
+                output = result["stdout"].strip() or "(no output)"
+                return f"🐍 Python:\n```\n{output}\n```"
+            else:
+                return f"✗ Python: {result.get('stderr', result.get('error', 'failed'))}"
+
+        elif action == "list_dir":
+            path = attrs.get("path", se.working_dir)
+            result = se.list_directory(path)
+            if result["success"]:
+                return f"📁 {path}:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ list_dir({path}): {result.get('stderr', 'failed')}"
+
+        elif action == "read_file":
+            path = attrs.get("path", "")
+            if not path:
+                return "✗ shell(read_file): no path specified"
+            result = se.read_file(path)
+            if result["success"]:
+                return f"📄 {path}:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ read_file({path}): {result.get('stderr', 'failed')}"
+
+        elif action == "system_info":
+            result = se.system_info()
+            if result["success"]:
+                return f"💻 System Info:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ system_info: {result.get('stderr', 'failed')}"
+
+        elif action == "git_status":
+            result = se.git_status()
+            if result["success"]:
+                return f"📦 Git Status:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ git_status: {result.get('stderr', 'failed')}"
+
+        elif action == "process_list":
+            result = se.process_list()
+            if result["success"]:
+                return f"⚙️ Processes:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ process_list: {result.get('stderr', 'failed')}"
+
+        elif action == "disk_usage":
+            result = se.disk_usage()
+            if result["success"]:
+                return f"💾 Disk Usage:\n```\n{result['stdout'].strip()}\n```"
+            else:
+                return f"✗ disk_usage: {result.get('stderr', 'failed')}"
+
+        elif action == "pip_install":
+            package = attrs.get("package", "")
+            if not package:
+                return "✗ shell(pip_install): no package specified"
+            result = se.pip_install(package)
+            if result["success"]:
+                return f"📦 pip install {package}: ✓ success"
+            else:
+                return f"✗ pip install {package}: {result.get('stderr', 'failed')}"
+
+        elif action == "web_request":
+            url = attrs.get("url", "")
+            if not url:
+                return "✗ shell(web_request): no url specified"
+            result = se.web_request(url)
+            if result["success"]:
+                output = result["stdout"].strip()[:2000]
+                return f"🌐 {url}:\n```\n{output}\n```"
+            else:
+                return f"✗ web_request({url}): {result.get('stderr', 'failed')}"
+
+        else:
+            return f"✗ Unknown shell action: {action}"
 
     def _process_bf_directives(self, response_text: str) -> str:
         """Intercept <BAYESIAN_FUZZY_ENGINE> tags in LLM response and execute the real engine.
