@@ -3972,6 +3972,84 @@ async def shell_python(req: ShellPythonRequest):
     return result
 
 
+
+# ══════════════════════════════════════════════════════════════
+#  AGENT SPAWNER — Sub-agent delegation
+# ══════════════════════════════════════════════════════════════
+
+
+@app.get("/xdart/agents/status")
+async def agent_spawner_status():
+    """Get Agent Spawner status, stats, and recent audit log."""
+    if not _framework or not _framework.agent_spawner:
+        return {"status": "disabled", "message": "Agent Spawner not active"}
+    sp = _framework.agent_spawner
+    return {
+        "status": "enabled",
+        "stats": sp.get_stats(),
+        "audit_log": sp.get_audit_log(limit=20),
+    }
+
+
+class AgentSpawnRequest(BaseModel):
+    role: str = Field(default="researcher", description="Agent role: researcher, analyst, critic, summarizer, translator, coder, fact_checker, scenario_builder, custom")
+    task: str = Field(description="The task for the sub-agent")
+    context: str = Field(default="", description="Additional context")
+    custom_prompt: str = Field(default="", description="Custom system prompt (for role=custom)")
+    max_tokens: int = Field(default=4000, description="Max tokens for response", ge=100, le=8000)
+    temperature: float = Field(default=0.5, description="LLM temperature", ge=0.0, le=1.5)
+
+
+@app.post("/xdart/agents/spawn")
+async def agent_spawn(req: AgentSpawnRequest):
+    """Spawn a single sub-agent and return its result."""
+    if not _framework or not _framework.agent_spawner:
+        raise HTTPException(status_code=503, detail="Agent Spawner is disabled")
+    result = _framework.agent_spawner.spawn(
+        role=req.role, task=req.task, context=req.context,
+        custom_prompt=req.custom_prompt, max_tokens=req.max_tokens,
+        temperature=req.temperature,
+    )
+    return {
+        "agent_id": result.agent_id,
+        "role": result.role,
+        "success": result.success,
+        "output": result.output,
+        "duration_ms": result.duration_ms,
+        "error": result.error,
+    }
+
+
+class AgentSpawnParallelRequest(BaseModel):
+    agents: list[dict] = Field(description="List of agent specs: [{role, task, context?, custom_prompt?, max_tokens?, temperature?}]")
+    timeout: int = Field(default=120, description="Overall timeout in seconds", ge=10, le=600)
+
+
+@app.post("/xdart/agents/spawn-parallel")
+async def agent_spawn_parallel(req: AgentSpawnParallelRequest):
+    """Spawn multiple sub-agents in parallel and return all results."""
+    if not _framework or not _framework.agent_spawner:
+        raise HTTPException(status_code=503, detail="Agent Spawner is disabled")
+    if not req.agents:
+        raise HTTPException(status_code=400, detail="No agents specified")
+    results = _framework.agent_spawner.spawn_parallel(req.agents, timeout=req.timeout)
+    return {
+        "count": len(results),
+        "successful": sum(1 for r in results if r.success),
+        "results": [
+            {
+                "agent_id": r.agent_id,
+                "role": r.role,
+                "success": r.success,
+                "output": r.output,
+                "duration_ms": r.duration_ms,
+                "error": r.error,
+            }
+            for r in results
+        ],
+    }
+
+
 @app.get("/static/{filename}")
 async def serve_static(filename: str):
     """Serve static assets (page-agent.js etc.)."""

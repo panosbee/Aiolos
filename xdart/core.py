@@ -33,6 +33,7 @@ from xdart.config import (
     CURIOSITY_JOURNAL_PATH, CURIOSITY_STATE_PATH,
     LOGIC_SANDBOX_ENABLED, PRINCIPLE_REGISTRY_ENABLED,
     SHELL_EXECUTOR_ENABLED, SHELL_EXECUTOR_TIMEOUT,
+    AGENT_SPAWNER_ENABLED, AGENT_SPAWNER_MAX_CONCURRENT, AGENT_SPAWNER_TIMEOUT,
 )
 from xdart.core_change_logger import CoreChangeLogger
 from xdart.llm import LLMClient
@@ -342,6 +343,21 @@ class XDARTFramework:
                 logger.info("Shell Executor enabled (cwd=%s, timeout=%ds)", BASE_DIR, SHELL_EXECUTOR_TIMEOUT)
             except Exception as e:
                 logger.warning("Shell Executor init failed: %s", e)
+
+        # ── Agent Spawner (Αίολος' ability to delegate to sub-agents) ──
+        self.agent_spawner = None
+        if AGENT_SPAWNER_ENABLED:
+            try:
+                from xdart.tools.agent_spawner import AgentSpawner
+                self.agent_spawner = AgentSpawner(
+                    llm_client=self.llm,
+                    max_concurrent=AGENT_SPAWNER_MAX_CONCURRENT,
+                    default_timeout=AGENT_SPAWNER_TIMEOUT,
+                )
+                logger.info("Agent Spawner enabled (max_concurrent=%d, timeout=%ds)",
+                            AGENT_SPAWNER_MAX_CONCURRENT, AGENT_SPAWNER_TIMEOUT)
+            except Exception as e:
+                logger.warning("Agent Spawner init failed: %s", e)
 
         logger.info(
             "XDART-Φ initialized (model=%s, memories=%d, prophecies=%d)",
@@ -3413,6 +3429,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if self.shell_executor:
             context_parts.append(self.shell_executor.to_context_string())
 
+        # Agent Spawner status
+        if self.agent_spawner:
+            context_parts.append(self.agent_spawner.to_context_string())
+
         full_context = "\n\n".join(context_parts)
 
         # ── Phase 2: Route decision ──
@@ -3574,7 +3594,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"Speak Greek when the user speaks Greek. "
             f"Reference specific data from RETRIEVED CONTEXT. "
             f"Never fabricate data not in your context.\n"
-            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, <MONGO_ACTION>, and <SHELL_ACTION> tags when appropriate (same syntax as non-streaming)."
+            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, <MONGO_ACTION>, <SHELL_ACTION>, and <SPAWN_AGENT> tags when appropriate (same syntax as non-streaming)."
         )
 
         if proactive:
@@ -3618,6 +3638,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         response_text = self._process_visual_directives(response_text)
         response_text = self._process_mongo_directives(response_text)
         response_text = self._process_shell_directives(response_text)
+        response_text = self._process_agent_directives(response_text)
         response_text = self._process_bf_directives(response_text)
         response_text = self._strip_internal_operation_leaks(response_text)
 
@@ -3897,6 +3918,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # 19. Shell Executor status
         if self.shell_executor:
             context_parts.append(self.shell_executor.to_context_string())
+
+        # 20. Agent Spawner status
+        if self.agent_spawner:
+            context_parts.append(self.agent_spawner.to_context_string())
 
         full_context = "\n\n".join(context_parts)
 
@@ -4299,6 +4324,37 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "IMPORTANT: Results appear in the next context cycle. Use wisely — don't spam commands.\n\n")
                if self.shell_executor else "")
 
+            + (("YOUR AGENT SPAWNER TOOL (you CAN delegate subtasks to specialized sub-agents):\n"
+               "You can spawn lightweight sub-agents — specialized LLM calls that work on focused subtasks.\n"
+               "Each agent has a role (researcher, analyst, critic, etc.) and returns structured results.\n"
+               "Embed <SPAWN_AGENT> directives in your response — the system executes them and returns results.\n\n"
+               "SINGLE AGENT:\n"
+               "  <SPAWN_AGENT role=\"researcher\" task=\"Find recent developments on Iran nuclear program\" />\n"
+               "  <SPAWN_AGENT role=\"analyst\" task=\"Assess economic impact of new EU sanctions on Russia\" />\n"
+               "  <SPAWN_AGENT role=\"critic\" task=\"Challenge the assumption that NATO expansion deters Russia\" />\n"
+               "  <SPAWN_AGENT role=\"summarizer\" task=\"Summarize the following text: ...\" />\n"
+               "  <SPAWN_AGENT role=\"translator\" task=\"Translate to English: Η γεωπολιτική κατάσταση...\" />\n"
+               "  <SPAWN_AGENT role=\"coder\" task=\"Write a Python function that calculates compound interest\" />\n"
+               "  <SPAWN_AGENT role=\"fact_checker\" task=\"Verify: Iran has 60% enriched uranium stockpile of 100kg\" />\n"
+               "  <SPAWN_AGENT role=\"scenario_builder\" task=\"Build scenarios for Taiwan strait crisis in 2026\" />\n\n"
+               "WITH ADDITIONAL CONTEXT:\n"
+               "  <SPAWN_AGENT role=\"analyst\" task=\"Analyze this data\" context=\"GDP growth: 2.1%, Inflation: 4.5%...\" />\n\n"
+               "CUSTOM AGENT (your own role definition):\n"
+               "  <SPAWN_AGENT role=\"custom\" task=\"...\" custom_prompt=\"You are a military logistics expert...\" />\n\n"
+               "AVAILABLE ROLES: researcher, analyst, critic, summarizer, translator, coder, fact_checker, scenario_builder, custom\n\n"
+               "WHEN TO USE:\n"
+               "- You need deep research on a sub-topic while answering a broader question → researcher\n"
+               "- You want a structured analytical assessment → analyst\n"
+               "- You want to stress-test your own analysis → critic\n"
+               "- You need to compress a lot of information → summarizer\n"
+               "- User asks for translation → translator\n"
+               "- User asks for code → coder\n"
+               "- You want to verify claims → fact_checker\n"
+               "- You need alternative scenarios → scenario_builder\n"
+               "IMPORTANT: Each agent is a separate LLM call. Use for substantial subtasks, not trivial ones.\n"
+               "Multiple <SPAWN_AGENT> tags in one response run IN PARALLEL automatically.\n\n")
+               if self.agent_spawner else "")
+
             + "\n"
 
             + "YOUR MEMORY STORAGE TOOL (you CAN actively save to your memory):\n"
@@ -4466,6 +4522,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # Step 2.6c: Process Shell directives — execute local commands
         response_text = self._process_shell_directives(response_text)
+
+        # Step 2.6d: Process Agent Spawner directives — delegate to sub-agents
+        response_text = self._process_agent_directives(response_text)
 
         # Step 2.7: Process BFE directives — intercept and execute real BF engine  
         response_text = self._process_bf_directives(response_text)
@@ -5520,6 +5579,101 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         else:
             return f"✗ Unknown shell action: {action}"
+
+    # ── Agent Spawner directive processing ──────────────────────────
+    def _process_agent_directives(self, response_text: str) -> str:
+        """Extract and execute <SPAWN_AGENT> directives from the LLM response.
+
+        Αίολος can delegate subtasks to specialized sub-agents:
+          <SPAWN_AGENT role="researcher" task="Find recent Iran nuclear developments" />
+          <SPAWN_AGENT role="analyst" task="Assess economic impact" context="GDP=2.1%..." />
+          <SPAWN_AGENT role="critic" task="Challenge this: NATO expansion deters Russia" />
+          <SPAWN_AGENT role="custom" task="..." custom_prompt="You are a military expert..." />
+
+        Multiple SPAWN_AGENT tags in one response are executed IN PARALLEL.
+        Returns the response text with directives replaced by agent results.
+        """
+        import re
+
+        if not self.agent_spawner:
+            # Strip tags even without agent spawner
+            response_text = re.sub(
+                r'<SPAWN_AGENT\b[^>]*>.*?</SPAWN_AGENT\s*>',
+                '', response_text, flags=re.DOTALL | re.IGNORECASE,
+            )
+            response_text = re.sub(
+                r'<SPAWN_AGENT\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        # ── Self-closing attribute-style ──
+        pattern = re.compile(
+            r'<SPAWN_AGENT\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        # Collect all agent specs first
+        agent_specs = []
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            role = attrs.get("role", "researcher").strip().lower()
+            task = attrs.get("task", "").strip()
+            if not task:
+                continue
+            agent_specs.append({
+                "role": role,
+                "task": task,
+                "context": attrs.get("context", ""),
+                "custom_prompt": attrs.get("custom_prompt", ""),
+                "max_tokens": int(attrs.get("max_tokens", "4000")),
+                "temperature": float(attrs.get("temperature", "0.5")),
+            })
+
+        if not agent_specs:
+            # No valid agents found, just strip any broken tags
+            clean = pattern.sub("", response_text)
+            clean = re.sub(r'<SPAWN_AGENT\b.*$', '', clean, flags=re.DOTALL).rstrip()
+            return re.sub(r'\n{3,}', '\n\n', clean).strip()
+
+        # Execute — if single agent, use spawn(); if multiple, use spawn_parallel()
+        logger.info("[Chat.AgentSpawner] Spawning %d sub-agent(s)", len(agent_specs))
+
+        if len(agent_specs) == 1:
+            spec = agent_specs[0]
+            results = [self.agent_spawner.spawn(**spec)]
+        else:
+            results = self.agent_spawner.spawn_parallel(agent_specs)
+
+        # Format results
+        confirmations = []
+        for r in results:
+            if r.success:
+                header = f"🤖 **Sub-agent ({r.role})** — {r.task[:80]}"
+                confirmations.append(f"{header}\n{r.output}")
+                logger.info("[Chat.AgentSpawner] %s (%s) completed in %dms",
+                            r.agent_id, r.role, r.duration_ms)
+            else:
+                confirmations.append(f"✗ Sub-agent ({r.role}) failed: {r.error}")
+                logger.warning("[Chat.AgentSpawner] %s (%s) failed: %s",
+                               r.agent_id, r.role, r.error)
+
+        # Strip all SPAWN_AGENT tags
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(
+            r'<SPAWN_AGENT\b[^>]*>.*?</SPAWN_AGENT\s*>',
+            '', clean_text, flags=re.DOTALL | re.IGNORECASE,
+        )
+        clean_text = re.sub(r'<SPAWN_AGENT\b.*$', '', clean_text, flags=re.DOTALL).rstrip()
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            separator = "\n\n---\n\n"
+            clean_text += separator + separator.join(confirmations)
+
+        logger.info("[Chat.AgentSpawner] Processed %d agent directives", len(results))
+        return clean_text
 
     def _process_bf_directives(self, response_text: str) -> str:
         """Intercept <BAYESIAN_FUZZY_ENGINE> tags in LLM response and execute the real engine.

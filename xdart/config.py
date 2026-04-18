@@ -134,6 +134,13 @@ META_ORCHESTRATOR_ENABLED: bool = os.getenv("META_ORCHESTRATOR_ENABLED", "true")
 SHELL_EXECUTOR_ENABLED: bool = os.getenv("SHELL_EXECUTOR_ENABLED", "true").lower() in ("true", "1", "yes")
 SHELL_EXECUTOR_TIMEOUT: int = int(os.getenv("SHELL_EXECUTOR_TIMEOUT", "30"))
 
+# ── Agent Spawner (Αίολος' ability to delegate to sub-agents) ──
+# When enabled, Αίολος can spawn specialized sub-agents (researcher, analyst, critic, etc.)
+# that run as parallel LLM calls and return results to the main conversation.
+AGENT_SPAWNER_ENABLED: bool = os.getenv("AGENT_SPAWNER_ENABLED", "true").lower() in ("true", "1", "yes")
+AGENT_SPAWNER_MAX_CONCURRENT: int = int(os.getenv("AGENT_SPAWNER_MAX_CONCURRENT", "5"))
+AGENT_SPAWNER_TIMEOUT: int = int(os.getenv("AGENT_SPAWNER_TIMEOUT", "60"))
+
 # ── Proactive Communication Engine ──
 # When enabled, Αίολος can initiate contact with the user autonomously.
 # Evaluates findings from curiosity, perception, prophecy resolution for importance.
