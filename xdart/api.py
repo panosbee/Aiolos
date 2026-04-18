@@ -43,7 +43,7 @@ except ImportError:
     ELEVENLABS_API_KEY = ""
     ELEVENLABS_VOICE_ID = ""
     ELEVENLABS_MODEL_TTS = "eleven_v3"
-    ELEVENLABS_MODEL_TTS_WS = "eleven_v3"
+    ELEVENLABS_MODEL_TTS_WS = "eleven_flash_v2_5"
     ELEVENLABS_MODEL_STT = "scribe_v2"
 try:
     from xdart.config import PROACTIVE_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
