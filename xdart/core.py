@@ -3083,7 +3083,7 @@ Decide:
 IMPORTANT — CAPABILITIES AVAILABLE IN ALL MODES (respond, web_respond, pipeline):
 The system has these capabilities accessible in chat:
 - Logic Sandbox: Self-modification system with modifiable functions and proposals. Status loaded at chat time.
-- Principle Registry: Dynamic operating principles learned from experience. Status loaded at chat time.
+- Principle Registry: Dynamic operating principles learned from experience, with temporal awareness (principles can decay, expire, or be time-bound). Status loaded at chat time.
 - Bayesian-Fuzzy Templates: Custom domain templates for quantitative risk analysis. Template list loaded at chat time.
 - Creative Synthesis: Domain-fusion engine that combines cross-domain analogies into novel concepts,
   bridging metaphors, and emergent hypotheses. Triggers automatically when you discuss synthesis,
@@ -3410,7 +3410,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if self.principle_registry:
             try:
                 pr_stats = self.principle_registry.get_stats()
-                context_parts.append(f"PRINCIPLE REGISTRY STATUS: {pr_stats.get('active', 0)} active, {pr_stats.get('proposed', 0)} proposed")
+                pr_status = f"PRINCIPLE REGISTRY STATUS: {pr_stats.get('active', 0)} active, {pr_stats.get('proposed', 0)} proposed"
+                if pr_stats.get('temporal_principles', 0):
+                    pr_status += f", {pr_stats['temporal_principles']} temporal ({pr_stats.get('decaying', 0)} decaying)"
+                context_parts.append(pr_status)
             except Exception:
                 pass
 
@@ -3829,7 +3832,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception:
                 pass
 
-        # 13. Principle Registry status (active principles, pending)
+        # 13. Principle Registry status (active principles, pending, temporal awareness)
         if self.principle_registry:
             try:
                 pr_stats = self.principle_registry.get_stats()
@@ -3838,16 +3841,20 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 pr_lines = [
                     f"PRINCIPLE REGISTRY STATUS:",
                     f"  Active: {pr_stats.get('active', 0)}, Proposed: {pr_stats.get('proposed', 0)}, "
-                    f"Retired: {pr_stats.get('retired', 0)}",
+                    f"Retired: {pr_stats.get('retired', 0)}, "
+                    f"Temporal: {pr_stats.get('temporal_principles', 0)} ({pr_stats.get('decaying', 0)} decaying)",
                 ]
                 if pr_active:
                     pr_lines.append("  Active principles:")
                     for p in pr_active[:5]:
                         eff = p.get('avg_effectiveness')
                         eff_str = f"{eff:.0%}" if eff is not None else "pending"
+                        temporal_info = ""
+                        if p.get('temporal_scope', 'permanent') != 'permanent':
+                            temporal_info = f" ⏱{p.get('temporal_status', '')} scope={p['temporal_scope']}"
                         pr_lines.append(
                             f"    - {p.get('title', p.get('id', '?'))}: "
-                            f"{p.get('principle_text', '')[:120]} (effectiveness={eff_str})"
+                            f"{p.get('principle_text', '')[:120]} (effectiveness={eff_str}{temporal_info})"
                         )
                 if pr_pending:
                     pr_lines.append(f"  Pending approval: {len(pr_pending)} principles")

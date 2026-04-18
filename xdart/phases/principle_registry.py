@@ -162,6 +162,13 @@ class DynamicPrinciple:
     born_from_pattern: str = ""      # The specific pattern that triggered it
     related_axiom: str = ""          # If related to a static axiom (e.g. "AX-08")
 
+    # Temporal awareness — principles can have a lifespan and decay
+    temporal_scope: str = "permanent"   # "permanent" | "seasonal" | "event_bound" | "decaying"
+    half_life_days: float | None = None # For "decaying" scope: days until effectiveness halves
+    valid_until: str | None = None      # ISO date — principle expires after this date
+    temporal_context: str = ""          # Human-readable description of when/why this is time-sensitive
+    last_decay_check: str | None = None # Tracks when decay was last applied
+
     @property
     def avg_effectiveness(self) -> float | None:
         if len(self.effectiveness_scores) < MIN_USES_FOR_EVAL:
@@ -183,9 +190,75 @@ class DynamicPrinciple:
             return False
         return avg >= STRENGTHENING_THRESHOLD
 
+    @property
+    def is_expired(self) -> bool:
+        """Check if the principle has passed its valid_until date."""
+        if not self.valid_until:
+            return False
+        try:
+            expiry = datetime.fromisoformat(self.valid_until)
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) > expiry
+        except (ValueError, TypeError):
+            return False
+
+    @property
+    def temporal_decay_factor(self) -> float:
+        """Calculate decay factor based on half-life.
+
+        Returns 1.0 for permanent principles, 0.0-1.0 for decaying ones.
+        Uses exponential decay: factor = 0.5 ^ (age_days / half_life_days)
+        """
+        if self.temporal_scope != "decaying" or not self.half_life_days:
+            return 1.0
+        if not self.activated_at:
+            return 1.0
+        try:
+            import math
+            activated = datetime.fromisoformat(self.activated_at)
+            if activated.tzinfo is None:
+                activated = activated.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - activated).total_seconds() / 86400
+            return math.pow(0.5, age_days / self.half_life_days)
+        except (ValueError, TypeError):
+            return 1.0
+
+    @property
+    def effective_strength(self) -> float:
+        """Effective strength = avg_effectiveness × temporal_decay_factor.
+
+        This is the real-time strength of the principle considering both
+        its track record and its temporal decay.
+        """
+        avg = self.avg_effectiveness
+        base = avg if avg is not None else 0.5
+        return base * self.temporal_decay_factor
+
+    @property
+    def temporal_status(self) -> str:
+        """Human-readable temporal status."""
+        if self.is_expired:
+            return "expired"
+        if self.temporal_scope == "permanent":
+            return "permanent"
+        factor = self.temporal_decay_factor
+        if factor > 0.75:
+            return "fresh"
+        elif factor > 0.5:
+            return "maturing"
+        elif factor > 0.25:
+            return "fading"
+        else:
+            return "near-expired"
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["avg_effectiveness"] = self.avg_effectiveness
+        d["effective_strength"] = self.effective_strength
+        d["temporal_decay_factor"] = self.temporal_decay_factor
+        d["temporal_status"] = self.temporal_status
+        d["is_expired"] = self.is_expired
         return d
 
     @classmethod
@@ -236,12 +309,20 @@ A good success-born principle:
   ✓ Has clear trigger conditions (when this approach is appropriate)
   ✓ Includes a concrete PROCEDURE
   ✓ Can be applied to NEW problems (not only the same kind)
+  ✓ Specifies temporal scope — is this PERMANENT wisdom or TIME-BOUND?
 
 Examples of good wisdom-principles:
   - "When signals come from 3+ independent domains, treat convergence as stronger \
 evidence than any single high-confidence signal" (born from cross-domain success)
   - "When historical parallels diverge from current trajectory, the divergence \
 itself is more informative than the parallel" (born from scenario success)
+
+=== TEMPORAL AWARENESS ===
+Principles can have different temporal scopes:
+  - "permanent": Timeless wisdom that always applies (default)
+  - "seasonal": Applies during a recurring period (e.g. "election cycles", "earnings season")
+  - "event_bound": Applies only during a specific ongoing event
+  - "decaying": Relevance decreases over time — set half_life_days
 
 Respond ONLY with valid JSON:
 {{
@@ -259,7 +340,11 @@ Respond ONLY with valid JSON:
         "measurement_metric": "How to measure",
         "born_from": "success_extraction",
         "born_from_pattern": "The specific success pattern that triggered this",
-        "related_axiom": "AX-XX if related, else empty string"
+        "related_axiom": "AX-XX if related, else empty string",
+        "temporal_scope": "permanent|seasonal|event_bound|decaying",
+        "temporal_context": "Why time-sensitive, or empty string if permanent",
+        "half_life_days": null,
+        "valid_until": null
     }},
     "confidence": 0.0-1.0
 }}
@@ -304,12 +389,24 @@ A good principle:
   ✓ Includes a concrete PROCEDURE (not just "be careful")
   ✓ Has measurable expected effect
   ✓ Targets specific pipeline phases
+  ✓ Specifies temporal scope — is this PERMANENT wisdom or TIME-BOUND?
 
 A bad principle:
   ✗ Too vague ("be more careful with predictions")
   ✗ Duplicates existing axiom or principle
   ✗ Based on single event (not a pattern)
   ✗ Not falsifiable (always applies, no exceptions)
+
+=== TEMPORAL AWARENESS ===
+Principles can have different temporal scopes:
+  - "permanent": Timeless wisdom that always applies (default)
+  - "seasonal": Applies during a recurring period (e.g. "election cycles", "earnings season")
+  - "event_bound": Applies only during a specific ongoing event (e.g. "Ukraine-Russia conflict phase")
+  - "decaying": Relevance decreases over time — set half_life_days (how many days until half as relevant)
+If the principle is time-bound, also set:
+  - temporal_context: Why it's time-sensitive (human-readable)
+  - valid_until: ISO date when the principle expires (optional, for event_bound)
+  - half_life_days: For "decaying" scope — number of days until relevance halves
 
 Respond ONLY with valid JSON:
 {{
@@ -327,7 +424,11 @@ Respond ONLY with valid JSON:
         "measurement_metric": "How to measure",
         "born_from": "introspection|wisdom_tracker|brier_pattern|self_evolution|curiosity",
         "born_from_pattern": "The specific pattern that triggered this",
-        "related_axiom": "AX-XX if related, else empty string"
+        "related_axiom": "AX-XX if related, else empty string",
+        "temporal_scope": "permanent|seasonal|event_bound|decaying",
+        "temporal_context": "Why time-sensitive, or empty string if permanent",
+        "half_life_days": null,
+        "valid_until": null
     }},
     "confidence": 0.0-1.0
 }}
@@ -648,6 +749,10 @@ class PrincipleRegistry:
             born_from=p_data.get("born_from", "introspection"),
             born_from_pattern=p_data.get("born_from_pattern", ""),
             related_axiom=p_data.get("related_axiom", ""),
+            temporal_scope=p_data.get("temporal_scope", "permanent"),
+            half_life_days=p_data.get("half_life_days"),
+            valid_until=p_data.get("valid_until"),
+            temporal_context=p_data.get("temporal_context", ""),
         )
 
         self._principles[principle_id] = principle
@@ -801,6 +906,10 @@ class PrincipleRegistry:
             born_from="success_extraction",
             born_from_pattern=p_data.get("born_from_pattern", ""),
             related_axiom=p_data.get("related_axiom", ""),
+            temporal_scope=p_data.get("temporal_scope", "permanent"),
+            half_life_days=p_data.get("half_life_days"),
+            valid_until=p_data.get("valid_until"),
+            temporal_context=p_data.get("temporal_context", ""),
         )
 
         self._principles[principle_id] = principle
@@ -968,9 +1077,10 @@ class PrincipleRegistry:
         return score
 
     def auto_retire(self) -> list[str]:
-        """Auto-retire principles that consistently underperform.
+        """Auto-retire principles that consistently underperform or have expired.
 
         Uses philosophy-aware retirement threshold.
+        Also retires expired and fully-decayed temporal principles.
         Returns list of retired principle IDs.
         """
         retire_threshold = self._philosophy.get("retirement_threshold", RETIREMENT_THRESHOLD)
@@ -978,19 +1088,55 @@ class PrincipleRegistry:
 
         retired = []
         for pid, p in self._principles.items():
-            if p.status not in ("active", "weakened", "probation"):
+            if p.status not in ("active", "weakened", "probation", "strengthened"):
+                continue
+
+            # Temporal retirement: expired or fully decayed
+            if p.is_expired or p.temporal_decay_factor < 0.05:
+                p.status = "retired"
+                p.retired_at = datetime.now(timezone.utc).isoformat()
+                reason = "expired" if p.is_expired else f"temporal decay (factor={p.temporal_decay_factor:.3f})"
+                p.retirement_reason = (
+                    f"Auto-retired: {reason}. "
+                    f"Temporal scope: {p.temporal_scope}"
+                )
+                if p.temporal_context:
+                    p.retirement_reason += f" — context: {p.temporal_context}"
+                retired.append(pid)
+
+                self._journal({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "temporal_retirement",
+                    "principle_id": pid,
+                    "temporal_scope": p.temporal_scope,
+                    "temporal_decay_factor": p.temporal_decay_factor,
+                    "valid_until": p.valid_until,
+                    "philosophy_mode": self._philosophy_mode,
+                })
+
+                logger.info(
+                    "[PrincipleRegistry] TEMPORAL-RETIRED %s: %s (%s, decay=%.3f)",
+                    pid, p.title, reason, p.temporal_decay_factor,
+                )
+                continue
+
+            # Effectiveness-based retirement
+            if p.status == "retired":
                 continue
             avg = p.avg_effectiveness
             if avg is None:
                 continue
             if len(p.effectiveness_scores) < min_uses:
                 continue
-            if avg < retire_threshold:
+            # Use effective_strength (includes decay) for the threshold check
+            effective = p.effective_strength
+            if effective < retire_threshold:
                 p.status = "retired"
                 p.retired_at = datetime.now(timezone.utc).isoformat()
                 p.retirement_reason = (
-                    f"Auto-retired: avg effectiveness {avg:.2f} < {retire_threshold} "
-                    f"(philosophy={self._philosophy_mode})"
+                    f"Auto-retired: effective_strength {effective:.2f} < {retire_threshold} "
+                    f"(avg={avg:.2f}, decay={p.temporal_decay_factor:.2f}, "
+                    f"philosophy={self._philosophy_mode})"
                 )
                 retired.append(pid)
 
@@ -999,14 +1145,16 @@ class PrincipleRegistry:
                     "type": "auto_retirement",
                     "principle_id": pid,
                     "avg_effectiveness": avg,
+                    "effective_strength": effective,
+                    "temporal_decay_factor": p.temporal_decay_factor,
                     "application_count": p.application_count,
                     "philosophy_mode": self._philosophy_mode,
                     "retirement_threshold": retire_threshold,
                 })
 
                 logger.info(
-                    "[PrincipleRegistry] AUTO-RETIRED %s: %s (avg=%.2f, uses=%d, threshold=%.2f)",
-                    pid, p.title, avg, p.application_count, retire_threshold,
+                    "[PrincipleRegistry] AUTO-RETIRED %s: %s (effective=%.2f, avg=%.2f, decay=%.2f, uses=%d, threshold=%.2f)",
+                    pid, p.title, effective, avg, p.temporal_decay_factor, p.application_count, retire_threshold,
                 )
 
         if retired:
@@ -1020,27 +1168,36 @@ class PrincipleRegistry:
     def get_active_for_phase(self, phase: str, domain: str | None = None) -> list[DynamicPrinciple]:
         """Get active principles applicable to a specific phase.
 
+        Temporal-aware: expired principles are excluded, decaying ones are
+        ranked by effective_strength (effectiveness × temporal_decay_factor).
+
         Args:
             phase: Pipeline phase name (e.g. "ontology", "scenario_genesis")
             domain: If given, filter by domain too
 
         Returns:
-            List of matching active principles, sorted by avg effectiveness (desc)
+            List of matching active principles, sorted by effective_strength (desc)
         """
         results = []
         for p in self._principles.values():
             if p.status not in ("active", "strengthened", "probation"):
+                continue
+            # Temporal gating: skip expired principles
+            if p.is_expired:
+                continue
+            # Skip principles whose decay has made them nearly irrelevant
+            if p.temporal_decay_factor < 0.1:
                 continue
             if phase in p.applies_to_phases:
                 if domain and p.domain != domain and p.domain != "META" and p.domain != "EPISTEMIC":
                     continue
                 results.append(p)
 
-        # Sort: strengthened first, then by effectiveness
+        # Sort: strengthened first, then by effective_strength (includes temporal decay)
         def sort_key(p):
-            avg = p.avg_effectiveness or 0.5
+            strength = p.effective_strength
             boost = 0.1 if p.status == "strengthened" else 0
-            return -(avg + boost)
+            return -(strength + boost)
 
         results.sort(key=sort_key)
         return results
@@ -1059,11 +1216,18 @@ class PrincipleRegistry:
         for p in principles:
             strength = "★" if p.status == "strengthened" else "⟐" if p.status == "probation" else ""
             avg = f" (effectiveness: {p.avg_effectiveness:.0%})" if p.avg_effectiveness is not None else ""
-            lines.append(f"[{p.id}] {strength}{p.title}{avg}")
+            temporal = ""
+            if p.temporal_scope != "permanent":
+                temporal = f" ⏱{p.temporal_status}"
+                if p.temporal_context:
+                    temporal += f" ({p.temporal_context})"
+            lines.append(f"[{p.id}] {strength}{p.title}{avg}{temporal}")
             lines.append(f"  Principle: {p.principle_text}")
             lines.append(f"  Procedure: {p.procedure}")
             lines.append(f"  Applies when: {', '.join(p.trigger_conditions)}")
             lines.append(f"  Does NOT apply when: {', '.join(p.non_applicable_conditions)}")
+            if p.temporal_scope != "permanent":
+                lines.append(f"  Temporal: scope={p.temporal_scope}, decay={p.temporal_decay_factor:.2f}, strength={p.effective_strength:.2f}")
             lines.append("")
 
         return "\n".join(lines)
@@ -1078,7 +1242,7 @@ class PrincipleRegistry:
         return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
 
     def get_stats(self) -> dict:
-        """Summary statistics including philosophy mode."""
+        """Summary statistics including philosophy mode and temporal awareness."""
         total = len(self._principles)
         active = sum(1 for p in self._principles.values() if p.status == "active")
         strengthened = sum(1 for p in self._principles.values() if p.status == "strengthened")
@@ -1086,6 +1250,13 @@ class PrincipleRegistry:
         retired = sum(1 for p in self._principles.values() if p.status == "retired")
         weakened = sum(1 for p in self._principles.values() if p.status == "weakened")
         probation = sum(1 for p in self._principles.values() if p.status == "probation")
+
+        # Temporal stats
+        temporal = sum(1 for p in self._principles.values()
+                       if p.temporal_scope != "permanent" and p.status not in ("retired",))
+        expired = sum(1 for p in self._principles.values() if p.is_expired)
+        decaying = sum(1 for p in self._principles.values()
+                       if p.temporal_scope == "decaying" and p.status not in ("retired",))
 
         avg_effectiveness_all = None
         scored = [p.avg_effectiveness for p in self._principles.values()
@@ -1101,6 +1272,9 @@ class PrincipleRegistry:
             "weakened": weakened,
             "retired": retired,
             "probation": probation,
+            "temporal_principles": temporal,
+            "expired": expired,
+            "decaying": decaying,
             "avg_effectiveness": avg_effectiveness_all,
             "pending_approval": proposed,
             "philosophy_mode": self._philosophy_mode,
@@ -1156,18 +1330,20 @@ class PrincipleRegistry:
         return "\n".join(lines)
 
     def to_context_string(self) -> str:
-        """Full context for self-evolution prompt."""
+        """Full context for self-evolution prompt — includes temporal awareness."""
         stats = self.get_stats()
         lines = [
             f"Dynamic Principle Registry: {stats['active']} active, "
             f"{stats['strengthened']} strengthened, {stats['proposed']} proposed, "
-            f"{stats.get('probation', 0)} probation",
+            f"{stats.get('probation', 0)} probation, "
+            f"{stats.get('temporal_principles', 0)} temporal, {stats.get('decaying', 0)} decaying",
             f"  Philosophy mode: {self._philosophy_mode} — {self._philosophy.get('description', '')}",
         ]
 
         for p in self._principles.values():
             if p.status in ("active", "strengthened"):
                 avg = f" (avg={p.avg_effectiveness:.2f})" if p.avg_effectiveness is not None else ""
-                lines.append(f"  [{p.id}] {p.title}{avg}: {p.principle_text[:100]}...")
+                temporal = f" ⏱{p.temporal_status}" if p.temporal_scope != "permanent" else ""
+                lines.append(f"  [{p.id}] {p.title}{avg}{temporal}: {p.principle_text[:100]}...")
 
         return "\n".join(lines)
