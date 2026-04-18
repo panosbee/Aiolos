@@ -115,8 +115,11 @@ class LLMClient:
         logger.info("LLMClient initialized — provider=%s, model=%s, mode=%s, thinking=%s, base_url=%s",
                      provider, self.model, mode, thinking_str, self._base_url)
 
-        # Shared thread pool for hard-timeout API calls (max 4 concurrent)
-        self._timeout_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-timeout")
+        # Shared thread pool for hard-timeout API calls
+        # Primary pool: enough workers so concurrent background calls don't starve
+        self._timeout_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-primary")
+        # Separate fallback pool: NEVER blocked by stuck primary threads
+        self._fallback_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-fallback")
 
         # ── Fallback LLM client (OpenAI) ──
         self._fallback_client = None
@@ -133,11 +136,13 @@ class LLMClient:
     # Hard wall-clock timeout for API calls.
     # httpx read-timeout resets on every byte so DeepSeek keepalives bypass it.
     # This wrapper gives an absolute ceiling regardless of network activity.
-    _API_CALL_TIMEOUT = 120  # seconds — hard wall-clock limit
+    _API_CALL_TIMEOUT = 180  # seconds — hard wall-clock limit for primary
+    _FALLBACK_TIMEOUT = 60   # seconds — shorter ceiling for fallback (faster API)
 
     def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
         """Run client.chat.completions.create with a hard wall-clock timeout.
-        If primary fails and a fallback client exists, retry on OpenAI."""
+        If primary fails and a fallback client exists, retry on OpenAI.
+        Uses separate thread pools so primary timeouts cannot block fallback."""
         # ── Try primary (DeepSeek) ──
         future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
         try:
@@ -151,25 +156,25 @@ class LLMClient:
         except Exception as exc:
             logger.error("[%s] Primary API error: %s", label, exc)
 
-        # ── Fallback to OpenAI ──
+        # ── Fallback to OpenAI (separate pool, shorter timeout) ──
         if not self._fallback_client:
             raise TimeoutError(f"{label}: Primary failed and no fallback configured")
 
         logger.info("[%s] Falling back to OpenAI (%s)", label, self._fallback_model)
         fb_kwargs = dict(kwargs)
         fb_kwargs["model"] = self._fallback_model
-        # Remove DeepSeek-specific params
+        # Remove DeepSeek-specific params that OpenAI rejects
         fb_kwargs.pop("extra_body", None)
         # OpenAI uses temperature normally
         if "temperature" not in fb_kwargs:
             fb_kwargs["temperature"] = 0.7
 
-        fb_future = self._timeout_pool.submit(self._fallback_client.chat.completions.create, **fb_kwargs)
+        fb_future = self._fallback_pool.submit(self._fallback_client.chat.completions.create, **fb_kwargs)
         try:
-            return fb_future.result(timeout=self._API_CALL_TIMEOUT)
+            return fb_future.result(timeout=self._FALLBACK_TIMEOUT)
         except FuturesTimeout:
             fb_future.cancel()
-            logger.error("[%s] Fallback also timed out (%ds)", label, self._API_CALL_TIMEOUT)
+            logger.error("[%s] Fallback also timed out (%ds)", label, self._FALLBACK_TIMEOUT)
             raise TimeoutError(f"{label}: Both primary and fallback failed")
         except Exception as exc:
             logger.error("[%s] Fallback API error: %s", label, exc)
@@ -247,6 +252,7 @@ class LLMClient:
 
         message = response.choices[0].message
         content = message.content or ""
+        finish_reason = response.choices[0].finish_reason
 
         # Capture reasoning content (CoT) if available
         reasoning = getattr(message, "reasoning_content", None)
@@ -261,7 +267,10 @@ class LLMClient:
             content = reasoning
 
         usage = response.usage
-        logger.info("[LLM.call] Response received — %d chars, %.2fs elapsed", len(content), elapsed)
+        logger.info("[LLM.call] Response received — %d chars, %.2fs elapsed, finish=%s",
+                    len(content), elapsed, finish_reason or "unknown")
+        if finish_reason == "length":
+            logger.warning("[LLM.call] ⚠️ Response was CUT OFF (finish_reason=length, max_tokens=%d)", effective_max)
         if usage:
             logger.info("[LLM.call] Tokens — prompt=%d, completion=%d, total=%d",
                          usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
@@ -326,16 +335,23 @@ class LLMClient:
             stream = self.client.chat.completions.create(**kwargs)
             total_content = 0
             got_first = False
+            last_finish_reason = None
             for chunk in stream:
                 if chunk.choices:
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        last_finish_reason = choice.finish_reason
+                    delta = choice.delta
                     if delta and delta.content:
                         got_first = True
                         total_content += len(delta.content)
                         yield delta.content
             elapsed = time.perf_counter() - t0
             if got_first:
-                logger.info("[LLM.call_stream] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+                logger.info("[LLM.call_stream] Stream complete — %d chars, %.2fs elapsed, finish=%s",
+                            total_content, elapsed, last_finish_reason or "unknown")
+                if last_finish_reason == "length":
+                    logger.warning("[LLM.call_stream] ⚠️ Response was CUT OFF (finish_reason=length, max_tokens=%d)", effective_max)
                 return
             logger.warning("[LLM.call_stream] Primary returned 0 content chars (%.1fs)", elapsed)
         except Exception as exc:
@@ -391,24 +407,31 @@ class LLMClient:
         elif self.is_deepseek:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
-        logger.info("[LLM.call_stream_multi] Sending streaming request — model=%s, %d messages",
-                     self.model, len(clean_messages))
+        logger.info("[LLM.call_stream_multi] Sending streaming request — model=%s, %d messages, max_tokens=%d",
+                     self.model, len(clean_messages), max_tokens)
 
         t0 = time.perf_counter()
         try:
             stream = self.client.chat.completions.create(**kwargs)
             total_content = 0
             got_first = False
+            last_finish_reason = None
             for chunk in stream:
                 if chunk.choices:
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        last_finish_reason = choice.finish_reason
+                    delta = choice.delta
                     if delta and delta.content:
                         got_first = True
                         total_content += len(delta.content)
                         yield delta.content
             elapsed = time.perf_counter() - t0
             if got_first:
-                logger.info("[LLM.call_stream_multi] Stream complete — %d chars, %.2fs elapsed", total_content, elapsed)
+                logger.info("[LLM.call_stream_multi] Stream complete — %d chars, %.2fs elapsed, finish=%s",
+                            total_content, elapsed, last_finish_reason or "unknown")
+                if last_finish_reason == "length":
+                    logger.warning("[LLM.call_stream_multi] ⚠️ Response was CUT OFF (finish_reason=length, max_tokens=%d)", max_tokens)
                 return
             logger.warning("[LLM.call_stream_multi] Primary returned 0 content chars (%.1fs)", elapsed)
         except Exception as exc:

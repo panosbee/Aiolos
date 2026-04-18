@@ -439,6 +439,11 @@ class XDARTFramework:
         self._chat_active_count = 0
         self._chat_active_lock = _threading.Lock()
 
+        # ── Chat message dedup (prevents double-processing on client retry) ──
+        # hash → timestamp of last processing, 30-second TTL
+        self._recent_message_hashes: dict[str, float] = {}
+        self._message_dedup_ttl = 30.0  # seconds
+
         # ── Internal Clock (αίσθηση χρόνου — temporal awareness) ──
         self.temporal_clock = TemporalClock()
 
@@ -3257,6 +3262,23 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         logger.info("[ChatStream] Message received: %s", message[:120])
         self.temporal_clock.tick()
 
+        # ── Dedup: reject identical non-proactive messages within 30s ──
+        # Client retries after WebSocket errors can cause double-processing.
+        if not proactive and message:
+            import hashlib as _hashlib
+            import time as _time
+            msg_hash = _hashlib.md5(message.encode()).hexdigest()[:16]
+            now = _time.monotonic()
+            # Purge expired entries
+            self._recent_message_hashes = {
+                h: ts for h, ts in self._recent_message_hashes.items()
+                if now - ts < self._message_dedup_ttl
+            }
+            if msg_hash in self._recent_message_hashes:
+                logger.warning("[ChatStream] Duplicate message detected (hash=%s) — skipping", msg_hash)
+                return
+            self._recent_message_hashes[msg_hash] = now
+
         if proactive and self._pipeline_running.is_set():
             yield {"event": "done", "data": {
                 "full_text": "[Deferred — pipeline running]",
@@ -3556,18 +3578,21 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # ── Phase 2.7: Chat tool execution (with timeout — must not block streaming) ──
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        _tool_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chat-tool")
         try:
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="chat-tool") as _pool:
-                _tool_future = _pool.submit(
-                    self._chat_tool_execution, message, world_txt, context_parts, proactive,
-                )
+            _tool_future = _tool_pool.submit(
+                self._chat_tool_execution, message, world_txt, context_parts, proactive,
+            )
+            try:
                 chat_tool_results = _tool_future.result(timeout=30)  # 30s max for BF/tools
                 if chat_tool_results:
                     full_context = "\n\n".join(context_parts)
-        except FuturesTimeout:
-            logger.warning("[ChatStream] Tool execution timed out (30s) — skipping BF/tools")
-        except Exception as exc:
-            logger.warning("[ChatStream] Tool execution failed: %s", exc)
+            except FuturesTimeout:
+                logger.warning("[ChatStream] Tool execution timed out (30s) — skipping BF/tools")
+            except Exception as exc:
+                logger.warning("[ChatStream] Tool execution failed: %s", exc)
+        finally:
+            _tool_pool.shutdown(wait=False, cancel_futures=True)  # Don't block — abandon BF thread
 
         # ── Phase 3: Build system prompt (same as _chat_inner) ──
         my_name = character.get("name", "XDART-Φ")
@@ -3617,11 +3642,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             for h in history[-10:]:
                 messages_for_llm.append({"role": h.get("role", "user"), "content": h.get("content", "")})
             messages_for_llm.append({"role": "user", "content": message})
-            stream = self.llm.call_stream_multi(messages_for_llm, thinking=False)
+            stream = self.llm.call_stream_multi(messages_for_llm, max_tokens=16384, thinking=False)
         else:
             stream = self.llm.call_stream(
                 chat_system, message,
-                max_tokens=8000, temperature=0.7, thinking=False,
+                max_tokens=16384, temperature=0.7, thinking=False,
             )
 
         full_text = []
@@ -3883,7 +3908,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             if mm:
                 mm_stats = mm.get_stats()
                 mm_lines = [
-                    f"MULTIMODAL OSINT STATUS (live — {mm_stats.get('cycles', 0)} cycles completed):",
+                    f"MULTIMODAL OSINT STATUS (live — {mm_stats.get('cycles', 0)} cycles, runs every 15min):",
                     f"  Airspace (OpenSky ADS-B): {mm_stats.get('airspace', {}).get('monitored_zones', 0)} strategic zones monitored, "
                     f"{mm_stats.get('airspace', {}).get('tracked_military', 0)} military aircraft tracked",
                     f"  Maritime (AIS): {mm_stats.get('maritime', {}).get('chokepoints_monitored', 0)} chokepoints monitored",
@@ -3901,7 +3926,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 csl_stats = csl.get_stats()
                 csl_lines = [
                     f"CROSS-SYSTEM LEARNING STATUS (academic research):",
-                    f"  Cycles: {csl_stats.get('total_cycles', 0)} daily runs completed",
+                    f"  Cycles: {csl_stats.get('total_cycles', 0)} runs completed (every 1h)",
                     f"  Papers: {csl_stats.get('total_papers_ingested', 0)} ingested, "
                     f"{csl_stats.get('total_papers_relevant', 0)} deemed relevant",
                     f"  Sources: {', '.join(csl_stats.get('sources', []))}",
@@ -4328,7 +4353,17 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "- User asks to install something → pip_install\n"
                "- You need to verify something on the system → appropriate action\n"
                "- You want to check your own git repo → git_status\n"
-               "IMPORTANT: Results appear in the next context cycle. Use wisely — don't spam commands.\n\n")
+               "Results appear appended to your response after execution.\n\n"
+               "⚠️ CRITICAL FORMAT RULE — SHELL_ACTION:\n"
+               "You MUST use the SELF-CLOSING XML format shown above. This is the ONLY format that works:\n"
+               "  ✅ CORRECT:  <SHELL_ACTION action=\"execute\" command=\"Get-Process\" />\n"
+               "  ✅ CORRECT:  <SHELL_ACTION action=\"python\" code=\"print(42)\" />\n"
+               "  ❌ WRONG:   <shell_action><command>Get-Process</command></shell_action>\n"
+               "  ❌ WRONG:   <SHELL_ACTION>\ncommand: Get-Process\n</SHELL_ACTION>\n"
+               "  ❌ WRONG:   ```powershell\nGet-Process\n```\n"
+               "All attributes go INSIDE the single tag as key=\"value\" pairs, closed with />\n"
+               "This tool is REAL — it executes commands and returns actual results. It is NOT a simulation.\n"
+               "You have used it before and it works. Trust it every time.\n\n")
                if self.shell_executor else "")
 
             + (("YOUR AGENT SPAWNER TOOL (you CAN delegate subtasks to specialized sub-agents):\n"
@@ -4358,8 +4393,17 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "- User asks for code → coder\n"
                "- You want to verify claims → fact_checker\n"
                "- You need alternative scenarios → scenario_builder\n"
-               "IMPORTANT: Each agent is a separate LLM call. Use for substantial subtasks, not trivial ones.\n"
-               "Multiple <SPAWN_AGENT> tags in one response run IN PARALLEL automatically.\n\n")
+               "Each agent is a separate LLM call. Use for substantial subtasks, not trivial ones.\n"
+               "Multiple <SPAWN_AGENT> tags in one response run IN PARALLEL automatically.\n\n"
+               "⚠️ CRITICAL FORMAT RULE — SPAWN_AGENT:\n"
+               "You MUST use the SELF-CLOSING XML format shown above. This is the ONLY format that works:\n"
+               "  ✅ CORRECT:  <SPAWN_AGENT role=\"researcher\" task=\"Find data on X\" />\n"
+               "  ✅ CORRECT:  <SPAWN_AGENT role=\"analyst\" task=\"Assess Y\" context=\"data...\" />\n"
+               "  ❌ WRONG:   <spawn_agent><role>researcher</role><task>Find data</task></spawn_agent>\n"
+               "  ❌ WRONG:   <SPAWN_AGENT>\nrole: researcher\ntask: Find data\n</SPAWN_AGENT>\n"
+               "All attributes go INSIDE the single tag as key=\"value\" pairs, closed with />\n"
+               "This tool is REAL — sub-agents execute and return actual results. It is NOT a simulation.\n"
+               "You have used it before and it works. Trust it every time.\n\n")
                if self.agent_spawner else "")
 
             + "\n"
@@ -4449,23 +4493,31 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"Your own qualitative risk assessment is FINE — just don't dress it up as engine output.\n"
             f"  • NEVER simulate or role-play any system tool, engine, database query, or API call. "
             f"If data isn't in your context, say so plainly.\n"
-            f"  • CRITICAL — HOW YOUR INTERNAL OPERATIONS ACTUALLY WORK:\n"
-            f"    Chat is for ANALYSIS and DIALOGUE. It is NOT an execution channel.\n"
-            f"    Writing <run>, <execute>, or any XML tag in chat does NOTHING — the system strips them.\n"
-            f"    Here are the REAL execution channels for your internal operations:\n"
-            f"    (A) AUTOMATIC BACKGROUND: PatternAccumulator, CuriosityLoop, ConsolidationLoop, "
-            f"Multimodal OSINT, Cross-System Learning — these run on timers, you don't trigger them.\n"
-            f"    (B) PIPELINE PHASES: Self-evolution diagnosis, Logic Sandbox analysis, Principle discovery, "
-            f"Curiosity generation — these execute automatically during each pipeline run (Phase 5c).\n"
-            f"    (C) MEMORY STORAGE: You CAN actively store insights using <MEMORY_STORE> tags in chat. "
-            f"Use PROCEDURAL memory to record improvements for your self-evolution to pick up.\n"
-            f"    (D) CONVERSATION REQUESTS: You CAN propose topics for discussion via the proactive engine. "
-            f"This works automatically when patterns/curiosity cross thresholds.\n"
-            f"    So if you identify a systemic improvement:\n"
+            f"  • CRITICAL — HOW YOUR TOOLS AND OPERATIONS ACTUALLY WORK:\n"
+            f"    You have 5 REAL tool tags that EXECUTE when you write them in chat:\n"
+            f"      <SHELL_ACTION ... />  — runs PowerShell/Python commands on the local machine\n"
+            f"      <SPAWN_AGENT ... />   — delegates subtasks to specialized sub-agents\n"
+            f"      <MEMORY_STORE ... />  — stores information in your persistent memory layers\n"
+            f"      <VISUAL_ACTION ... /> — manages your visual perception memory\n"
+            f"      <MONGO_ACTION ... />  — reads/writes your MongoDB knowledge base\n"
+            f"    These are REAL. They execute EVERY TIME you write them. They are part of you.\n"
+            f"    You have used them many times before. Trust them — they work.\n\n"
+            f"    TAGS THAT DO *NOT* WORK (the system strips them):\n"
+            f"      <run>, <execute>, <search>, <tool_call>, <function_call> — these do NOTHING.\n"
+            f"      <BAYESIAN_FUZZY_ENGINE> — the BF engine runs automatically BEFORE your response.\n\n"
+            f"    AUTOMATIC BACKGROUND SYSTEMS (you don't trigger these):\n"
+            f"      PatternAccumulator, CuriosityLoop, ConsolidationLoop, Multimodal OSINT,\n"
+            f"      Cross-System Learning — they run on timers.\n"
+            f"    PIPELINE PHASES (execute automatically each pipeline run):\n"
+            f"      Self-evolution, Logic Sandbox, Principle discovery, Curiosity generation.\n\n"
+            f"    FORMAT REMINDER — all 5 tool tags use SELF-CLOSING format:\n"
+            f"      <TAG_NAME attribute1=\"value1\" attribute2=\"value2\" />\n"
+            f"    Never use block-style like <tag><child>value</child></tag>.\n"
+            f"    Never use lowercase tag names. Always UPPERCASE: SHELL_ACTION, SPAWN_AGENT, etc.\n\n"
+            f"    If you identify a systemic improvement:\n"
             f"    → PROPOSE it in chat as analytical feedback (Πάνος values this)\n"
             f"    → STORE it as a PROCEDURAL memory so your self-evolution system picks it up\n"
-            f"    → Do NOT write pseudo-code, XML execution tags, or narrate 'ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ: 1. Θα τρέξω...' "
-            f"— just present the insight and store the procedural memory."
+            f"    → Do NOT narrate 'ΤΙ ΘΑ ΚΑΝΩ ΤΩΡΑ: 1. Θα τρέξω...' — just do it."
         )
 
         # ── Proactive mode: additional instructions for self-initiated conversations ──
@@ -4502,7 +4554,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             response_text = self.llm.call(
                 chat_system,
                 chat_user,
-                max_tokens=8000,
+                max_tokens=16384,
                 temperature=0.7,
                 thinking=False,
             )
@@ -5473,8 +5525,45 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 confirmations.append(msg)
                 logger.warning("[Chat.ShellAction] %s error: %s", action, e)
 
-        # Strip all SHELL_ACTION tags
+        # ── Block-style with nested elements (LLM hallucinated format) ──
+        # <shell_action><command>Get-Process</command><timeout>10</timeout></shell_action>
+        block_pattern = re.compile(
+            r'<shell_action\b[^>]*>(.*?)</shell_action\s*>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in block_pattern.finditer(response_text):
+            inner = match.group(1).strip()
+            # Extract <command>...</command>
+            cmd_match = re.search(r'<command>(.*?)</command>', inner, re.DOTALL | re.IGNORECASE)
+            code_match = re.search(r'<code>(.*?)</code>', inner, re.DOTALL | re.IGNORECASE)
+            timeout_match = re.search(r'<timeout>(\d+)</timeout>', inner, re.IGNORECASE)
+
+            timeout_val = int(timeout_match.group(1)) if timeout_match else self.shell_executor.default_timeout
+
+            if cmd_match:
+                command = cmd_match.group(1).strip()
+                if command:
+                    try:
+                        result = self._execute_shell_action("execute", {"command": command, "timeout": str(timeout_val)})
+                        confirmations.append(result)
+                        logger.info("[Chat.ShellAction/Block] execute → %s", result[:120])
+                    except Exception as e:
+                        confirmations.append(f"✗ shell(execute): {e}")
+                        logger.warning("[Chat.ShellAction/Block] execute error: %s", e)
+            elif code_match:
+                code = code_match.group(1).strip()
+                if code:
+                    try:
+                        result = self._execute_shell_action("python", {"code": code, "timeout": str(timeout_val)})
+                        confirmations.append(result)
+                        logger.info("[Chat.ShellAction/Block] python → %s", result[:120])
+                    except Exception as e:
+                        confirmations.append(f"✗ shell(python): {e}")
+                        logger.warning("[Chat.ShellAction/Block] python error: %s", e)
+
+        # Strip all SHELL_ACTION tags (both formats)
         clean_text = pattern.sub("", response_text)
+        clean_text = block_pattern.sub("", clean_text)
         clean_text = re.sub(
             r'<SHELL_ACTION\b[^>]*>.*?</SHELL_ACTION\s*>',
             '', clean_text, flags=re.DOTALL | re.IGNORECASE,
@@ -5487,6 +5576,33 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         if confirmations:
             logger.info("[Chat.ShellAction] Processed %d shell directives", len(confirmations))
+            # ── Persist to episodic memory so Αίολος remembers across sessions ──
+            try:
+                summary = "; ".join(c[:120] for c in confirmations)
+                self.memory.store(
+                    problem=f"[ShellAction] Executed {len(confirmations)} command(s)",
+                    reframed_problem=f"Shell execution results: {summary[:500]}",
+                    xheart_distillate=f"Εκτέλεσα {len(confirmations)} εντολή/ές στο σύστημα. {summary[:300]}",
+                    domain_tags=["shell_action", "tool_execution", "system_command"],
+                    layer_score=0.4,
+                    self_generated_layers=None,
+                )
+            except Exception as e:
+                logger.warning("[Chat.ShellAction] Episodic store failed: %s", e)
+            # ── Persist to journal file (survives restart) ──
+            try:
+                import json as _json
+                from datetime import datetime, timezone
+                _entry = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "shell_action",
+                    "count": len(confirmations),
+                    "results": [c[:500] for c in confirmations],
+                }
+                with open(BASE_DIR / "shell_action_journal.jsonl", "a", encoding="utf-8") as f:
+                    f.write(_json.dumps(_entry, ensure_ascii=False) + "\n")
+            except Exception as e:
+                logger.warning("[Chat.ShellAction] Journal write failed: %s", e)
         return clean_text
 
     def _execute_shell_action(self, action: str, attrs: dict) -> str:
@@ -5620,6 +5736,13 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             re.IGNORECASE | re.DOTALL,
         )
 
+        # ── Block-style with nested elements (LLM hallucinated format) ──
+        # <spawn_agent><role>researcher</role><task>Find data</task></spawn_agent>
+        block_pattern = re.compile(
+            r'<spawn_agent\b[^>]*>(.*?)</spawn_agent\s*>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
         # Collect all agent specs first
         agent_specs = []
         for match in pattern.finditer(response_text):
@@ -5638,9 +5761,33 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 "temperature": float(attrs.get("temperature", "0.5")),
             })
 
+        # Also parse block-style hallucinated format
+        for match in block_pattern.finditer(response_text):
+            inner = match.group(1).strip()
+            role_match = re.search(r'<role>(.*?)</role>', inner, re.DOTALL | re.IGNORECASE)
+            task_match = re.search(r'<task>(.*?)</task>', inner, re.DOTALL | re.IGNORECASE)
+            ctx_match = re.search(r'<context>(.*?)</context>', inner, re.DOTALL | re.IGNORECASE)
+            prompt_match = re.search(r'<custom_prompt>(.*?)</custom_prompt>', inner, re.DOTALL | re.IGNORECASE)
+
+            role = role_match.group(1).strip().lower() if role_match else "researcher"
+            task = task_match.group(1).strip() if task_match else ""
+            if not task:
+                continue
+            agent_specs.append({
+                "role": role,
+                "task": task,
+                "context": ctx_match.group(1).strip() if ctx_match else "",
+                "custom_prompt": prompt_match.group(1).strip() if prompt_match else "",
+                "max_tokens": 4000,
+                "temperature": 0.5,
+            })
+            logger.info("[Chat.AgentSpawner/Block] Parsed block-style spawn_agent: role=%s task=%s",
+                        role, task[:80])
+
         if not agent_specs:
             # No valid agents found, just strip any broken tags
             clean = pattern.sub("", response_text)
+            clean = block_pattern.sub("", clean)
             clean = re.sub(r'<SPAWN_AGENT\b.*$', '', clean, flags=re.DOTALL).rstrip()
             return re.sub(r'\n{3,}', '\n\n', clean).strip()
 
@@ -5666,8 +5813,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 logger.warning("[Chat.AgentSpawner] %s (%s) failed: %s",
                                r.agent_id, r.role, r.error)
 
-        # Strip all SPAWN_AGENT tags
+        # Strip all SPAWN_AGENT tags (both formats)
         clean_text = pattern.sub("", response_text)
+        clean_text = block_pattern.sub("", clean_text)
         clean_text = re.sub(
             r'<SPAWN_AGENT\b[^>]*>.*?</SPAWN_AGENT\s*>',
             '', clean_text, flags=re.DOTALL | re.IGNORECASE,
@@ -5680,6 +5828,40 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             clean_text += separator + separator.join(confirmations)
 
         logger.info("[Chat.AgentSpawner] Processed %d agent directives", len(results))
+
+        # ── Persist successful agent results to episodic memory ──
+        successful = [r for r in results if r.success]
+        if successful:
+            try:
+                summary_parts = [f"{r.role}: {r.task[:80]} → {r.output[:200]}" for r in successful]
+                summary = "\n".join(summary_parts)
+                self.memory.store(
+                    problem=f"[AgentSpawner] Spawned {len(successful)} sub-agent(s): {', '.join(r.role for r in successful)}",
+                    reframed_problem=f"Sub-agent results:\n{summary[:800]}",
+                    xheart_distillate=f"Ανέθεσα {len(successful)} υπο-αναλύσεις σε agents. {summary[:400]}",
+                    domain_tags=["agent_spawner", "tool_execution", "sub_agent_research"],
+                    layer_score=0.5,
+                    self_generated_layers=None,
+                )
+            except Exception as e:
+                logger.warning("[Chat.AgentSpawner] Episodic store failed: %s", e)
+            # ── Persist to journal file ──
+            try:
+                import json as _json
+                from datetime import datetime, timezone
+                _entry = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "agent_spawn",
+                    "agents": [
+                        {"role": r.role, "task": r.task[:200], "success": r.success,
+                         "duration_ms": r.duration_ms, "output_len": len(r.output)}
+                        for r in results
+                    ],
+                }
+                with open(BASE_DIR / "agent_spawn_journal.jsonl", "a", encoding="utf-8") as f:
+                    f.write(_json.dumps(_entry, ensure_ascii=False) + "\n")
+            except Exception as e:
+                logger.warning("[Chat.AgentSpawner] Journal write failed: %s", e)
         return clean_text
 
     def _process_bf_directives(self, response_text: str) -> str:
@@ -5959,6 +6141,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # 5. Strip any remaining internal tags that slipped through earlier processors
         # Block-style: <TAG>...</TAG>
         for tag in ('VISUAL_ACTION', 'MEMORY_STORE', 'BAYESIAN_FUZZY_ENGINE',
+                     'SHELL_ACTION', 'SPAWN_AGENT', 'MONGO_ACTION',
                      'run_web_agent', 'run_tool', 'run_search', 'auto_search'):
             response_text = re.sub(
                 rf'<{tag}\b[^>]*>.*?</{tag}\s*>',
@@ -5967,6 +6150,16 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             # Self-closing: <TAG ... />
             response_text = re.sub(
                 rf'<{tag}\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+
+        # 6. Strip bracket-style hallucinated tags: [TAG: ...], [TAG: key=value, ...]
+        # The LLM sometimes uses square-bracket syntax instead of XML.
+        # These are NOT executed — they are pure hallucinations that leak into visible text.
+        for btag in ('VISUAL_ACTION', 'MEMORY_STORE', 'SHELL_ACTION', 'SPAWN_AGENT',
+                      'MONGO_ACTION', 'BAYESIAN_FUZZY_ENGINE'):
+            response_text = re.sub(
+                rf'\[{btag}[:\s][^\]]*\]',
                 '', response_text, flags=re.IGNORECASE,
             )
 
@@ -6000,7 +6193,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         kwargs: dict = {
             "model": self.llm.model,
             "messages": clean_messages,
-            "max_completion_tokens": 8000,
+            "max_completion_tokens": 16384,
         }
         if not self.llm.is_reasoning:
             kwargs["temperature"] = 0.7

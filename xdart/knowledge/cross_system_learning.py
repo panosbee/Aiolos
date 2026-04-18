@@ -148,7 +148,7 @@ async def search_arxiv(
             "search_query": f"all:{query}",
             "start": 0,
             "max_results": min(max_results, MAX_PAPERS_PER_SOURCE),
-            "sortBy": "relevance",
+            "sortBy": "lastUpdatedDate",
             "sortOrder": "descending",
         }
 
@@ -241,12 +241,17 @@ async def search_openalex(
         own_client = True
 
     try:
+        # Filter to papers from the last 12 months to surface recent research
+        from datetime import datetime, timezone, timedelta
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
         params = {
             "search": query,
             "per_page": min(max_results, MAX_PAPERS_PER_SOURCE),
             "select": "id,title,authorships,abstract_inverted_index,publication_year,"
                       "cited_by_count,topics,primary_location,doi",
             "mailto": OPENALEX_MAILTO,
+            "filter": f"from_publication_date:{cutoff_date}",
+            "sort": "publication_date:desc",
         }
         resp = await client.get(
             f"{OPENALEX_API_URL}/works",
@@ -586,8 +591,14 @@ class CrossSystemLearner:
         """Generate search queries from active interests + dynamic context."""
         queries = []
 
-        # Static research interests
-        for interest in DEFAULT_RESEARCH_INTERESTS[:8]:
+        # Static research interests — rotate 8 per cycle so every interest
+        # gets searched over time, avoiding the same stale papers every run
+        n_interests = len(DEFAULT_RESEARCH_INTERESTS)
+        # Use cycle count (mod period) to pick a different slice each cycle
+        cycle_offset = (self._total_cycles * 4) % n_interests
+        rotated = (DEFAULT_RESEARCH_INTERESTS[cycle_offset:] +
+                   DEFAULT_RESEARCH_INTERESTS[:cycle_offset])
+        for interest in rotated[:8]:
             queries.append(interest)
 
         # Dynamic: from curiosity engine's active topics
@@ -896,14 +907,14 @@ class CrossSystemLearner:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class CrossSystemLearningLoop:
-    """Background loop for daily paper acquisition."""
+    """Background loop for periodic paper acquisition (every 6h by default)."""
 
     def __init__(
         self,
         learner: CrossSystemLearner,
         curiosity_engine: Any = None,
         proactive_engine: Any = None,
-        interval_hours: int = 24,
+        interval_hours: int = 6,
     ):
         self.learner = learner
         self.curiosity_engine = curiosity_engine
@@ -911,7 +922,7 @@ class CrossSystemLearningLoop:
         self.interval = interval_hours * 3600
 
     async def run_forever(self):
-        """Main loop — runs daily."""
+        """Main loop — runs every interval_hours."""
         logger.info("[CrossSystemLoop] Starting cross-system learning loop (interval=%dh)",
                     self.interval // 3600)
 

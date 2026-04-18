@@ -167,6 +167,10 @@ _NER_NOISE_PHRASES = frozenset({
     "diminishing returns", "breaking news", "live updates",
     "latest news", "just in", "developing story",
     "holy fire", "holy land", "ceasefire agreement",
+    # Headline verb phrases mistaken as entities (e.g., "Hormuz Opens", "Market Drops")
+    "hormuz opens", "strait opens", "strait closes", "border opens", "border closes",
+    "market drops", "market rises", "stocks fall", "stocks rise",
+    "oil falls", "oil rises", "oil soars", "oil plunges",
 })
 
 
@@ -180,14 +184,25 @@ def _is_valid_ner_entity(name: str, label: str) -> bool:
     if len(name) < 2:
         return False
 
-    # Must start with uppercase (proper noun indicator)
-    # spaCy sometimes tags lowercase common words as entities
-    if name[0].islower():
+    # Must start with uppercase letter (proper noun indicator)
+    # Reject strings starting with digit or special char (e.g., "2.79USD/MMBtu", "123K")
+    if not name[0].isalpha() or name[0].islower():
         return False
 
     # Reject mostly-digit strings ("5.000", "2026", "18", etc.)
     alpha_chars = sum(c.isalpha() for c in name)
     if alpha_chars < max(2, len(name) * 0.4):
+        return False
+
+    # Reject strings containing numeric+unit patterns (e.g., "2.79USD", "350K", "Hormuz Opens")
+    # These are measurement values or headline fragments, not entity names
+    import re as _re
+    if _re.search(r'\d+[./]\d*[A-Za-z]', name):  # e.g., "2.79USD/MMBtu"
+        return False
+    if _re.search(r'\d+[A-Z]{2,}', name):  # e.g., "350K", "123USD"
+        return False
+    # Reject strings with "/" that are not valid entity names (e.g., "Hormuz/Closure")
+    if "/" in name and not any(c.isalpha() for c in name.split("/")[0][-1:]):
         return False
 
     name_lower = name.lower().strip()

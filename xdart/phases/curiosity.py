@@ -330,7 +330,7 @@ What knowledge gaps do you see? What should I explore on my own initiative?"""
             # Trim to MAX_CURIOSITIES, keeping highest priority
             self._curiosities.sort(key=lambda x: x.priority, reverse=True)
             evicted = self._curiosities[MAX_CURIOSITIES:]
-            self._curiosities = self._curiosities[:MAX_CURIOSITIES]
+            del self._curiosities[MAX_CURIOSITIES:]  # in-place trim (preserves list identity for concurrent explore)
 
             self._generation_count += 1
             self._save_state()
@@ -490,8 +490,13 @@ Explore this question thoroughly."""
             target.exploration_method = exploration_method
             target.confidence = result.get("confidence", 0.0)
 
-            # Move to history
-            self._curiosities.remove(target)
+            # Move to history (safe removal — list may have been replaced by concurrent generate())
+            try:
+                self._curiosities.remove(target)
+            except ValueError:
+                # Target was evicted from active list by a concurrent trim/generate.
+                # Remove by question match instead.
+                self._curiosities[:] = [c for c in self._curiosities if c.question != target.question]
             self._history.append(target)
 
             self._exploration_count += 1
@@ -935,7 +940,7 @@ What new questions does this exploration reveal? What deeper layers are now visi
 
             # Trim to MAX
             self._curiosities.sort(key=lambda x: x.priority, reverse=True)
-            self._curiosities = self._curiosities[:MAX_CURIOSITIES]
+            del self._curiosities[MAX_CURIOSITIES:]  # in-place trim
 
             if new_curiosities:
                 self._save_state()
@@ -1112,7 +1117,7 @@ What fundamental gaps do you see? What should I be learning that I'm NOT?"""
 
             # Trim
             self._curiosities.sort(key=lambda x: x.priority, reverse=True)
-            self._curiosities = self._curiosities[:MAX_CURIOSITIES]
+            del self._curiosities[MAX_CURIOSITIES:]  # in-place trim
 
             if new_curiosities:
                 self._generation_count += 1
@@ -1252,7 +1257,7 @@ Which of these events, if any, should I investigate further?"""
 
             # Trim
             self._curiosities.sort(key=lambda x: x.priority, reverse=True)
-            self._curiosities = self._curiosities[:MAX_CURIOSITIES]
+            del self._curiosities[MAX_CURIOSITIES:]  # in-place trim
 
             if new_curiosities:
                 self._generation_count += 1

@@ -84,6 +84,10 @@ class PerceptionDB:
     Lightweight, no server needed — matches the no-Docker philosophy.
     """
 
+    # Track which db_paths have already been initialized to suppress redundant
+    # log noise when multiple components share or re-create PerceptionDB instances.
+    _initialized_paths: set[str] = set()
+
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = str(db_path or DB_PATH)
         self._init_db()
@@ -92,7 +96,11 @@ class PerceptionDB:
         """Create tables if they don't exist."""
         with self._conn() as conn:
             conn.executescript(SCHEMA_SQL)
-        logger.info("[PerceptionDB] Initialized at %s", self.db_path)
+        if self.db_path not in PerceptionDB._initialized_paths:
+            logger.info("[PerceptionDB] Initialized at %s", self.db_path)
+            PerceptionDB._initialized_paths.add(self.db_path)
+        else:
+            logger.debug("[PerceptionDB] Re-attached (already initialized) at %s", self.db_path)
 
     @contextmanager
     def _conn(self):

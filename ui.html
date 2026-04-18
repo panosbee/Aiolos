@@ -5111,10 +5111,12 @@ let isChatting = false;
 //  VOICE ENGINE — ElevenLabs TTS (WebSocket) + STT (Scribe v2)
 //
 //  Architecture:
-//    TTS: Browser → ElevenLabs WebSocket → AudioContext (streaming)
-//         ONE WebSocket per message — text chunks fed progressively.
-//         Audio chunks are decoded and scheduled for gapless playback.
-//         Fallback: server-side proxy via /xdart/voice/tts
+//    TTS (primary): Browser WS → Server proxy WS → ElevenLabs REST streaming (eleven_v3 + pcm_24000)
+//         Server buffers text, detects sentence boundaries, streams PCM audio back.
+//         Best voice quality via v3 model. Sentence-level progressive audio.
+//    TTS (fallback): Browser WS → ElevenLabs WS directly (eleven_multilingual_v2 + pcm_24000)
+//         Word-level streaming, lower quality than v3.
+//    TTS (last resort): Browser → /xdart/voice/tts → MP3 blob → Audio element.
 //
 //    STT: Browser MediaRecorder → POST /xdart/voice/stt → ElevenLabs Scribe v2
 //         Recording is sent as webm/opus for transcription.
@@ -5175,10 +5177,15 @@ async function _initVoice() {
 
 function _ensureAudioContext() {
   if (!_ttsAudioCtx || _ttsAudioCtx.state === 'closed') {
-    _ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+    _ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    console.log('[Voice/TTS] New AudioContext created, state:', _ttsAudioCtx.state, 'sampleRate:', _ttsAudioCtx.sampleRate);
   }
   if (_ttsAudioCtx.state === 'suspended') {
-    _ttsAudioCtx.resume();
+    _ttsAudioCtx.resume().then(() => {
+      console.log('[Voice/TTS] AudioContext resumed → state:', _ttsAudioCtx.state);
+    }).catch(e => {
+      console.warn('[Voice/TTS] AudioContext resume failed (need user gesture?):', e);
+    });
   }
   return _ttsAudioCtx;
 }
@@ -5213,10 +5220,18 @@ function _stripInternalTags(text) {
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*?<\/MEMORY_STORE\s*>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\b[^>]*>[\s\S]*?<\/BAYESIAN_FUZZY_ENGINE\s*>/gi, '');
   text = text.replace(/<MONGO_ACTION\b[^>]*>[\s\S]*?<\/MONGO_ACTION\s*>/gi, '');
+  // Block-style shell_action with nested elements: <shell_action><command>...</command></shell_action>
+  text = text.replace(/<shell_action\b[^>]*>[\s\S]*?<\/shell_action\s*>/gi, '');
+  text = text.replace(/<SHELL_ACTION\b[^>]*>[\s\S]*?<\/SHELL_ACTION\s*>/gi, '');
+  // Block-style spawn_agent: <spawn_agent>...</spawn_agent>
+  text = text.replace(/<spawn_agent\b[^>]*>[\s\S]*?<\/spawn_agent\s*>/gi, '');
+  text = text.replace(/<SPAWN_AGENT\b[^>]*>[\s\S]*?<\/SPAWN_AGENT\s*>/gi, '');
   // Self-closing tags: <TAG ... />
   text = text.replace(/<VISUAL_ACTION\s+[^>]*\/?>/gi, '');
   text = text.replace(/<MEMORY_STORE\s+[^>]*\/?>/gi, '');
   text = text.replace(/<BAYESIAN_FUZZY_ENGINE\s+[^>]*\/?>/gi, '');
+  text = text.replace(/<SHELL_ACTION\s+[^>]*\/?>/gi, '');
+  text = text.replace(/<SPAWN_AGENT\s+[^>]*\/?>/gi, '');
   text = text.replace(/<MONGO_ACTION\s+[^>]*\/?>/gi, '');
   // Incomplete block tags at end of stream (opening tag without closing)
   text = text.replace(/<run(?:_\w+)?\b[^>]*>[\s\S]*$/gi, '');
@@ -5224,6 +5239,12 @@ function _stripInternalTags(text) {
   text = text.replace(/<VISUAL_ACTION\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<MEMORY_STORE\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<MONGO_ACTION\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<shell_action\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<SHELL_ACTION\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<spawn_agent\b[^>]*>[\s\S]*$/gi, '');
+  text = text.replace(/<SPAWN_AGENT\b[^>]*>[\s\S]*$/gi, '');
+  // Bracket-style hallucinated tags: [TAG: ...] — LLM uses wrong syntax, never executed
+  text = text.replace(/\[(?:VISUAL_ACTION|MEMORY_STORE|SHELL_ACTION|SPAWN_AGENT|MONGO_ACTION|BAYESIAN_FUZZY_ENGINE)[:\s][^\]]*\]/gi, '');
   // Clean up multiple blank lines
   text = text.replace(/\n{3,}/g, '\n\n');
   return text.trim();
@@ -5232,17 +5253,26 @@ function _stripInternalTags(text) {
 // ── Streaming TTS: ONE WebSocket per message ─────────────────
 //
 //  Flow:
-//   1. startStreamingTTS() — opens WebSocket, sends BOS
+//   1. startStreamingTTS() — opens WebSocket (server proxy or direct), sends BOS
 //   2. feedStreamingTTS(chunk) — sends cleaned text chunks as they arrive
 //   3. endStreamingTTS() — sends EOS, waits for all audio to finish
 //   4. stopSpeaking() — kills everything immediately
+//
+//  Primary path (tts_proxy_ws=true):
+//    Browser WS → Our Server WS → ElevenLabs REST streaming (eleven_v3)
+//    Server detects sentence boundaries, streams PCM chunks back.
+//    Best quality (v3), progressive audio, slight sentence-level latency.
+//
+//  Fallback path (tts_proxy_ws=false):
+//    Browser WS → ElevenLabs WS directly (eleven_multilingual_v2)
+//    Word-level streaming, lower quality than v3.
 //
 //  Audio playback uses AudioContext with precise scheduling for gapless output.
 //  All audio flows through a master GainNode for instant mute/stop.
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Open a WebSocket to ElevenLabs and prepare for streaming TTS.
+ * Open a WebSocket for streaming TTS (server proxy → v3, or direct ElevenLabs).
  * Returns the generation number for this stream.
  * Call feedStreamingTTS(chunk) to send text, endStreamingTTS() when done.
  */
@@ -5273,7 +5303,17 @@ function startStreamingTTS() {
   _ttsGainNode = ctx.createGain();
   _ttsGainNode.connect(ctx.destination);
 
-  const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+  // ── Choose WebSocket target: server proxy (v3 quality) or direct ElevenLabs ──
+  let wsUrl;
+  const useProxy = !!_voiceCfg.tts_proxy_ws;
+  if (useProxy) {
+    // Server-side proxy: /xdart/voice/tts-stream → ElevenLabs REST streaming (eleven_v3)
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${proto}//${location.host}/xdart/voice/tts-stream`;
+  } else {
+    // Direct ElevenLabs WebSocket (fallback, limited to multilingual_v2)
+    wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${encodeURIComponent(modelId)}&output_format=pcm_24000`;
+  }
 
   const ws = new WebSocket(wsUrl);
   _ttsWs = ws;
@@ -5293,7 +5333,7 @@ function startStreamingTTS() {
         chunk_length_schedule: [120, 160, 250, 290],
       },
     }));
-    console.log('[Voice/TTS] WebSocket opened for streaming');
+    console.log(`[Voice/TTS] WebSocket opened for streaming (${useProxy ? 'server proxy → v3' : 'direct ElevenLabs'})`);
 
     // Flush any text that arrived while WebSocket was connecting
     if (_ttsPendingText) {
@@ -5316,7 +5356,10 @@ function startStreamingTTS() {
   };
 
   ws.onmessage = (event) => {
-    if (gen !== _ttsGen) return;
+    if (gen !== _ttsGen) {
+      console.warn('[Voice/TTS] Dropping message — gen mismatch: stream=%d, current=%d', gen, _ttsGen);
+      return;
+    }
     try {
       const msg = JSON.parse(event.data);
 
@@ -5329,10 +5372,23 @@ function startStreamingTTS() {
         }
         _ttsTotalBytes += bytes.length;
 
+        // Skip empty chunks
+        if (bytes.length < 2) return;
+
         const samples = new Float32Array(bytes.length / 2);
         const view = new DataView(bytes.buffer);
         for (let i = 0; i < samples.length; i++) {
           samples[i] = view.getInt16(i * 2, true) / 32768;
+        }
+
+        // Ensure AudioContext is running (may have been suspended by browser policy)
+        if (ctx.state === 'suspended') {
+          console.warn('[Voice/TTS] AudioContext suspended — attempting resume');
+          ctx.resume().then(() => {
+            console.log('[Voice/TTS] AudioContext resumed successfully, state:', ctx.state);
+          }).catch(e => {
+            console.error('[Voice/TTS] AudioContext resume failed:', e);
+          });
         }
 
         // Create AudioBuffer and schedule gapless playback
@@ -5346,8 +5402,10 @@ function startStreamingTTS() {
 
         const now = ctx.currentTime;
         if (!_ttsFirstChunk) {
-          _ttsNextPlayTime = now + 0.02;  // 20ms initial delay
+          _ttsNextPlayTime = now + 0.05;  // 50ms initial delay for AudioContext to settle
           _ttsFirstChunk = true;
+          console.log('[Voice/TTS] First audio chunk: %d bytes, ctx.state=%s, sampleRate=%d',
+                       bytes.length, ctx.state, ctx.sampleRate);
         }
 
         const startAt = Math.max(_ttsNextPlayTime, now);
@@ -5360,7 +5418,8 @@ function startStreamingTTS() {
       if (msg.isFinal) {
         // All audio chunks received — wait for playback to finish
         const remainingMs = Math.max(0, (_ttsNextPlayTime - ctx.currentTime) * 1000) + 150;
-        console.log('[Voice/TTS] isFinal received, waiting %.0fms for playback', remainingMs);
+        console.log('[Voice/TTS] isFinal received — totalBytes=%d, chunks=%d, ctx.state=%s, waitMs=%.0f',
+                     _ttsTotalBytes, _ttsSources.length, ctx.state, remainingMs);
         setTimeout(() => {
           if (gen === _ttsGen) {
             _ttsSpeaking = false;
@@ -5368,6 +5427,10 @@ function startStreamingTTS() {
           }
           if (_ttsDoneResolve) { _ttsDoneResolve(); _ttsDoneResolve = null; }
         }, remainingMs);
+      }
+
+      if (msg.error) {
+        console.error('[Voice/TTS] Server error:', msg.error);
       }
     } catch (decodeErr) {
       console.warn('[Voice/TTS] Chunk decode error:', decodeErr);
@@ -5433,6 +5496,8 @@ function feedStreamingTTS(text, gen) {
   } else if (_ttsWs.readyState === WebSocket.CONNECTING) {
     // WebSocket still connecting — buffer text for flush on open
     _ttsPendingText += clean + ' ';
+  } else {
+    console.warn('[Voice/TTS] Cannot send — WS state:', _ttsWs.readyState);
   }
 }
 
@@ -5754,18 +5819,18 @@ async function sendChat() {
 
   // Add user message to conversation
   const conversation = document.getElementById('conversation');
-  conversation.innerHTML += `
+  conversation.insertAdjacentHTML('beforeend', `
     <div class="chat-message chat-user" style="margin:8px 0;padding:10px 16px;background:rgba(255,255,255,0.04);border-radius:10px;border-left:3px solid var(--gold);max-width:85%">
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">You</div>
       <div style="font-size:14px;color:var(--text-primary);line-height:1.5">${esc(message)}</div>
-    </div>`;
+    </div>`);
 
   // Add thinking indicator
   const thinkingId = 'chat-thinking-' + Date.now();
-  conversation.innerHTML += `
+  conversation.insertAdjacentHTML('beforeend', `
     <div id="${thinkingId}" class="chat-message chat-thinking" style="margin:8px 0;padding:10px 16px;max-width:85%;margin-left:auto">
       <div style="font-size:12px;color:var(--text-dim);font-style:italic">Thinking...</div>
-    </div>`;
+    </div>`);
   conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
   document.getElementById('problemInput').value = '';
@@ -5845,11 +5910,11 @@ async function sendChat() {
             chatHistory.push({ role: 'user', content: message });
             chatHistory.push({ role: 'assistant', content: `[PIPELINE TRIGGERED] ${data.reasoning || ''}` });
 
-            conversation.innerHTML += `
+            conversation.insertAdjacentHTML('beforeend', `
               <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.06);border-radius:10px;border-left:3px solid #ffd740;max-width:85%;margin-left:auto">
                 <div style="font-size:11px;color:#ffd740;margin-bottom:4px">🔮 Prophet Mode Activated</div>
                 <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(data.reasoning || '')}</div>
-              </div>`;
+              </div>`);
             conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
             isChatting = false;
@@ -5870,11 +5935,11 @@ async function sendChat() {
               const thinkEl = document.getElementById(thinkingId);
               if (thinkEl) thinkEl.remove();
 
-              conversation.innerHTML += `
+              conversation.insertAdjacentHTML('beforeend', `
                 <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
                   <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
                   <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
-                </div>`;
+                </div>`);
               responseDiv = document.getElementById(responseId);
               responseTextEl = document.getElementById(`${responseId}-text`);
             }
@@ -5944,18 +6009,18 @@ async function sendChat() {
       chatHistory.push({ role: 'user', content: message });
       chatHistory.push({ role: 'assistant', content: fallbackResponse });
 
-      conversation.innerHTML += `
+      conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
           <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
           <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(fallbackResponse)}</div>
-        </div>`;
+        </div>`);
 
       autoSpeak(fallbackResponse);
     } catch (fallbackErr) {
-      conversation.innerHTML += `
+      conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
           <div style="font-size:13px;color:var(--red)">Chat error: ${esc(err.message)}</div>
-        </div>`;
+        </div>`);
     }
   }
 
@@ -6000,19 +6065,19 @@ async function initiateProactiveChat(notif) {
     : '⚡ IMPORTANT';
 
   // Show what was detected (system context bubble)
-  conversation.innerHTML += `
+  conversation.insertAdjacentHTML('beforeend', `
     <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.04);border-radius:10px;border-left:3px solid rgba(255,215,64,0.4);max-width:90%">
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">📡 Pattern Detected · ${esc(urgTag)} · ${new Date().toLocaleTimeString()}</div>
       <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(notif.headline || 'Emergent pattern detected')}</div>
       ${notif.reason ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;font-style:italic">${esc(notif.reason)}</div>` : ''}
-    </div>`;
+    </div>`);
 
   // Show thinking indicator
   const thinkingId = 'proactive-thinking-' + Date.now();
-  conversation.innerHTML += `
+  conversation.insertAdjacentHTML('beforeend', `
     <div id="${thinkingId}" class="chat-message chat-thinking" style="margin:8px 0;padding:10px 16px;max-width:85%;margin-left:auto">
       <div style="font-size:12px;color:#64b5f6;font-style:italic">Αίολος is analyzing the pattern...</div>
-    </div>`;
+    </div>`);
   conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
   // Build a message for Αίολος with all the pattern data
@@ -6089,11 +6154,11 @@ async function initiateProactiveChat(notif) {
             const thinkEl = document.getElementById(thinkingId);
             if (thinkEl) thinkEl.remove();
 
-            conversation.innerHTML += `
+            conversation.insertAdjacentHTML('beforeend', `
               <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
                 <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
                 <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
-              </div>`;
+              </div>`);
             responseDiv = document.getElementById(responseId);
             responseTextEl = document.getElementById(`${responseId}-text`);
           }
@@ -6156,11 +6221,11 @@ async function initiateProactiveChat(notif) {
       const response = _stripInternalTags(data.response || data.reasoning || 'Could not analyze at this time.');
       chatHistory.push({ role: 'assistant', content: response });
 
-      conversation.innerHTML += `
+      conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
           <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
           <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(response)}</div>
-        </div>`;
+        </div>`);
       conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
       autoSpeak(response);
@@ -6168,10 +6233,10 @@ async function initiateProactiveChat(notif) {
       const thinkEl = document.getElementById(thinkingId);
       if (thinkEl) thinkEl.remove();
 
-      conversation.innerHTML += `
+      conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message" style="margin:8px 0;padding:10px 16px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
           <div style="font-size:13px;color:var(--red)">Proactive analysis failed: ${esc(fallbackErr.message)}</div>
-        </div>`;
+        </div>`);
     }
   }
 
@@ -6190,12 +6255,12 @@ async function checkSelfPromptUpdate(conversation) {
     if (data.self_prompt && data.self_prompt !== lastKnownSelfPrompt) {
       lastKnownSelfPrompt = data.self_prompt;
       // Show subtle notification in chat
-      conversation.innerHTML += `
+      conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message" style="margin:8px 0;padding:8px 14px;background:rgba(128,203,196,0.06);border-radius:8px;border-left:3px solid #80cbc4;max-width:85%;margin-left:auto">
           <div style="font-size:11px;color:#80cbc4;margin-bottom:2px">Self-Prompt Updated</div>
           <div style="font-size:12px;color:var(--text-dim);line-height:1.4">${esc(data.self_prompt.substring(0, 200))}${data.self_prompt.length > 200 ? '...' : ''}</div>
           <div style="font-size:10px;color:var(--text-dim);margin-top:4px;opacity:0.6">The AI rewrote its own identity description based on this conversation.</div>
-        </div>`;
+        </div>`);
       conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   } catch (e) { /* non-critical */ }

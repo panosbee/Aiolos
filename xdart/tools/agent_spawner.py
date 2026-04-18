@@ -424,11 +424,25 @@ class AgentSpawner:
         """Return a context string for injection into the system prompt."""
         stats = self.get_stats()
         roles = ", ".join(stats["available_roles"])
-        return (
-            f"AGENT SPAWNER STATUS:\n"
-            f"  Available roles: {roles}\n"
-            f"  Total spawned: {stats['total_spawned']} "
-            f"(success rate: {stats['success_rate']})\n"
-            f"  Active now: {stats['active_now']}/{stats['max_concurrent']}\n"
-            f"  You can delegate subtasks to specialized sub-agents using <SPAWN_AGENT> tags."
-        )
+        lines = [
+            f"AGENT SPAWNER STATUS (sub-agent delegation — REAL tool, you use it regularly):",
+            f"  Available roles: {roles}",
+            f"  Total spawned this session: {stats['total_spawned']} "
+            f"(success rate: {stats['success_rate']})",
+            f"  Active now: {stats['active_now']}/{stats['max_concurrent']}",
+            f"  Format: <SPAWN_AGENT role=\"researcher\" task=\"...\" />",
+        ]
+        # Show recent spawns so Αίολος remembers what it delegated
+        recent = self.get_audit_log(limit=5)
+        if recent:
+            lines.append("  Your recent agent delegations (these are REAL — you spawned them):")
+            for entry in recent:
+                status = "✓" if entry.get("success") else "✗"
+                lines.append(
+                    f"    {status} [{entry.get('timestamp', '?')[:19]}] "
+                    f"{entry.get('role', '?')}: {entry.get('task', '?')[:80]} "
+                    f"({entry.get('duration_ms', '?')}ms, {entry.get('output_length', 0)} chars)"
+                )
+        else:
+            lines.append("  No agents spawned yet this session — but the tool is ready.")
+        return "\n".join(lines)

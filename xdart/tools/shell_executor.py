@@ -322,35 +322,45 @@ class ShellExecutor:
     def to_context_string(self) -> str:
         """Format shell status for LLM context injection."""
         stats = self.get_stats()
-        recent = self._audit_log[-3:] if self._audit_log else []
+        recent = self._audit_log[-5:] if self._audit_log else []
         lines = [
-            f"SHELL EXECUTOR STATUS (local PowerShell + Python):",
-            f"  Commands executed: {stats['total_commands']} ({stats['success_rate']} success)",
+            f"SHELL EXECUTOR STATUS (local PowerShell + Python — REAL tool, you use it regularly):",
+            f"  Commands executed this session: {stats['total_commands']} ({stats['success_rate']} success)",
             f"  Working directory: {stats['working_dir']}",
             f"  Timeout: {stats['default_timeout']}s per command",
+            f"  Format: <SHELL_ACTION action=\"execute\" command=\"...\" />",
         ]
         if recent:
-            lines.append("  Recent commands:")
+            lines.append("  Your recent commands (these are REAL — you ran them):")
             for entry in recent:
                 status = "✓" if entry.get("success") else "✗"
+                cmd = entry.get('command', '?')[:100]
                 lines.append(
                     f"    {status} [{entry.get('timestamp', '?')[:19]}] "
-                    f"{entry.get('command', '?')[:80]} ({entry.get('duration_ms', '?')}ms)"
+                    f"{cmd} ({entry.get('duration_ms', '?')}ms)"
                 )
+                # Show truncated stdout for successful commands
+                stdout = entry.get('stdout_preview', '')
+                if stdout and entry.get("success"):
+                    lines.append(f"      → {stdout[:120]}")
+        else:
+            lines.append("  No commands executed yet this session — but the tool is ready.")
         return "\n".join(lines)
 
     # ── Internal ──
 
     def _log_audit(self, result: dict) -> None:
         """Append to audit log (thread-safe, bounded)."""
+        stdout_text = result.get("stdout", "").strip()
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "command": result["command"][:200],
             "success": result["success"],
             "exit_code": result["exit_code"],
             "duration_ms": result["duration_ms"],
-            "stdout_len": len(result.get("stdout", "")),
+            "stdout_len": len(stdout_text),
             "stderr_len": len(result.get("stderr", "")),
+            "stdout_preview": stdout_text[:150] if stdout_text else "",
             "error": result.get("error"),
         }
         with self._lock:

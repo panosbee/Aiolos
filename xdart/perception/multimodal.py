@@ -700,12 +700,20 @@ class SatelliteMonitor:
             self._known_fires[fire_hash] = time.time()
             new_fires += 1
 
-            # High-confidence fires near strategic facilities are significant
+            # High-confidence fires near strategic facilities are significant.
+            # All monitored satellite zones are geopolitically critical by design —
+            # accept medium/nominal confidence fires with brightness ≥ 310K.
+            # Only filter out very low-confidence AND very low-brightness noise.
             confidence = fire.get("confidence", "nominal")
             bright_ti4 = float(fire.get("bright_ti4", 0) or 0)
 
-            # Only alert on high-confidence or high-brightness fires
-            if confidence not in ("high", "h") and bright_ti4 < 350:
+            # Accept: high confidence, OR any brightness ≥ 310K, OR nominal with ≥ 280K
+            is_significant = (
+                confidence in ("high", "h") or
+                bright_ti4 >= 310 or
+                (confidence in ("nominal", "n") and bright_ti4 >= 280)
+            )
+            if not is_significant:
                 continue
 
             anomalies.append({
@@ -760,8 +768,12 @@ class MultimodalCollector:
         opensky_pass: str = "",
         firms_map_key: str = "",
         marinetraffic_api_key: str = "",
+        entity_graph: Any | None = None,
+        memory_store_fn: Callable | None = None,
     ):
         self.on_alert = on_alert
+        self.entity_graph = entity_graph
+        self.memory_store_fn = memory_store_fn
         self.airspace = AirspaceMonitor(
             opensky_user=opensky_user,
             opensky_pass=opensky_pass,
@@ -821,7 +833,7 @@ class MultimodalCollector:
         except Exception as exc:
             logger.warning("[Multimodal] Satellite collection failed: %s", exc)
 
-        # Fire alerts to PatternAccumulator
+        # Phase 4: Fire alerts to PatternAccumulator
         if all_anomalies and self.on_alert:
             try:
                 logger.info("[Multimodal] Firing %d multimodal anomalies to PatternAccumulator",
@@ -831,6 +843,50 @@ class MultimodalCollector:
                 )
             except Exception as exc:
                 logger.warning("[Multimodal] Alert callback failed: %s", exc)
+
+        # Phase 5: Feed anomalies into Entity Knowledge Graph (NER extraction)
+        if all_anomalies and self.entity_graph:
+            try:
+                loop = asyncio.get_event_loop()
+                for anomaly in all_anomalies[:20]:  # Cap to avoid overwhelming
+                    headline = anomaly.get("headline", "")
+                    if headline:
+                        await loop.run_in_executor(
+                            None,
+                            self.entity_graph.ingest_headline,
+                            headline,
+                            anomaly.get("source", "multimodal"),
+                        )
+                await loop.run_in_executor(None, self.entity_graph.save)
+                logger.info("[Multimodal] Fed %d anomalies to EntityGraph",
+                            min(len(all_anomalies), 20))
+            except Exception as exc:
+                logger.warning("[Multimodal] EntityGraph feed failed: %s", exc)
+
+        # Phase 6: Store cycle summary in semantic memory (Qdrant embeddings)
+        if self.memory_store_fn:
+            try:
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                if all_anomalies:
+                    summaries = [a.get("headline", "") for a in all_anomalies[:10]]
+                    content = (f"Multimodal OSINT cycle {self._cycle_count} ({ts}): "
+                               f"{len(all_anomalies)} anomalies detected. "
+                               + " | ".join(summaries))
+                else:
+                    stats = self.get_stats()
+                    content = (f"Multimodal OSINT cycle {self._cycle_count} ({ts}): "
+                               f"No anomalies. Monitored {stats['airspace']['monitored_zones']} "
+                               f"airspace zones, {stats['maritime']['chokepoints_monitored']} "
+                               f"chokepoints, satellite={'active' if stats['satellite']['firms_enabled'] else 'inactive'}. "
+                               f"All within normal parameters.")
+                self.memory_store_fn(
+                    layer="semantic",
+                    content=content,
+                    tags=["multimodal_osint", "airspace", "maritime", "satellite"],
+                )
+                logger.info("[Multimodal] Cycle summary stored in semantic memory")
+            except Exception as exc:
+                logger.warning("[Multimodal] Memory store failed: %s", exc)
 
         logger.info("[Multimodal] Cycle %d complete — %d total anomalies",
                     self._cycle_count, len(all_anomalies))

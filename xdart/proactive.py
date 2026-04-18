@@ -60,6 +60,10 @@ MAX_PATTERNS = 100          # Max active pattern clusters
 PATTERN_TTL = 86400         # Pattern dies after 24h without new signal
 PATTERN_MERGE_SIMILARITY = 0.40  # Word overlap threshold to merge into same pattern
 MIN_SIGNALS_TO_EVALUATE = 5      # Don't bother LLM until 5+ signals in cluster
+# ── Runaway pattern caps ──
+# Prevents one topic (e.g., Iran) from absorbing all signals into a single blob
+PATTERN_SIGNAL_CAP = 60     # After this many signals, start a new pattern for low-overlap signals
+PATTERN_SPLIT_ENTITY_OVERLAP = 0.20  # New signal with < this entity overlap → force new pattern
 
 # ── Signal weight by source type ──
 SIGNAL_WEIGHTS = {
@@ -768,15 +772,39 @@ class PatternAccumulator:
 
         # Merge into existing pattern or create new one
         if best_pattern and best_similarity >= PATTERN_MERGE_SIMILARITY:
-            best_pattern.absorb(signal)
-            target_pattern = best_pattern
-            logger.info(
-                "[PatternAccumulator] Merged signal into pattern (sim=%.2f, signals=%d, "
-                "types=%s, entities=%s): %.80s",
-                best_similarity, len(target_pattern.signals),
-                target_pattern.source_types, sorted(target_pattern.core_entities)[:5],
-                headline,
-            )
+            # ── Runaway cap: if pattern is very large AND entity overlap is low,
+            # force a new pattern rather than merging everything into one blob.
+            # This preserves granularity (e.g., Iran-diplomatic vs Iran-economic).
+            if len(best_pattern.signals) >= PATTERN_SIGNAL_CAP:
+                pat_core = best_pattern.core_entities
+                if pat_core and entities:
+                    entity_overlap_ratio = len(entities & pat_core) / max(1, min(len(entities), len(pat_core)))
+                else:
+                    entity_overlap_ratio = 1.0  # no entities → allow merge
+                if entity_overlap_ratio < PATTERN_SPLIT_ENTITY_OVERLAP:
+                    # Low entity overlap on an already-large pattern → start fresh
+                    cap_signals = len(best_pattern.signals)
+                    best_pattern = None
+                    logger.debug("[PatternAccumulator] Cap+split: pattern at %d signals, "
+                                 "entity_overlap=%.2f < %.2f — forcing new pattern for: %.60s",
+                                 cap_signals, entity_overlap_ratio,
+                                 PATTERN_SPLIT_ENTITY_OVERLAP, headline)
+            if best_pattern is not None:
+                best_pattern.absorb(signal)
+                target_pattern = best_pattern
+                logger.info(
+                    "[PatternAccumulator] Merged signal into pattern (sim=%.2f, signals=%d, "
+                    "types=%s, entities=%s): %.80s",
+                    best_similarity, len(target_pattern.signals),
+                    target_pattern.source_types, sorted(target_pattern.core_entities)[:5],
+                    headline,
+                )
+            else:
+                target_pattern = EmergentPattern(signal)
+                self._patterns.append(target_pattern)
+                self._total_patterns_created += 1
+                logger.debug("[PatternAccumulator] Split new pattern #%d: %.80s",
+                             self._total_patterns_created, headline)
         else:
             target_pattern = EmergentPattern(signal)
             self._patterns.append(target_pattern)

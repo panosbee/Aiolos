@@ -17,12 +17,13 @@ REST API endpoints:
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -275,6 +276,10 @@ async def lifespan(app: FastAPI):
             logger.warning("[ProactiveAlert] Handler failed: %s", exc)
 
     # Start background perception collector if enabled
+    # Pre-initialize so Python doesn't treat them as unbound locals when DataCollector
+    # references them below (they are fully assigned later in this startup sequence).
+    _multimodal_collector = None
+    _cross_system_loop = None
     if PERCEPTION_ENABLED:
         try:
             from xdart.perception import DataCollector, PerceptionDB, PerceptionFilter
@@ -335,6 +340,8 @@ async def lifespan(app: FastAPI):
                 on_alert=_proactive_alert_handler,
                 entity_graph=entity_graph,
                 market_collector=market_collector,
+                multimodal_collector=_multimodal_collector,
+                cross_system_runner=_cross_system_loop,
             )
             _collector = collector  # store reference for intelligence endpoint
             _collector_task = asyncio.create_task(collector.run_forever())
@@ -538,8 +545,28 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Curiosity loop failed to start: %s", e)
 
-    # Start background multimodal perception (airspace, maritime, satellite)
-    _multimodal_task = None
+    # ── Shared memory store function for background subsystems ──
+    # Routes to SemanticMemory.store_truth() → embeds in Qdrant
+    def _background_memory_store(layer: str = "semantic", content: str = "",
+                                 tags: list[str] | None = None, **_kwargs):
+        """Store findings from background loops into Qdrant semantic memory."""
+        if not _framework or not content:
+            return
+        try:
+            if layer == "semantic" and hasattr(_framework, 'semantic_memory'):
+                source = ",".join(tags[:3]) if tags else "background"
+                _framework.semantic_memory.store_truth(
+                    knowledge=content,
+                    confidence=0.75,
+                    source=source,
+                )
+                logger.info("[BackgroundMemory] Stored %d chars to semantic (tags=%s)",
+                            len(content), tags)
+        except Exception as exc:
+            logger.warning("[BackgroundMemory] Store failed: %s", exc)
+
+    # ── Create multimodal collector (wired INTO main perception cycle, not standalone) ──
+    _multimodal_collector = None
     try:
         from xdart.config import MULTIMODAL_ENABLED, OPENSKY_USER, OPENSKY_PASS, FIRMS_MAP_KEY, MARINETRAFFIC_API_KEY
     except ImportError:
@@ -555,19 +582,22 @@ async def lifespan(app: FastAPI):
                 opensky_pass=OPENSKY_PASS,
                 firms_map_key=FIRMS_MAP_KEY,
                 marinetraffic_api_key=MARINETRAFFIC_API_KEY,
+                entity_graph=getattr(_framework, '_entity_graph', None) if _framework else None,
+                memory_store_fn=_background_memory_store,
             )
-            # Store reference for stats endpoint
             if _framework:
                 _framework._multimodal_collector = _multimodal_collector
-            _multimodal_task = asyncio.create_task(_multimodal_collector.run_forever())
-            logger.info("Multimodal perception started (airspace=%s, satellite=%s, maritime=yes)",
+            # Wire into already-running DataCollector (started before this block)
+            if _collector:
+                _collector.multimodal_collector = _multimodal_collector
+            logger.info("Multimodal OSINT created (airspace=%s, satellite=%s, maritime=yes) — runs every perception cycle",
                         "auth" if OPENSKY_USER else "anon",
                         "yes" if FIRMS_MAP_KEY else "no")
         except Exception as e:
-            logger.warning("Multimodal perception failed to start: %s", e)
+            logger.warning("Multimodal perception failed to init: %s", e)
 
-    # Start background cross-system learning (daily paper acquisition)
-    _cross_system_task = None
+    # ── Create cross-system learning (wired INTO hourly perception cycle, not standalone) ──
+    _cross_system_loop = None
     try:
         from xdart.config import CROSS_SYSTEM_LEARNING_ENABLED, CORE_API_KEY, S2_API_KEY
     except ImportError:
@@ -588,21 +618,24 @@ async def lifespan(app: FastAPI):
                 conversation_request_fn=(
                     _proactive_engine.request_conversation if _proactive_engine else None
                 ),
+                memory_store_fn=_background_memory_store,
                 cache_path=str(Path(PERCEPTION_DB_PATH).parent / "cross_system_cache.json"),
             )
             _cross_system_loop = CrossSystemLearningLoop(
                 learner=_cross_system_learner,
                 curiosity_engine=_framework.curiosity_engine if hasattr(_framework, 'curiosity_engine') else None,
                 proactive_engine=_proactive_engine,
-                interval_hours=24,
+                interval_hours=1,
             )
             if _framework:
                 _framework._cross_system_learner = _cross_system_learner
-            _cross_system_task = asyncio.create_task(_cross_system_loop.run_forever())
-            logger.info("Cross-system learning started (core=%s, openalex=free, daily cycle)",
+            # Wire into already-running DataCollector (started before this block)
+            if _collector:
+                _collector.cross_system_runner = _cross_system_loop
+            logger.info("Cross-system learning created (core=%s, openalex=free) — runs every hourly cycle",
                         "key" if CORE_API_KEY else "unauth")
         except Exception as e:
-            logger.warning("Cross-system learning failed to start: %s", e)
+            logger.warning("Cross-system learning failed to init: %s", e)
 
     # ── Vision System (Αίολος' Eyes) — face detection + recognition ──
     try:
@@ -828,10 +861,7 @@ async def lifespan(app: FastAPI):
         _curiosity_task.cancel()
     if _proactive_task:
         _proactive_task.cancel()
-    if _multimodal_task:
-        _multimodal_task.cancel()
-    if _cross_system_task:
-        _cross_system_task.cancel()
+    # Multimodal + cross-system now run inside collector — no separate tasks
     if _audit_task:
         _audit_task.cancel()
     logger.info("XDART-Φ API stopped")
@@ -3765,20 +3795,24 @@ async def delete_bf_template(name: str):
 async def voice_config():
     """Return ElevenLabs configuration for browser-side voice engine.
 
-    The browser connects DIRECTLY to ElevenLabs WebSocket for TTS
-    (lowest latency) and uses the REST API for STT. The API key is
-    stored server-side and served only to the authenticated client.
+    TTS is currently DISABLED due to quality/stability issues.
+    Re-enable by setting VOICE_ENABLED=true in environment.
     """
-    if not ELEVENLABS_API_KEY:
-        return {"enabled": False, "reason": "ELEVENLABS_API_KEY not set"}
+    # Voice disabled — WebSocket proxy had recurring disconnection issues
+    # and audio quality was unacceptable. Can be re-enabled when fixed.
+    voice_enabled = os.environ.get("VOICE_ENABLED", "false").lower() == "true"
+
+    if not voice_enabled or not ELEVENLABS_API_KEY:
+        return {"enabled": False, "reason": "Voice temporarily disabled"}
 
     return {
         "enabled": True,
-        "api_key": ELEVENLABS_API_KEY,
+        "api_key": ELEVENLABS_API_KEY,           # kept for backward compat (direct WS fallback)
         "voice_id": ELEVENLABS_VOICE_ID,
         "model_tts": ELEVENLABS_MODEL_TTS,
         "model_tts_ws": ELEVENLABS_MODEL_TTS_WS,
         "model_stt": ELEVENLABS_MODEL_STT,
+        "tts_proxy_ws": True,                    # signal browser to use server proxy WS
         "tts_settings": {
             "stability": 0.55,
             "similarity_boost": 0.85,
@@ -3824,13 +3858,10 @@ async def text_to_speech(req: TTSRequest):
     payload = {
         "text": text,
         "model_id": ELEVENLABS_MODEL_TTS,
-        # NOTE: language_code NOT set — eleven_v3 natively handles
-        # code-switching (mixed Greek + English) via auto-detection.
-        # Forcing a single language_code breaks the other language's pronunciation.
         "voice_settings": {
-            "stability": 0.50,          # 0.50 = natural variation (lower = more expressive)
-            "similarity_boost": 0.75,
-            "speed": 1.0,               # Native API speed (no distortion)
+            "stability": 0.55,
+            "similarity_boost": 0.85,
+            "speed": 1.0,
         },
     }
 
@@ -3866,6 +3897,159 @@ async def text_to_speech(req: TTSRequest):
         _stream_audio(),
         media_type="audio/mpeg",
     )
+
+
+@app.websocket("/xdart/voice/tts-stream")
+async def tts_stream_proxy(ws: WebSocket):
+    """WebSocket proxy for TTS streaming via ElevenLabs REST + eleven_v3.
+
+    Browser sends the same protocol as ElevenLabs WebSocket:
+      BOS: {text:" ", voice_settings:{...}, xi_api_key:"...", generation_config:{...}}
+      Text chunks: {text: "hello world "}
+      EOS: {text: ""}
+
+    Server buffers text, detects sentence boundaries, calls ElevenLabs REST
+    streaming endpoint with eleven_v3 (which doesn't support direct WebSocket),
+    and forwards PCM audio chunks back as base64 — same format the browser
+    already decodes.
+
+    This gives us v3 quality + progressive streaming + sync with chat text.
+    """
+    import base64
+    import httpx
+    import re as _re_mod
+
+    await ws.accept()
+
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        logger.warning("[Voice/TTS-Proxy] Not configured — key=%s, voice=%s",
+                       bool(ELEVENLABS_API_KEY), bool(ELEVENLABS_VOICE_ID))
+        await ws.send_json({"error": "ElevenLabs not configured"})
+        await ws.close(code=1008)
+        return
+
+    voice_settings: dict = {}
+    text_buffer = ""
+    total_audio_bytes = 0
+    sentences_streamed = 0
+    chunks_received = 0
+    # Sentence boundary: split after .!?;·;\n followed by whitespace
+    _SENTENCE_RE = _re_mod.compile(r'(?<=[.!?;·;\n])\s+')
+    # Also flush if buffer exceeds this many chars without a sentence boundary
+    _FLUSH_THRESHOLD = 200
+
+    async def _stream_sentence(sentence: str) -> int:
+        """Call ElevenLabs REST streaming for one sentence, forward PCM chunks.
+        Returns total audio bytes sent for this sentence."""
+        nonlocal total_audio_bytes, sentences_streamed
+        sent_bytes = 0
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
+        headers = {
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+        }
+        vs = voice_settings or {
+            "stability": 0.55,
+            "similarity_boost": 0.85,
+            "speed": 1.0,
+        }
+        payload = {
+            "text": sentence,
+            "model_id": ELEVENLABS_MODEL_TTS,
+            "voice_settings": vs,
+        }
+        logger.info("[Voice/TTS-Proxy] → ElevenLabs: %d chars, model=%s",
+                     len(sentence), ELEVENLABS_MODEL_TTS)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+                async with client.stream(
+                    "POST", url, headers=headers, json=payload,
+                    params={"output_format": "pcm_24000"},
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        logger.warning("[Voice/TTS-Proxy] ElevenLabs HTTP %d: %s",
+                                       resp.status_code, body[:300])
+                        return 0
+                    async for chunk in resp.aiter_bytes(chunk_size=4096):
+                        sent_bytes += len(chunk)
+                        b64 = base64.b64encode(chunk).decode("ascii")
+                        await ws.send_json({"audio": b64})
+        except Exception as exc:
+            logger.warning("[Voice/TTS-Proxy] Sentence stream error: %s", exc)
+            return sent_bytes
+
+        total_audio_bytes += sent_bytes
+        sentences_streamed += 1
+        logger.info("[Voice/TTS-Proxy] ← ElevenLabs: %d bytes PCM for %d chars (sentence #%d)",
+                     sent_bytes, len(sentence), sentences_streamed)
+        return sent_bytes
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+
+            # BOS message — extract voice settings
+            if "xi_api_key" in msg or "voice_settings" in msg:
+                vs = msg.get("voice_settings", {})
+                if vs:
+                    voice_settings = vs
+                logger.info("[Voice/TTS-Proxy] BOS received, model=%s, voice_settings=%s",
+                            ELEVENLABS_MODEL_TTS, voice_settings)
+                continue
+
+            text = msg.get("text", "")
+
+            # EOS — flush remaining buffer and send isFinal
+            if text == "":
+                remaining = text_buffer.strip()
+                if remaining:
+                    logger.info("[Voice/TTS-Proxy] EOS flush: %d chars remaining in buffer",
+                                len(remaining))
+                    await _stream_sentence(remaining)
+                    text_buffer = ""
+                else:
+                    logger.info("[Voice/TTS-Proxy] EOS: buffer empty (all text already streamed)")
+                await ws.send_json({"isFinal": True})
+                logger.info("[Voice/TTS-Proxy] EOS — isFinal sent "
+                            "(chunks_received=%d, sentences=%d, audio=%d bytes)",
+                            chunks_received, sentences_streamed, total_audio_bytes)
+                break
+
+            # Accumulate text
+            chunks_received += 1
+            text_buffer += text
+
+            # Check for sentence boundaries — stream complete sentences immediately
+            parts = _SENTENCE_RE.split(text_buffer)
+            if len(parts) > 1:
+                # All but last are complete sentences
+                for sentence in parts[:-1]:
+                    s = sentence.strip()
+                    if s:
+                        await _stream_sentence(s)
+                text_buffer = parts[-1]
+            elif len(text_buffer) >= _FLUSH_THRESHOLD:
+                # Buffer is getting large without a sentence boundary — flush it
+                # Find the last natural break point (comma, dash, colon)
+                flush_text = text_buffer.strip()
+                if flush_text:
+                    logger.info("[Voice/TTS-Proxy] Buffer threshold flush: %d chars",
+                                len(flush_text))
+                    await _stream_sentence(flush_text)
+                text_buffer = ""
+
+    except WebSocketDisconnect:
+        logger.info("[Voice/TTS-Proxy] Client disconnected "
+                    "(chunks=%d, sentences=%d, audio=%d bytes)",
+                    chunks_received, sentences_streamed, total_audio_bytes)
+    except Exception as exc:
+        logger.warning("[Voice/TTS-Proxy] Error: %s", exc)
+        try:
+            await ws.close(code=1011)
+        except Exception:
+            pass
 
 
 @app.post("/xdart/voice/stt")

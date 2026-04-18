@@ -66,7 +66,7 @@ FRED_SERIES = [
     ("DEXCHUS", "CNY/USD Exchange Rate", "CNY/USD"),
     ("BAMLH0A0HYM2", "High Yield Corporate Bond Spread", "bps"),
     ("T10Y2Y", "10Y-2Y Treasury Spread (Yield Curve)", "bps"),
-    ("TEDRATE", "TED Spread (Interbank Stress)", "%"),
+    # TEDRATE removed — series discontinued Jan 2022, was producing stale economic_shift signals
     ("GFDEBTN", "US Federal Debt Total", "USD millions"),
     ("M2SL", "M2 Money Supply", "USD billions"),
     ("UMCSENT", "U Michigan Consumer Sentiment", "index"),
@@ -99,7 +99,9 @@ class DataCollector:
                  finnhub_api_key: str = "",
                  on_alert: Any | None = None,
                  entity_graph: Any | None = None,
-                 market_collector: Any | None = None):
+                 market_collector: Any | None = None,
+                 multimodal_collector: Any | None = None,
+                 cross_system_runner: Any | None = None):
         self.db = db
         self.filter = filter_layer
         self.fred_api_key = fred_api_key
@@ -112,6 +114,10 @@ class DataCollector:
         self.entity_graph = entity_graph
         # Financial Market Collector — polled every realtime cycle
         self.market_collector = market_collector
+        # Multimodal OSINT collector — runs every realtime cycle alongside RSS/GDELT
+        self.multimodal_collector = multimodal_collector
+        # Cross-System Learning — runs every hourly cycle alongside ACLED/USGS
+        self.cross_system_runner = cross_system_runner
         # Proactive trigger accumulator — must init here (was only in _disable_gdelt before)
         self._pending_alerts: list[dict] = []
         # GDELT backoff state
@@ -278,6 +284,13 @@ class DataCollector:
                     except Exception as e:
                         logger.warning("[Collector] Financial feeds error: %s", e)
 
+                # Phase 3b: Multimodal OSINT (airspace, maritime, satellite) — every cycle
+                if self.multimodal_collector:
+                    try:
+                        await self.multimodal_collector._run_cycle()
+                    except Exception as e:
+                        logger.warning("[Collector] Multimodal OSINT error: %s", e)
+
                 # Phase 4: Save entity graph periodically
                 if self.entity_graph and self._pending_alerts:
                     try:
@@ -311,7 +324,7 @@ class DataCollector:
             await asyncio.sleep(self._realtime_interval)
 
     async def _run_hourly_loop(self):
-        """Every hour: ACLED + USGS earthquakes + NASA EONET + GDACS disasters."""
+        """Every hour: ACLED + USGS earthquakes + NASA EONET + GDACS disasters + Cross-System Learning (papers)."""
         while True:
             try:
                 # Track alerts from hourly sources (earthquakes, conflicts, disasters)
@@ -334,6 +347,13 @@ class DataCollector:
                         )
                     except Exception as e:
                         logger.warning("[Collector] Hourly alert callback failed: %s", e)
+
+                # Cross-System Learning (academic papers) — every hourly cycle
+                if self.cross_system_runner:
+                    try:
+                        await self.cross_system_runner._run_cycle()
+                    except Exception as e:
+                        logger.warning("[Collector] Cross-system learning error: %s", e)
             except Exception as e:
                 logger.error("[Collector] Hourly loop error: %s", e)
             await asyncio.sleep(60 * 60)
@@ -1460,6 +1480,23 @@ class DataCollector:
 
                 current = observations[0]
                 previous = observations[1] if len(observations) > 1 else None
+
+                # ── Staleness guard: skip discontinued/stale series ──
+                # If the latest observation is older than 90 days, the series
+                # is likely discontinued. Don't let stale data produce false
+                # economic_shift signals.
+                obs_date_str = current.get("date", "")
+                if obs_date_str:
+                    try:
+                        from datetime import datetime, timezone, timedelta
+                        obs_date = datetime.strptime(obs_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - obs_date).days
+                        if age_days > 90:
+                            logger.warning("[Collector] FRED %s: STALE data (last=%s, %d days old) — skipping",
+                                           series_id, obs_date_str, age_days)
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # If date parsing fails, proceed normally
 
                 current_val = float(current["value"]) if current["value"] != "." else None
                 previous_val = None
