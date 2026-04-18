@@ -5979,6 +5979,8 @@ async function sendChat() {
           currentEvent = 'message';  // Reset for next event
         }
       }
+      // Exit as soon as done event is processed — don't wait for TCP close
+      if (gotDone) break;
     }
 
     // If no done event came, still clean up
@@ -6188,6 +6190,8 @@ async function initiateProactiveChat(notif) {
 
         currentEvent = 'message';
       }
+      // Exit as soon as done event is processed — don't wait for TCP close
+      if (gotDone) break;
     }
 
     if (!gotDone && streamedText) {
