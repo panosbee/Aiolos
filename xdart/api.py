@@ -43,7 +43,7 @@ except ImportError:
     ELEVENLABS_API_KEY = ""
     ELEVENLABS_VOICE_ID = ""
     ELEVENLABS_MODEL_TTS = "eleven_v3"
-    ELEVENLABS_MODEL_TTS_WS = "eleven_multilingual_v2"
+    ELEVENLABS_MODEL_TTS_WS = "eleven_v3"
     ELEVENLABS_MODEL_STT = "scribe_v2"
 try:
     from xdart.config import PROACTIVE_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -3780,8 +3780,9 @@ async def voice_config():
         "model_tts_ws": ELEVENLABS_MODEL_TTS_WS,
         "model_stt": ELEVENLABS_MODEL_STT,
         "tts_settings": {
-            "stability": 0.70,
+            "stability": 0.50,
             "similarity_boost": 0.75,
+            "speed": 1.0,
         },
     }
 
@@ -3827,8 +3828,9 @@ async def text_to_speech(req: TTSRequest):
         # code-switching (mixed Greek + English) via auto-detection.
         # Forcing a single language_code breaks the other language's pronunciation.
         "voice_settings": {
-            "stability": 0.70,          # 0.70 = reduce hallucinations/gibberish
+            "stability": 0.50,          # 0.50 = natural variation (lower = more expressive)
             "similarity_boost": 0.75,
+            "speed": 1.0,               # Native API speed (no distortion)
         },
     }
 

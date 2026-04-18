@@ -164,7 +164,7 @@ CROSS_SYSTEM_LEARNING_ENABLED: bool = os.getenv("CROSS_SYSTEM_LEARNING_ENABLED",
 ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
 ELEVENLABS_MODEL_TTS: str = os.getenv("ELEVENLABS_MODEL_TTS", "eleven_v3")
-ELEVENLABS_MODEL_TTS_WS: str = os.getenv("ELEVENLABS_MODEL_TTS_WS", "eleven_multilingual_v2")
+ELEVENLABS_MODEL_TTS_WS: str = os.getenv("ELEVENLABS_MODEL_TTS_WS", "eleven_v3")
 ELEVENLABS_MODEL_STT: str = os.getenv("ELEVENLABS_MODEL_STT", "scribe_v2")
 
 # ── Vision System (Αίολος' Eyes) ──

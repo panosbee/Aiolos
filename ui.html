@@ -5144,7 +5144,7 @@ let _ttsDoneResolve = null;     // Resolve function for end-of-stream waiting
 let _ttsTotalBytes = 0;         // Total audio bytes received in current stream
 let _ttsPendingText = '';       // Text buffered while WebSocket is still connecting
 let _ttsEosPending = false;     // Whether endStreamingTTS was called before WS opened
-const _ttsPlaybackRate = 1.30;  // Speech speed multiplier (1.0 = normal, 1.30 = 30% faster)
+const _ttsPlaybackRate = 1.0;   // Client-side playback rate (1.0 = no distortion; speed handled by ElevenLabs API)
 
 // ── Initialize Voice System ──
 async function _initVoice() {
@@ -5284,8 +5284,9 @@ function startStreamingTTS() {
     ws.send(JSON.stringify({
       text: ' ',
       voice_settings: {
-        stability: _voiceCfg.tts_settings?.stability ?? 0.70,
+        stability: _voiceCfg.tts_settings?.stability ?? 0.50,
         similarity_boost: _voiceCfg.tts_settings?.similarity_boost ?? 0.75,
+        speed: _voiceCfg.tts_settings?.speed ?? 1.0,
       },
       xi_api_key: apiKey,
       generation_config: {
