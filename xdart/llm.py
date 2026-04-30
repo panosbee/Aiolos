@@ -249,15 +249,25 @@ class LLMClient:
     _API_CALL_TIMEOUT = 400  # seconds — hard wall-clock limit for primary
     _FALLBACK_TIMEOUT = 120  # seconds — fallback ceiling (GPT is faster but large prompts need time)
 
+    def _ensure_pools(self) -> None:
+        """Recreate thread pools if they were shut down (hot-reload / crash recovery)."""
+        if self._timeout_pool._shutdown:
+            logger.warning("[LLM] Primary pool shut down — recreating")
+            self._timeout_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-primary")
+        if self._fallback_pool._shutdown:
+            logger.warning("[LLM] Fallback pool shut down — recreating")
+            self._fallback_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-fallback")
+
     def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
         """Run client.chat.completions.create with a hard wall-clock timeout.
         If primary fails and a fallback client exists, retry on OpenAI.
         Uses separate thread pools so primary timeouts cannot block fallback."""
+        self._ensure_pools()
         # ── Try primary (DeepSeek) ──
         try:
             future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
         except RuntimeError:
-            # Pool shut down (reload/shutdown in progress)
+            # Pool shut down again immediately after recreation — very unlikely, but bail
             raise RuntimeError(f"{label}: executor shutdown — reload in progress")
         try:
             result = future.result(timeout=self._API_CALL_TIMEOUT)

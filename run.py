@@ -271,6 +271,14 @@ def start_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) 
         reload_dirs=["xdart"] if reload else None,
         reload_includes=["*.py"] if reload else None,
         timeout_graceful_shutdown=3 if reload else 30,
+        # ── Loop selection ──────────────────────────────────────────────────────
+        # "none" → loop_factory=None → asyncio.run() uses asyncio.new_event_loop()
+        # which calls get_event_loop_policy().new_event_loop().
+        # On Windows this respects our WindowsSelectorEventLoopPolicy and creates a
+        # SelectorEventLoop instead of the buggy IocpProactor.
+        # "auto" (default) calls asyncio_loop_factory which hard-returns
+        # asyncio.ProactorEventLoop on Windows, completely bypassing our policy fix.
+        loop="none",
         # ── Performance tuning ──────────────────────────────────────────────────
         # Keep HTTP connections alive longer to avoid TCP reconnect overhead.
         timeout_keep_alive=75,
