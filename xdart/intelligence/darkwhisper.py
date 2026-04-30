@@ -583,15 +583,65 @@ class DarkWhisperEngine:
                 ]
                 if not signal_tokens:
                     return None
-                _STOPWORDS = {"that", "this", "with", "from", "have", "will", "been",
-                              "were", "they", "their", "said", "also", "more", "than",
-                              "when", "what", "where", "which", "into", "over", "after"}
+                _STOPWORDS = {
+                    # Basic function words
+                    "that", "this", "with", "from", "have", "will", "been",
+                    "were", "they", "their", "said", "also", "more", "than",
+                    "when", "what", "where", "which", "into", "over", "after",
+                    # News filler
+                    "report", "reports", "news", "update", "updates", "according",
+                    "sources", "official", "officials", "government", "minister",
+                    "president", "says", "told", "added", "noted", "statement",
+                    "latest", "breaking", "developing", "amid", "despite",
+                    # Generic English
+                    "through", "under", "before", "during", "since", "near",
+                    "across", "against", "between", "within", "free", "open",
+                    "close", "second", "third", "major", "inside", "outside",
+                    "must", "former", "annual", "modern", "list", "request",
+                    "data", "system", "systems", "company", "center", "department",
+                    "operation", "phase", "base", "business", "financial",
+                    # Calendar / year noise
+                    "2024", "2025", "2026", "2027", "2028",
+                    # High-frequency political noise (always in news; no signal)
+                    "trump", "biden", "obama", "putin", "modi", "macron",
+                    "china", "russia", "iran", "israel", "ukraine", "europe",
+                    "america", "american", "chinese", "russian", "european",
+                    # Financial generic
+                    "bank", "banks", "banking", "market", "markets", "sector",
+                    "economy", "economic", "trade", "fund", "funds", "stock",
+                    "price", "prices", "rate", "rates", "growth", "spending",
+                    "budget", "revenue", "billion", "million", "trillion",
+                    "deal", "deals", "agreement", "agreements",
+                    # Meta-action verbs
+                    "record", "write", "read", "plan", "plans", "announce",
+                    "launch", "sign", "adopt", "vote", "publish", "release",
+                }
                 significant = [t for t in signal_tokens if t not in _STOPWORDS]
                 concept_dark = significant[0] if significant else signal_tokens[0]
 
             # Pick the most specific clean concept (prefer longer, more informative ones)
             clean_concepts = sorted(clean_topics, key=len, reverse=True)[:10]
+            # Filter clean concept list against the same stop-word set to avoid bridging
+            # with generic terms like "bank" or "record" that carry no gap signal.
+            _CONCEPT_STOPWORDS = {
+                "bank", "banks", "banking", "market", "markets", "sector", "economy",
+                "economic", "trade", "fund", "funds", "stock", "price", "prices",
+                "rate", "rates", "growth", "deal", "deals", "agreement", "agreements",
+                "trump", "biden", "putin", "china", "russia", "iran", "israel",
+                "ukraine", "europe", "america", "american", "chinese", "russian",
+                "european", "record", "write", "plan", "announce", "launch",
+                "data", "system", "company", "government", "minister", "president",
+            }
+            clean_concepts = [c for c in clean_concepts if c.lower() not in _CONCEPT_STOPWORDS]
             concept_clean = clean_concepts[0] if clean_concepts else "geopolitical_risk"
+
+            # Also skip bridging if concept_dark itself is a stop-word
+            if concept_dark.lower() in _CONCEPT_STOPWORDS:
+                logger.debug(
+                    "[DarkWhisper/CreativeNexus] Skipping bridge — dark concept '%s' is a stop-word",
+                    concept_dark,
+                )
+                return None
 
             # Generate the imaginative connection via LLM
             curiosity = ""

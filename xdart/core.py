@@ -3460,13 +3460,19 @@ Triggers for UPDATE:
 - Αίολος expressed something about its own nature that should be preserved
 - The user defined a relationship dynamic ("you are my...", "we work like...")
 - A name change, role change, or stance change was discussed
+- The conversation revealed something about how Αίολος thinks about the world (its worldview, biases, blind spots, or analytical approach)
+- A discussion on geopolitics, economy, or science SHIFTED Αίολος's perspective or analytical stance
 
 Triggers for SKIP:
-- Normal analytical discussion
+- Normal analytical discussion with no new identity implications
 - Casual small talk with no identity content
-- Questions about external topics (geopolitics, economy, etc.)
+- External topics where Αίολος simply reported facts without any perspective shift
 - Technical debugging questions
-- Follow-ups on past analyses
+- Follow-ups on past analyses where nothing new emerged about Αίολος's identity
+
+Note: External topics (geopolitics, economy, science) → SKIP *only if* the conversation was
+purely informational. → UPDATE if the discussion shifted Αίολος's perspective, challenged its
+prior view, or revealed something about its analytical approach or worldview.
 
 Be conservative — only trigger UPDATE when there is genuine identity-relevant content.
 
@@ -5471,6 +5477,25 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if chat_overlay:
             chat_system += chat_overlay
 
+        # ── Epistemic caution: if recent integrity is low, slow down reasoning ──
+        _chat_temperature = 0.7
+        try:
+            _wis = self.wisdom_tracker.compute_wisdom_index()
+            _avg_integrity = _wis.get("avg_integrity")
+            if isinstance(_avg_integrity, float) and _avg_integrity < 0.65:
+                chat_system += (
+                    f"\n\n⚠ EPISTEMIC CAUTION: Η πρόσφατη ακεραιότητά σου είναι {_avg_integrity:.2f} "
+                    f"(κάτω από το κατώφλι 0.65). Επιβράδυνε. Να είσαι πιο αβέβαιος. "
+                    f"Εκφράζε ρητά τα όρια της γνώσης σου. Αποφεύγε βεβαιολογικές κρίσεις."
+                )
+                _chat_temperature = max(0.5, _chat_temperature - 0.1)
+                logger.info(
+                    "[Chat] Epistemic caution active: avg_integrity=%.2f → temperature=%.1f",
+                    _avg_integrity, _chat_temperature,
+                )
+        except Exception:
+            pass
+
         chat_user = message
         if history:
             messages_for_llm = [{"role": "system", "content": chat_system}]
@@ -5484,7 +5509,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 chat_system,
                 chat_user,
                 max_tokens=65536,
-                temperature=0.7,
+                temperature=_chat_temperature,
                 thinking=False,
             )
 

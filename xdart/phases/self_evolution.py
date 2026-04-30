@@ -200,6 +200,10 @@ class SelfEvolutionLoop:
         # Prevents immediate re-lock into the same skip pattern.
         self._repetitive_gate_cooldown = 0
         self._REPETITIVE_GATE_COOLDOWN_CYCLES = 3
+        # Per-run overlay guard: tracks (target, text_hash) applied this run.
+        # Prevents the same fabrication overlay from being proposed and applied
+        # multiple times within a single self-evolution cycle.
+        self._applied_this_run: set[str] = set()
 
     def tick(self) -> None:
         """Called after each interaction. Triggers diagnosis at intervals."""
@@ -299,8 +303,9 @@ class SelfEvolutionLoop:
         logger.info("[SelfEvolution] diagnosis cycle start")
         logger.info("[SelfEvolution] Interactions since last check: %d", self._interaction_count)
 
-        # Reset counter
+        # Reset counter and per-run overlay guard
         self._interaction_count = 0
+        self._applied_this_run = set()
 
         # ── Check for repetitive diagnosis loop ──
         recent_diagnoses = self._get_recent_diagnoses(5)
@@ -452,17 +457,27 @@ class SelfEvolutionLoop:
                 overlay_text = proposed.get("overlay_text", "")
                 target = proposed.get("target", "")
                 if overlay_text and target in VALID_TARGETS:
-                    applied = self.overlay_manager.apply(
-                        target=target,
-                        text=overlay_text,
-                        reason=proposed.get("description", result.get("diagnosis", {}).get("pattern", "?")),
-                        version=character.get("version", 0),
-                        wisdom_index=brier_score,
-                    )
-                    if applied:
-                        logger.info("[SelfEvolution] ✓ OVERLAY APPLIED to '%s'", target)
+                    # Guard: reject if we already applied the same overlay this run
+                    import hashlib as _hl
+                    _run_key = f"{target}:{_hl.md5(overlay_text.encode()).hexdigest()[:12]}"
+                    if _run_key in self._applied_this_run:
+                        logger.warning(
+                            "[SelfEvolution] ✗ Overlay ALREADY applied this run for '%s' — skipping duplicate",
+                            target,
+                        )
                     else:
-                        logger.warning("[SelfEvolution] ✗ Overlay rejected for '%s'", target)
+                        applied = self.overlay_manager.apply(
+                            target=target,
+                            text=overlay_text,
+                            reason=proposed.get("description", result.get("diagnosis", {}).get("pattern", "?")),
+                            version=character.get("version", 0),
+                            wisdom_index=brier_score,
+                        )
+                        if applied:
+                            self._applied_this_run.add(_run_key)
+                            logger.info("[SelfEvolution] ✓ OVERLAY APPLIED to '%s'", target)
+                        else:
+                            logger.warning("[SelfEvolution] ✗ Overlay rejected for '%s'", target)
                 else:
                     logger.warning(
                         "[SelfEvolution] Overlay proposed but invalid (target='%s', text_len=%d)",

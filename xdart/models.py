@@ -490,7 +490,15 @@ class Scenario(BaseModel):
     source_view_id: str = Field(default="", description="Which view/angle spawned this scenario")
     source_perspective: str = Field(description="The perspective that generated this scenario")
     narrative: str = Field(description="What happens in this scenario — the story")
-    trajectory: str = Field(description="The path from now to outcome — step by step")
+    trajectory: str | list[str] = Field(description="The path from now to outcome — step by step")
+
+    @field_validator("trajectory", mode="before")
+    @classmethod
+    def _coerce_trajectory(cls, v: object) -> str:
+        """Allow list-of-strings from LLM; join into single string."""
+        if isinstance(v, list):
+            return " → ".join(str(item) for item in v)
+        return str(v) if v is not None else ""
     conditions: list[ScenarioCondition] = Field(
         default_factory=list,
         description="What must be true for this to unfold"

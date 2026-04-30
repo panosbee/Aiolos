@@ -223,7 +223,19 @@ class WisdomCalibrationTracker:
         if humility is not None:
             components.append(humility * 0.5 + 0.5)  # moderate humility is ideal
 
-        wisdom_index = sum(components) / len(components) if components else None
+        # Bootstrap mode: if we have integrity scores but no resolved claims yet,
+        # return an integrity-only index rather than None.  This prevents the wisdom
+        # tracker from being "offline" (0.000) during the first days of operation
+        # before any predictions can be resolved.  The index is clearly labeled as
+        # preliminary so overlays know the data is sparse.
+        if components:
+            wisdom_index = sum(components) / len(components)
+        elif avg_integrity is not None:
+            # Integrity-only bootstrap — no calibration data yet
+            wisdom_index = avg_integrity
+            logger.info("[Wisdom] Bootstrap mode — using integrity-only index (no resolved claims yet)")
+        else:
+            wisdom_index = None
 
         result = {
             "calibration_error": avg_cal_error,
@@ -278,17 +290,21 @@ class WisdomCalibrationTracker:
         total = self._state.get("total_claims_tracked", 0)
         resolved = self._state.get("total_claims_resolved", 0)
 
-        if wisdom is None and total == 0:
+        integrity = [s["score"] for s in self._state.get("integrity_scores", [])[-10:]]
+        avg_integrity_now = sum(integrity) / len(integrity) if integrity else None
+
+        if wisdom is None and total == 0 and avg_integrity_now is None:
             return ""
 
         ctx = "WISDOM CALIBRATION: "
         if wisdom is not None:
             ctx += f"Index={wisdom:.2f} "
+        elif avg_integrity_now is not None:
+            ctx += f"Index={avg_integrity_now:.2f}(bootstrap) "
         ctx += f"(Claims tracked={total}, resolved={resolved})"
 
-        integrity = [s["score"] for s in self._state.get("integrity_scores", [])[-10:]]
-        if integrity:
-            ctx += f" Avg integrity={sum(integrity)/len(integrity):.2f}"
+        if avg_integrity_now is not None:
+            ctx += f" Avg integrity={avg_integrity_now:.2f}"
 
         return ctx
 

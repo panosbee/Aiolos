@@ -1220,6 +1220,44 @@ class HypothesisEngine:
     #  Creation
     # ────────────────────────────────────────────────────────────
 
+    def _prune_stale_hypotheses(self) -> list["Hypothesis"]:
+        """Prune the bottom 10% of active hypotheses when at capacity.
+
+        Score = confidence × recency_factor where recency_factor decays
+        linearly from 1.0 → 0.0 over 30 days.  Lowest-scoring hypotheses
+        are marked expired and removed first.
+        """
+        active = self._active_hypotheses()
+        prune_count = max(1, len(active) // 10)  # 10% of current cap
+        now_ts = time.time()
+
+        def _score(h: "Hypothesis") -> float:
+            try:
+                created_ts = datetime.fromisoformat(h.created_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                created_ts = now_ts
+            age_days = (now_ts - created_ts) / 86400.0
+            recency = max(0.0, 1.0 - age_days / 30.0)
+            return h.confidence * recency
+
+        sorted_hyps = sorted(active, key=_score)
+        pruned: list["Hypothesis"] = []
+        for hyp in sorted_hyps[:prune_count]:
+            hyp.status = "expired"
+            hyp.resolved_at = datetime.now(timezone.utc).isoformat()
+            pruned.append(hyp)
+            self._total_expired += 1
+            self._journal_log("pruned_stale", hyp)
+
+        if pruned:
+            logger.info(
+                "[HypothesisEngine] Pruned %d stale hypotheses (lowest confidence×recency)",
+                len(pruned),
+            )
+            self._save_state()
+
+        return pruned
+
     def create_hypothesis(
         self,
         hypothesis_text: str,
@@ -1240,12 +1278,17 @@ class HypothesisEngine:
         Returns the Hypothesis if created, None if rejected (max active reached
         or duplicate detected).
         """
-        # Cap check
+        # Cap check — attempt pruning before hard rejection
         active = self._active_hypotheses()
         if len(active) >= self._MAX_ACTIVE:
-            logger.warning("[HypothesisEngine] Max active hypotheses (%d) — rejecting",
-                           self._MAX_ACTIVE)
-            return None
+            pruned = self._prune_stale_hypotheses()
+            active = self._active_hypotheses()
+            if len(active) >= self._MAX_ACTIVE:
+                logger.warning(
+                    "[HypothesisEngine] Max active hypotheses (%d) after pruning %d — rejecting",
+                    self._MAX_ACTIVE, len(pruned),
+                )
+                return None
 
         # Duplicate check — skip if we already track very similar hypothesis
         hyp_lower = hypothesis_text.lower()
@@ -1923,6 +1966,52 @@ class PatternAccumulator:
 
         return round(score, 3)
 
+    def _fission_pattern(self, parent: EmergentPattern) -> EmergentPattern | None:
+        """Split an oversaturated pattern into a focused child pattern.
+
+        When a parent pattern accumulates 20+ signals it may be covering
+        multiple distinct sub-themes.  Fission creates a child pattern seeded
+        with the 10 most-recent signals and the 3 most-frequently-mentioned
+        entities.  The parent retains its full signal history.
+
+        Returns the child EmergentPattern, or None if fission is not worthwhile
+        (e.g. child would have the same entities as parent → no real split).
+        """
+        if len(parent.signals) < 20:
+            return None
+
+        # Take the 10 most recent signals as the child's nucleus
+        recent_signals = sorted(parent.signals, key=lambda s: s.timestamp, reverse=True)[:10]
+
+        # Narrow entity set: top 3 by mention count in the RECENT signals
+        entity_freq: dict[str, int] = {}
+        for s in recent_signals:
+            for e in s.entities:
+                entity_freq[e] = entity_freq.get(e, 0) + 1
+        top_entities = {e for e, _ in sorted(entity_freq.items(), key=lambda x: -x[1])[:3]}
+
+        # Abort if child entities are identical to parent core (no useful split)
+        if top_entities and top_entities == parent.core_entities:
+            return None
+
+        # Build child using the most recent signal as seed
+        child = EmergentPattern(recent_signals[0])
+        for s in recent_signals[1:]:
+            child.signals.append(s)
+            child.topics |= s.topics
+            for e in s.entities:
+                child._entity_counts[e] = child._entity_counts.get(e, 0) + 1
+            child.regions.add(s.region)
+            child.source_types.add(s.source_type)
+        child._recalculate_convergence()
+
+        logger.info(
+            "[PatternAccumulator] FISSION: %s → %s (parent=%d signals, child=%d signals, entities=%s)",
+            parent.id, child.id, len(parent.signals), len(child.signals),
+            sorted(top_entities)[:3],
+        )
+        return child
+
     def ingest(
         self,
         source_type: str,
@@ -2079,6 +2168,12 @@ class PatternAccumulator:
                     target_pattern.source_types, sorted(target_pattern.core_entities)[:5],
                     headline,
                 )
+                # Fission: split oversaturated pattern into focused child
+                if len(target_pattern.signals) >= 20:
+                    child = self._fission_pattern(target_pattern)
+                    if child is not None:
+                        self._patterns.append(child)
+                        self._total_patterns_created += 1
             else:
                 target_pattern = EmergentPattern(signal)
                 self._patterns.append(target_pattern)

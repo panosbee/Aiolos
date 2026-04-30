@@ -127,6 +127,25 @@ BLOCKLIST = frozenset({
     "operation", "phase", "base", "post", "race", "earth", "plant",
     "language", "analysis", "access", "school", "media", "business",
     "financial", "support", "meeting", "close", "sites",
+    # Domain-noise: calendar / year tokens that spike every January
+    "2024", "2025", "2026", "2027", "2028",
+    "january", "february", "march", "april", "june", "july",
+    "august", "september", "october", "november", "december",
+    # Domain-noise: financial/economic generic terms with no spike signal
+    "bank", "banks", "banking", "market", "markets", "sector",
+    "economy", "economic", "trade", "fund", "funds", "stock",
+    "price", "prices", "rate", "rates", "growth", "spending",
+    "budget", "revenue", "billion", "million", "trillion",
+    "deal", "deals", "agreement", "agreements",
+    # Domain-noise: high-frequency political proper nouns (always in news)
+    "trump", "biden", "obama", "putin", "modi", "macron",
+    "china", "russia", "iran", "israel", "ukraine", "europe",
+    "america", "american", "chinese", "russian", "european",
+    # Meta / action verbs that never carry spike signal
+    "record", "write", "read", "plan", "plans", "planned",
+    "review", "reviews", "announce", "announced", "launch", "launched",
+    "sign", "signed", "adopt", "adopted", "vote", "voted",
+    "publish", "published", "release", "released",
 })
 
 
