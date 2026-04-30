@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Explicit path — immune to CWD issues (Greek directory names on Windows
+# can break find_dotenv() which relies on os.getcwd() traversal)
+_dotenv_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=_dotenv_path, override=False)
 
 # ── Paths ──
 BASE_DIR = Path(__file__).parent.parent
@@ -18,7 +21,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR)))
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-5.4")
 OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-OPENAI_MAX_TOKENS: int = int(os.getenv("OPENAI_MAX_TOKENS", "16384"))
+OPENAI_MAX_TOKENS: int = int(os.getenv("OPENAI_MAX_TOKENS", "65536"))
 OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
 
 # ── LLM Context Window ──
@@ -37,13 +40,22 @@ LLM_REASONING_ENABLED: bool = os.getenv("LLM_REASONING_ENABLED", "false").lower(
 # Enable thinking/CoT for DeepSeek models (works with both deepseek-chat and deepseek-reasoner)
 # Adds {"thinking": {"type": "enabled"}} to API calls
 LLM_THINKING_ENABLED: bool = os.getenv("LLM_THINKING_ENABLED", "true").lower() in ("true", "1", "yes")
-# Embedding provider — DeepSeek doesn't have embeddings, keep OpenAI for this
+# ── Embedding provider — DeepSeek doesn't have embeddings, keep OpenAI for this
 EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "")
 
+# ── Local (offline) embeddings via fastembed ──
+# Set LOCAL_EMBEDDING_ENABLED=true to use fastembed instead of OpenAI.
+# Requires `pip install fastembed` (already installed).
+# Default model: BAAI/bge-small-en-v1.5 → 384 dims.
+# ⚠ Changing dims requires QDRANT_VECTOR_SIZE to match + Qdrant collections will be recreated.
+LOCAL_EMBEDDING_ENABLED: bool = os.getenv("LOCAL_EMBEDDING_ENABLED", "false").lower() in ("true", "1", "yes")
+LOCAL_EMBEDDING_MODEL: str = os.getenv("LOCAL_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+LOCAL_EMBEDDING_DIM: int = int(os.getenv("LOCAL_EMBEDDING_DIM", "384"))
 # ── LLM Fallback Provider ──
 # If primary LLM (e.g. DeepSeek) fails/times out, fall back to this provider.
-LLM_FALLBACK_API_KEY: str = os.getenv("LLM_FALLBACK_API_KEY", "") or os.getenv("EMBEDDING_API_KEY", "")
+# Explicitly set in .env to disable fallback (empty string = no fallback client created)
+LLM_FALLBACK_API_KEY: str = os.getenv("LLM_FALLBACK_API_KEY", "")
 LLM_FALLBACK_BASE_URL: str = os.getenv("LLM_FALLBACK_BASE_URL", "")  # empty = OpenAI default
 LLM_FALLBACK_MODEL: str = os.getenv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
 
@@ -54,7 +66,9 @@ MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "aiolos")
 # ── Qdrant (Episodic Memory — local embedded mode, zero Docker) ──
 QDRANT_STORAGE_PATH: str = os.getenv("QDRANT_STORAGE_PATH", str(DATA_DIR / "qdrant_storage"))
 QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "xheart_states")
-QDRANT_VECTOR_SIZE: int = int(os.getenv("QDRANT_VECTOR_SIZE", "1536"))
+# Auto-match vector size to local embedding dim when LOCAL_EMBEDDING_ENABLED=true
+_default_vector_size = str(LOCAL_EMBEDDING_DIM) if LOCAL_EMBEDDING_ENABLED else "1536"
+QDRANT_VECTOR_SIZE: int = int(os.getenv("QDRANT_VECTOR_SIZE", _default_vector_size))
 
 # ── Framework Parameters ──
 XDART_MIN_DOMAINS: int = int(os.getenv("XDART_MIN_DOMAINS", "10"))
@@ -75,6 +89,16 @@ FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
 PERCEPTION_HOURS_BACK: int = int(os.getenv("PERCEPTION_HOURS_BACK", "72"))
 PERCEPTION_MAX_EVENTS: int = int(os.getenv("PERCEPTION_MAX_EVENTS", "10"))
 PERCEPTION_MAX_ECONOMIC: int = int(os.getenv("PERCEPTION_MAX_ECONOMIC", "5"))
+
+# ── Palantir P0: Real-Time Intelligence Feeds ──
+# OTX AlienVault (free, register at https://otx.alienvault.com)
+OTX_API_KEY: str = os.getenv("OTX_API_KEY", "***REMOVED***")
+# GreyNoise Community (free, register at https://www.greynoise.io)
+GREYNOISE_API_KEY: str = os.getenv("GREYNOISE_API_KEY", "***REMOVED***")
+# Sanctions cross-reference auto-download (always enabled, no key needed)
+SANCTIONS_ENABLED: bool = os.getenv("SANCTIONS_ENABLED", "true").lower() in ("true", "1", "yes")
+# Event calendar (always enabled, curated + dynamic)
+EVENT_CALENDAR_ENABLED: bool = os.getenv("EVENT_CALENDAR_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # ── Evolution Core (autonomous self-improvement) ──
 EVOLUTION_ENABLED: bool = os.getenv("EVOLUTION_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -150,6 +174,16 @@ PROACTIVE_ENABLED: bool = os.getenv("PROACTIVE_ENABLED", "true").lower() in ("tr
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# ── Telegram MTProto Intelligence (TelegramIntelTool — user account, NOT bot) ──
+# Required for Tier 2: join private channels, read history, native search
+# Get api_id and api_hash from: https://my.telegram.org/apps (create an app)
+# After setting these, run: python _setup_telegram_session.py (one-time phone verification)
+TELEGRAM_API_ID: int = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
+TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_SESSION_NAME: str = os.getenv("TELEGRAM_SESSION_NAME", ".telegram_session")
+# Tier 1 is always active (web search + t.me/s/ validation — no credentials needed)
+TELEGRAM_INTEL_TIER2_ENABLED: bool = bool(TELEGRAM_API_ID and TELEGRAM_API_HASH)
+
 # ── Multimodal Perception ──
 # OpenSky Network (free, registration recommended for higher rate limits)
 # API Client credentials — clientId as user, clientSecret as pass
@@ -205,3 +239,103 @@ PROMPT_OVERLAYS_PATH: str = str(DATA_DIR / "prompt_overlays.json")
 CURIOSITY_JOURNAL_PATH: str = str(DATA_DIR / "curiosity_journal.jsonl")
 CURIOSITY_STATE_PATH: str = str(DATA_DIR / "curiosity_state.json")
 PROACTIVE_LOG_PATH: str = str(DATA_DIR / "proactive_log.jsonl")
+
+# ── Palantir: Scheduled Autonomous Briefings ──
+# When enabled, Αίολος generates a full Executive Intelligence Brief on a
+# schedule and pushes it to Telegram + SSE without any human trigger.
+# BRIEFING_SCHEDULE_TIMES: comma-separated "HH:MM" values in Athens time.
+# E.g. "06:00" or "06:00,18:00" for morning and evening briefs.
+BRIEFING_ENABLED: bool = os.getenv("BRIEFING_ENABLED", "true").lower() in ("true", "1", "yes")
+BRIEFING_SCHEDULE_TIMES: list[str] = [
+    t.strip() for t in os.getenv("BRIEFING_SCHEDULE_TIMES", "06:00").split(",") if t.strip()
+]
+BRIEFING_TIMEZONE: str = os.getenv("BRIEFING_TIMEZONE", "Europe/Athens")
+
+# ── Dark Whisper Intelligence (Palantir Dark Wing — clearnet OSINT) ──
+# Monitors dark-adjacent clearnet sources: Telegram threat actor channels,
+# paste sites, ahmia.fi dark web index, and optional OSINT APIs.
+# ALL signals are isolated in a dirty pool; LLM triage before any integration.
+# DISABLED by default — enable explicitly when ready for dark signal intake.
+DARKWEB_ENABLED: bool = os.getenv("DARKWEB_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Collection interval in seconds (default: 30 minutes)
+DARKWEB_COLLECTION_INTERVAL: int = int(os.getenv("DARKWEB_COLLECTION_INTERVAL", "1800"))
+
+# Telegram public channels to monitor (comma-separated, without @)
+# Telegram public broadcast channels that support t.me/s/{channel} web preview.
+# IMPORTANT: channels without web preview enabled return a 302 redirect and yield
+# 0 signals. Only list channels verified to have web preview enabled.
+# Verified 2026-04-28: vxunderground, RedPacketSecurity, secharvester all return
+# live messages. The old hacktivist channels (KillNet, NoName, AnonymousSudan etc.)
+# have all disabled web preview — they are removed from the default list.
+DARKWEB_TELEGRAM_CHANNELS: list[str] = [
+    c.strip() for c in os.getenv(
+        "DARKWEB_TELEGRAM_CHANNELS",
+        "vxunderground,RedPacketSecurity,secharvester",
+    ).split(",") if c.strip()
+]
+
+# Ahmia.fi — clearnet index of dark web content (search-engine style)
+# NOTE: ahmia.fi clearnet search results are JS-rendered (AJAX) — the plain HTTP
+# response is a shell page with no results. Disabled by default until a proper
+# headless browser or their onion service is integrated.
+DARKWEB_AHMIA_ENABLED: bool = os.getenv("DARKWEB_AHMIA_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Paste sites polling (pastebin public archive)
+DARKWEB_PASTE_ENABLED: bool = os.getenv("DARKWEB_PASTE_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# OSINT API keys (optional — leave empty to skip)
+# DarkOwl: https://www.darkowl.com/  (paid, enterprise)
+DARKWEB_DARKOWL_KEY: str = os.getenv("DARKWEB_DARKOWL_KEY", "")
+# IntelligenceX: https://intelx.io/  (free tier available)
+DARKWEB_INTELX_KEY: str = os.getenv("DARKWEB_INTELX_KEY", "")
+
+# Minimum raw credibility (0-1) for a collected signal to enter dirty pool
+DARKWEB_MIN_CREDIBILITY: float = float(os.getenv("DARKWEB_MIN_CREDIBILITY", "0.05"))
+
+# LLM triage batch size (signals processed together in one LLM call)
+DARKWEB_TRIAGE_BATCH_SIZE: int = int(os.getenv("DARKWEB_TRIAGE_BATCH_SIZE", "10"))
+
+# MAYBE signal reactivation threshold — entity/topic overlap fraction required
+# to reactivate a dormant dark whisper when new evidence arrives
+DARKWEB_REACTIVATION_THRESHOLD: float = float(os.getenv("DARKWEB_REACTIVATION_THRESHOLD", "0.35"))
+
+# Threat keywords for ahmia.fi and paste site search targeting
+DARKWEB_THREAT_KEYWORDS: list[str] = [
+    k.strip() for k in os.getenv(
+        "DARKWEB_THREAT_KEYWORDS",
+        "cyberattack,ransomware,data breach,critical infrastructure,"
+        "NATO,Greece,Turkey,Israel,Iran,Russia,Ukraine,"
+        "financial system,power grid,water treatment,ddos campaign,"
+        "zero-day exploit,supply chain attack",
+    ).split(",") if k.strip()
+]
+
+# Maximum age (hours) of dark signals to keep in dirty pool before auto-purge
+DARKWEB_MAX_SIGNAL_AGE_HOURS: int = int(os.getenv("DARKWEB_MAX_SIGNAL_AGE_HOURS", "168"))  # 7 days
+
+# ── RSS threat intelligence feeds ────────────────────────────────────────────
+# Public RSS/Atom feeds from established cybersecurity sources.
+# These are clearnet, no API key required, and provide high-credibility signals.
+# Entries are filtered by DARKWEB_THREAT_KEYWORDS before entering the dirty pool.
+DARKWEB_RSS_ENABLED: bool = os.getenv("DARKWEB_RSS_ENABLED", "true").lower() in ("true", "1", "yes")
+
+_DEFAULT_RSS_FEEDS = (
+    # CISA Known Exploited Vulnerabilities / Advisories
+    "https://www.cisa.gov/cybersecurity-advisories/all-advisories.xml,"
+    # BleepingComputer — covers ransomware, breaches, APT campaigns
+    "https://www.bleepingcomputer.com/feed/,"
+    # The Hacker News — threat intelligence, zero-days, nation-state activity
+    "https://feeds.feedburner.com/TheHackersNews,"
+    # SecurityWeek — enterprise security, OT/ICS, APT
+    "https://www.securityweek.com/feed/,"
+    # The Record by Recorded Future — geopolitical cyber coverage
+    "https://therecord.media/feed,"
+    # Krebs on Security — deep investigative cybercrime/breach coverage
+    "https://krebsonsecurity.com/feed/"
+)
+
+DARKWEB_RSS_FEEDS: list[str] = [
+    u.strip() for u in os.getenv("DARKWEB_RSS_FEEDS", _DEFAULT_RSS_FEEDS).split(",")
+    if u.strip()
+]

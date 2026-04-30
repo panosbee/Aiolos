@@ -5,6 +5,12 @@
 # ── Secrets (NEVER commit) ──
 .env
 openai api key.txt
+*.session
+*.session-journal
+
+# ── Caches ──
+.fastembed_cache/
+qdrant_storage_tmp/
 
 # ── Python ──
 __pycache__/

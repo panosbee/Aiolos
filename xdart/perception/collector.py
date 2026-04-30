@@ -291,6 +291,25 @@ class DataCollector:
                     except Exception as e:
                         logger.warning("[Collector] Multimodal OSINT error: %s", e)
 
+                # Phase 3c: Real-Time Feeds (Finnhub forex, cyber intel, airspace warnings)
+                if hasattr(self, 'realtime_feeds') and self.realtime_feeds:
+                    try:
+                        # Pass airspace zone status for void detection
+                        airspace_status = None
+                        if self.multimodal_collector:
+                            airspace_status = self.multimodal_collector.airspace.zone_status
+                        rt_signals = await self.realtime_feeds.poll_all(
+                            airspace_zone_status=airspace_status,
+                        )
+                        # Feed signals into PatternAccumulator via alert handler
+                        if rt_signals and self.on_alert:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None, self.on_alert, rt_signals,
+                            )
+                            logger.info("[Collector] Real-Time Feeds: %d signals", len(rt_signals))
+                    except Exception as e:
+                        logger.warning("[Collector] Real-Time Feeds error: %s", e)
+
                 # Phase 4: Save entity graph periodically
                 if self.entity_graph and self._pending_alerts:
                     try:
@@ -314,6 +333,7 @@ class DataCollector:
                         logger.warning("[Collector] Alert callback failed: %s", e)
             except Exception as e:
                 logger.error("[Collector] Realtime loop error: %s", e)
+                health_tracker.record_error("PerceptionCollector", f"Realtime loop error: {e}", e)
             # Adaptive interval — back off after GDELT rate-limits
             if self._gdelt_rate_limited_recently:
                 self._realtime_interval = self._realtime_interval_backoff
@@ -356,6 +376,7 @@ class DataCollector:
                         logger.warning("[Collector] Cross-system learning error: %s", e)
             except Exception as e:
                 logger.error("[Collector] Hourly loop error: %s", e)
+                health_tracker.record_error("PerceptionCollector", f"Hourly loop error: {e}", e)
             await asyncio.sleep(60 * 60)
 
     async def _run_daily_loop(self):
@@ -396,6 +417,7 @@ class DataCollector:
                         logger.warning("[Collector] Daily alert callback failed: %s", e)
             except Exception as e:
                 logger.error("[Collector] Daily loop error: %s", e)
+                health_tracker.record_error("PerceptionCollector", f"Daily loop error: {e}", e)
             await asyncio.sleep(24 * 60 * 60)
 
     # ── GDELT DOC 2.0 (FREE, no key, Tier 1 — primary structured news) ──
@@ -528,7 +550,13 @@ class DataCollector:
                 # Cache this response to avoid redundant requests
                 self._gdelt_cache[query] = (time.time(), articles)
 
-                for article in articles:
+                for _art_idx, article in enumerate(articles):
+                    # Yield to event loop every 10 articles — NER + graph updates
+                    # are CPU-intensive and block the asyncio loop, preventing
+                    # health checks and chat from being served.
+                    if _art_idx % 10 == 0 and _art_idx > 0:
+                        await asyncio.sleep(0)
+
                     event_hash = hashlib.md5(
                         (article.get("title", "") + article.get("url", "")).encode()
                     ).hexdigest()
@@ -749,6 +777,15 @@ class DataCollector:
                 source_url = cols[60] if len(cols) > 60 else ""
                 event_date = cols[1] if len(cols) > 1 else ""
 
+                # ActionGeo coordinates (GDELT v2 columns 39=lat, 40=lon)
+                action_lat = action_lon = None
+                try:
+                    if len(cols) > 40 and cols[39] and cols[40]:
+                        action_lat = float(cols[39])
+                        action_lon = float(cols[40])
+                except (ValueError, IndexError):
+                    pass
+
                 # Build headline from CAMEO data
                 actor1 = actor1_name or actor1_country or "Unknown"
                 actor2 = actor2_name or actor2_country or "Unknown"
@@ -797,6 +834,7 @@ class DataCollector:
                         "num_mentions": num_mentions,
                         "avg_tone": avg_tone,
                         "location": location,
+                        **({"coordinates": [action_lon, action_lat]} if action_lat is not None and action_lon is not None else {}),
                     },
                 )
                 stored += 1
@@ -1030,7 +1068,9 @@ class DataCollector:
                 url = f"https://news.google.com/rss/topics/{topic_id}"
                 feed = await loop.run_in_executor(None, self._parse_feed, url)
 
-                for entry in feed.entries[:20]:
+                for _gn_idx, entry in enumerate(feed.entries[:20]):
+                    if _gn_idx % 10 == 0 and _gn_idx > 0:
+                        await asyncio.sleep(0)
                     headline = entry.get("title", "").strip()
                     if not headline:
                         continue
@@ -1106,7 +1146,9 @@ class DataCollector:
                 url = f"https://news.google.com/rss/search?q={query_str}&hl=en-US&gl=US&ceid=US:en"
                 feed = await loop.run_in_executor(None, self._parse_feed, url)
 
-                for entry in feed.entries[:25]:
+                for _gs_idx, entry in enumerate(feed.entries[:25]):
+                    if _gs_idx % 10 == 0 and _gs_idx > 0:
+                        await asyncio.sleep(0)
                     headline = entry.get("title", "").strip()
                     if not headline:
                         continue
@@ -1233,7 +1275,10 @@ class DataCollector:
                     loop = asyncio.get_event_loop()
                     feed = await loop.run_in_executor(None, self._parse_feed, source["url"])
 
-                    for entry in feed.entries[:15]:
+                    for _rss_idx, entry in enumerate(feed.entries[:15]):
+                        # Yield to event loop periodically — NER blocks event loop
+                        if _rss_idx % 8 == 0 and _rss_idx > 0:
+                            await asyncio.sleep(0)
                         headline = entry.get("title", "").strip()
                         if not headline:
                             continue
@@ -1482,18 +1527,19 @@ class DataCollector:
                 previous = observations[1] if len(observations) > 1 else None
 
                 # ── Staleness guard: skip discontinued/stale series ──
-                # If the latest observation is older than 90 days, the series
-                # is likely discontinued. Don't let stale data produce false
-                # economic_shift signals.
+                # Quarterly series (GDP, GFDEBTN, M2SL) naturally have obs >90 days old
+                # between releases. Use per-frequency thresholds.
+                _QUARTERLY_SERIES = {"GDP", "GFDEBTN", "M2SL", "GFDEGDQ188S"}
+                stale_days = 220 if series_id in _QUARTERLY_SERIES else 90
                 obs_date_str = current.get("date", "")
                 if obs_date_str:
                     try:
                         from datetime import datetime, timezone, timedelta
                         obs_date = datetime.strptime(obs_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                         age_days = (datetime.now(timezone.utc) - obs_date).days
-                        if age_days > 90:
-                            logger.warning("[Collector] FRED %s: STALE data (last=%s, %d days old) — skipping",
-                                           series_id, obs_date_str, age_days)
+                        if age_days > stale_days:
+                            logger.warning("[Collector] FRED %s: STALE data (last=%s, %d days old, threshold=%d) — skipping",
+                                           series_id, obs_date_str, age_days, stale_days)
                             continue
                     except (ValueError, TypeError):
                         pass  # If date parsing fails, proceed normally

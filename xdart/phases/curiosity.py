@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from xdart.llm import LLMClient
+from xdart.health_tracker import health_tracker
 
 logger = logging.getLogger("xdart.curiosity")
 
@@ -614,6 +615,8 @@ Explore this question thoroughly."""
 
             stored_semantic = 0
             stored_procedural = 0
+            skipped_semantic = 0
+            skipped_procedural = 0
 
             # Store semantic truths
             if self.semantic_memory:
@@ -621,17 +624,24 @@ Explore this question thoroughly."""
                     knowledge = truth.get("knowledge", "")
                     conf = truth.get("confidence", 0.5)
                     if knowledge and conf >= 0.4:
-                        is_new = self.semantic_memory.store_truth(
-                            knowledge=knowledge,
-                            confidence=conf,
-                            source="curiosity_exploration",
-                        )
-                        stored_semantic += 1
-                        logger.info(
-                            "[Curiosity→Semantic] %s: %s",
-                            "NEW" if is_new else "REINFORCED",
-                            knowledge[:80],
-                        )
+                        try:
+                            status = self.semantic_memory.store_truth(
+                                knowledge=knowledge,
+                                confidence=conf,
+                                source="curiosity_exploration",
+                            )
+                            if status is True:
+                                stored_semantic += 1
+                                logger.info("[Curiosity→Semantic] NEW: %s", knowledge[:80])
+                            elif status is False:
+                                stored_semantic += 1
+                                logger.info("[Curiosity→Semantic] REINFORCED: %s", knowledge[:80])
+                            else:
+                                skipped_semantic += 1
+                                logger.info("[Curiosity→Semantic] SKIPPED (quota/rate-limit): %s", knowledge[:80])
+                        except Exception as exc:
+                            skipped_semantic += 1
+                            logger.warning("[Curiosity→Semantic] Store failed for truth: %s", str(exc)[:180])
 
             # Store procedural patterns
             if self.procedural_memory:
@@ -641,30 +651,46 @@ Explore this question thoroughly."""
                     trigger = pat.get("trigger", "")
                     action = pat.get("action", "")
                     if name and trigger and action:
-                        pattern = ProceduralPattern(
-                            pattern_name=name,
-                            trigger_condition=trigger,
-                            action=action,
-                            learned_from=f"curiosity: {curiosity_data.get('question', '?')[:100]}",
-                        )
-                        self.procedural_memory._store(pattern)
-                        stored_procedural += 1
-                        logger.info("[Curiosity→Procedural] NEW: %s", name)
+                        try:
+                            pattern = ProceduralPattern(
+                                pattern_name=name,
+                                trigger_condition=trigger,
+                                action=action,
+                                learned_from=f"curiosity: {curiosity_data.get('question', '?')[:100]}",
+                            )
+                            status = self.procedural_memory._store(pattern)
+                            if status is True:
+                                stored_procedural += 1
+                                logger.info("[Curiosity→Procedural] NEW: %s", name)
+                            elif status is False:
+                                skipped_procedural += 1
+                                logger.debug("[Curiosity→Procedural] SKIPPED (duplicate): %s", name)
+                            else:  # None → store error
+                                skipped_procedural += 1
+                                logger.info("[Curiosity→Procedural] SKIPPED (store error): %s", name)
+                        except Exception as exc:
+                            skipped_procedural += 1
+                            logger.warning("[Curiosity→Procedural] Store failed for pattern '%s': %s", name[:60], str(exc)[:180])
 
             self._journal("memory_consolidation", {
                 "question": curiosity_data.get("question", "?")[:100],
                 "semantic_stored": stored_semantic,
+                "semantic_skipped": skipped_semantic,
                 "procedural_stored": stored_procedural,
+                "procedural_skipped": skipped_procedural,
                 "elapsed_seconds": round(elapsed, 2),
             })
 
             if stored_semantic or stored_procedural:
                 logger.info(
-                    "[Curiosity] Memory consolidation: %d semantic, %d procedural (%.1fs)",
-                    stored_semantic, stored_procedural, elapsed,
+                    "[Curiosity] Memory consolidation: %d semantic, %d procedural, %d semantic skipped, %d procedural skipped (%.1fs)",
+                    stored_semantic, stored_procedural, skipped_semantic, skipped_procedural, elapsed,
                 )
             else:
-                logger.info("[Curiosity] Memory consolidation: nothing to store (%.1fs)", elapsed)
+                logger.info(
+                    "[Curiosity] Memory consolidation: nothing to store (%d semantic skipped, %d procedural skipped) (%.1fs)",
+                    skipped_semantic, skipped_procedural, elapsed,
+                )
 
         except Exception as e:
             logger.warning("[Curiosity] Memory consolidation failed: %s", e)
@@ -1357,6 +1383,7 @@ class CuriosityLoop:
                 break
             except Exception as exc:
                 logger.warning("[CuriosityLoop] Cycle error: %s", exc)
+                health_tracker.record_error("CuriosityLoop", f"Cycle error: {exc}", exc)
 
             await asyncio.sleep(self.interval)
 
@@ -1697,7 +1724,7 @@ MULTI-ROUND RESEARCH FINDINGS:
 
 Synthesize this into a comprehensive knowledge nucleus.""",
                     temperature=0.3,
-                    max_tokens=4000,
+                    max_tokens=8000,
                 ),
             )
             elapsed = time.perf_counter() - t0

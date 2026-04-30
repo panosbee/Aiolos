@@ -839,6 +839,7 @@ class CrossSystemLearner:
                     "Generate the intelligence brief.",
                     max_tokens=1000,
                     temperature=0.3,
+                    thinking=False,
                 ),
             )
             logger.info("[CrossSystem] Intelligence brief generated (%d chars)", len(brief))

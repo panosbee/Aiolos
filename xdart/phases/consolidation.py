@@ -13,6 +13,10 @@ Interval is configurable (default: every 30 minutes).
 import asyncio
 import logging
 import time
+
+from xdart.health_tracker import health_tracker
+
+from xdart.health_tracker import health_tracker
 from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,7 @@ class MemoryConsolidationLoop:
                 break
             except Exception as exc:
                 logger.warning("[Consolidation] Cycle error: %s", exc)
+                health_tracker.record_error("MemoryConsolidation", f"Cycle error: {exc}", exc)
 
     async def _run_cycle(self):
         """Single consolidation cycle."""

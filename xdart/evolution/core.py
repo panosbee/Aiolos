@@ -382,6 +382,7 @@ class EvolutionCore:
                 fixed_code = self.llm.call(
                     system_prompt="You are a Python code fixer. Return ONLY the corrected Python code, no markdown, no explanation.",
                     user_prompt=fix_prompt,
+                    thinking=False,
                 )
                 # Strip markdown code fences if present
                 if fixed_code.startswith("```"):

@@ -1,3366 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>XDART-Φ × XHEART</title>
-<style>
-  :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface2: #1a1a28;
-    --border: #2a2a3a;
-    --gold: #d4a843;
-    --gold-dim: #a07830;
-    --red: #c44040;
-    --green: #40a060;
-    --blue: #4080c0;
-    --text: #e0e0e8;
-    --text-dim: #808090;
-    --text-bright: #f0f0ff;
-    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: var(--font);
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* ── Header ── */
-  header {
-    background: linear-gradient(135deg, #0d0d15, #15152a);
-    border-bottom: 1px solid var(--border);
-    padding: 20px 32px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .logo {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-  .logo-symbol {
-    font-size: 32px;
-    color: var(--gold);
-    font-weight: 700;
-  }
-  .logo-text h1 {
-    font-size: 20px;
-    color: var(--gold);
-    font-weight: 600;
-    letter-spacing: 1px;
-  }
-  .logo-text p {
-    font-size: 12px;
-    color: var(--text-dim);
-    font-style: italic;
-  }
-  .health-badge {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--text-dim);
-    background: var(--surface);
-    padding: 6px 14px;
-    border-radius: 20px;
-    border: 1px solid var(--border);
-  }
-  .health-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--red);
-  }
-  .health-dot.ok { background: var(--green); }
-
-  /* ── Main Layout ── */
-  main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    max-width: 1200px;
-    width: 100%;
-    margin: 0 auto;
-    padding: 0 32px;
-    gap: 0;
-    overflow: hidden;
-    min-height: 0;
-  }
-
-  /* ── Input Area ── */
-  .input-area {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 20px;
-    flex-shrink: 0;
-    margin: 8px 0 16px 0;
-  }
-  .input-area label {
-    display: block;
-    font-size: 13px;
-    color: var(--gold);
-    margin-bottom: 10px;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-  }
-  .input-row {
-    display: flex;
-    gap: 12px;
-    align-items: flex-end;
-  }
-  .input-row textarea {
-    flex: 1;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    color: var(--text-bright);
-    font-family: var(--font);
-    font-size: 15px;
-    resize: vertical;
-    min-height: 60px;
-    max-height: 200px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .input-row textarea:focus {
-    border-color: var(--gold);
-  }
-  .input-row textarea::placeholder {
-    color: var(--text-dim);
-  }
-  .input-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .strategy-select {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: var(--text);
-    font-size: 13px;
-    outline: none;
-    cursor: pointer;
-  }
-  .strategy-select:focus { border-color: var(--gold); }
-  .btn-run {
-    background: linear-gradient(135deg, var(--gold), var(--gold-dim));
-    color: #000;
-    border: none;
-    border-radius: 8px;
-    padding: 12px 28px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: opacity 0.2s, transform 0.1s;
-    white-space: nowrap;
-  }
-  .btn-run:hover { opacity: 0.9; transform: translateY(-1px); }
-  .btn-run:active { transform: translateY(0); }
-  .btn-run:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    transform: none;
-  }
-
-  /* ── Pipeline Progress ── */
-  .pipeline-progress {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    padding: 0;
-    flex-shrink: 0;
-  }
-  .phase-pip {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .phase-pip .dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--surface2);
-    border: 2px solid var(--border);
-    transition: all 0.3s;
-  }
-  .phase-pip .dot.active {
-    border-color: var(--gold);
-    background: var(--gold);
-    box-shadow: 0 0 8px rgba(212,168,67,0.4);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-  .phase-pip .dot.done {
-    border-color: var(--green);
-    background: var(--green);
-    box-shadow: none;
-    animation: none;
-  }
-  .phase-pip .label {
-    font-size: 11px;
-    color: var(--text-dim);
-    white-space: nowrap;
-  }
-  .phase-pip .dot.active + .label { color: var(--gold); }
-  .phase-pip .dot.done + .label { color: var(--green); }
-  .phase-connector {
-    width: 24px;
-    height: 2px;
-    background: var(--border);
-    transition: background 0.3s;
-  }
-  .phase-connector.done { background: var(--green); }
-
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 4px rgba(212,168,67,0.3); }
-    50% { box-shadow: 0 0 12px rgba(212,168,67,0.6); }
-  }
-
-  /* ── Results Area ── */
-  .results {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .phase-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    animation: slideIn 0.4s ease-out;
-  }
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .phase-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 20px;
-    background: var(--surface2);
-    border-bottom: 1px solid var(--border);
-    cursor: pointer;
-    user-select: none;
-  }
-  .phase-card-header:hover { background: #1e1e30; }
-  .phase-card-title {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .phase-card-title .icon {
-    font-size: 18px;
-  }
-  .phase-card-title h3 {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-bright);
-  }
-  .phase-card-time {
-    font-size: 12px;
-    color: var(--text-dim);
-    font-family: var(--mono);
-  }
-  .phase-card-body {
-    padding: 16px 20px;
-    font-size: 14px;
-    line-height: 1.7;
-  }
-  .phase-card-body.collapsed { display: none; }
-
-  /* ── Phase-specific styles ── */
-  /* phase-card identity/wakeup */
-  .phase-card.wakeup { border-left: 3px solid #00bcd4; }
-  .phase-card.character { border-left: 3px solid #ff9800; }
-
-  .phase-card.phase0 { border-left: 3px solid var(--gold); }
-  .phase-card.phase1 { border-left: 3px solid var(--blue); }
-  .phase-card.phase2 { border-left: 3px solid #9060c0; }
-  .phase-card.quantum { border-left: 3px solid #7c4dff; }
-  .phase-card.phase3 { border-left: 3px solid var(--red); }
-  .phase-card.final  { border-left: 3px solid var(--gold); border: 2px solid var(--gold); }
-
-  .kv-row {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 8px;
-  }
-  .kv-label {
-    min-width: 140px;
-    font-size: 12px;
-    color: var(--gold);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding-top: 2px;
-  }
-  .kv-value {
-    flex: 1;
-    color: var(--text);
-  }
-
-  /* Domain table */
-  .domain-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 8px 0;
-  }
-  .domain-table th {
-    text-align: left;
-    font-size: 11px;
-    color: var(--gold);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
-  }
-  .domain-table td {
-    padding: 8px 10px;
-    font-size: 13px;
-    border-bottom: 1px solid #1a1a24;
-  }
-  .strength-strong { color: var(--green); font-weight: 600; }
-  .strength-weak { color: #c0a040; }
-  .strength-none { color: var(--red); }
-
-  /* View cards */
-  .view-card {
-    background: var(--surface2);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 10px;
-    border-left: 2px solid #9060c0;
-  }
-  .view-card-header {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }
-  .view-card-id {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: #9060c0;
-    font-weight: 600;
-  }
-  .view-card-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-bright);
-  }
-  .view-card p { font-size: 13px; margin-top: 4px; }
-  .view-card .reveals {
-    font-size: 12px;
-    color: var(--text-dim);
-    font-style: italic;
-    margin-top: 4px;
-  }
-
-  /* Pattern chips */
-  .chip-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 8px;
-  }
-  .chip {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 4px 14px;
-    font-size: 12px;
-    color: var(--text);
-  }
-  .chip.convergent { border-color: var(--green); color: var(--green); }
-  .chip.divergent { border-color: #c0a040; color: #c0a040; }
-
-  /* XHEART card */
-  .xheart-internal {
-    text-align: center;
-    padding: 20px;
-    color: var(--text-dim);
-    font-style: italic;
-  }
-  .xheart-internal .heart {
-    font-size: 28px;
-    color: var(--red);
-    margin-bottom: 8px;
-  }
-  .xheart-status {
-    margin-top: 8px;
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .xheart-status.has-synthesis { color: var(--green); }
-  .xheart-status.no-synthesis { color: #c0a040; }
-
-  /* Final output */
-  .final-output {
-    font-size: 17px;
-    line-height: 1.8;
-    color: var(--text-bright);
-    padding: 8px 0;
-  }
-  .falsifiability {
-    margin-top: 16px;
-    padding: 12px 16px;
-    background: var(--surface2);
-    border-radius: 8px;
-    border-left: 3px solid var(--red);
-    font-size: 13px;
-    color: var(--text-dim);
-  }
-  .falsifiability strong {
-    color: var(--red);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  /* Timer */
-  .pipeline-timer {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--text-dim);
-    text-align: center;
-    padding: 4px;
-    flex-shrink: 0;
-  }
-
-  /* Layer badge */
-  .layer-badge {
-    display: inline-block;
-    padding: 3px 12px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  .layer-badge.layer-1 { background: #2a2030; color: #a080b0; border: 1px solid #604070; }
-  .layer-badge.layer-2 { background: #202a30; color: #80b0c0; border: 1px solid #406070; }
-  .layer-badge.layer-3 { background: #2a2520; color: var(--gold); border: 1px solid var(--gold-dim); }
-
-  /* ── Conversation history ── */
-  .conversation {
-    display: flex;
-    flex-direction: column;
-    gap: 32px;
-    flex: 1;
-    overflow-y: auto;
-    min-height: 0;
-    padding: 24px 0 16px 0;
-  }
-  .turn {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-  .turn-question {
-    background: var(--surface2);
-    border-radius: 12px;
-    padding: 16px 20px;
-    border-left: 3px solid var(--gold);
-    font-size: 15px;
-    color: var(--text-bright);
-  }
-  .turn-question .q-label {
-    font-size: 11px;
-    color: var(--gold);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 6px;
-  }
-
-  /* ── Empty state ── */
-  .empty-state {
-    text-align: center;
-    padding: 80px 20px;
-    color: var(--text-dim);
-  }
-  .empty-state .symbol {
-    font-size: 48px;
-    color: var(--gold);
-    margin-bottom: 16px;
-  }
-  .empty-state h2 {
-    font-size: 20px;
-    color: var(--text);
-    margin-bottom: 8px;
-  }
-  .empty-state p {
-    font-size: 14px;
-    max-width: 500px;
-    margin: 0 auto;
-    line-height: 1.6;
-  }
-
-  /* ── Footer ── */
-  footer {
-    text-align: center;
-    padding: 16px;
-    font-size: 12px;
-    color: var(--text-dim);
-    border-top: 1px solid var(--border);
-  }
-
-  /* ── Knowledge Dashboard ── */
-  .kb-toggle {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 6px 16px;
-    color: var(--gold);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .kb-toggle:hover { background: var(--surface2); border-color: var(--gold); }
-  .kb-toggle .kb-count {
-    background: var(--gold);
-    color: #000;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .kb-panel {
-    position: fixed;
-    top: 0;
-    right: -520px;
-    width: 500px;
-    height: 100vh;
-    background: var(--bg);
-    border-left: 1px solid var(--border);
-    z-index: 1000;
-    transition: right 0.3s ease;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .kb-panel.open { right: 0; }
-
-  .kb-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 999;
-    display: none;
-  }
-  .kb-overlay.visible { display: block; }
-
-  .kb-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    flex-shrink: 0;
-  }
-  .kb-header h2 {
-    font-size: 16px;
-    color: var(--gold);
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  .kb-close {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 20px;
-    cursor: pointer;
-    padding: 4px 8px;
-  }
-  .kb-close:hover { color: var(--text); }
-
-  .kb-tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    flex-shrink: 0;
-    overflow-x: auto;
-  }
-  .kb-tab {
-    padding: 10px 16px;
-    font-size: 12px;
-    color: var(--text-dim);
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    white-space: nowrap;
-    transition: all 0.2s;
-    background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
-  }
-  .kb-tab:hover { color: var(--text); }
-  .kb-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
-  .kb-tab .tab-count {
-    margin-left: 4px;
-    font-size: 10px;
-    opacity: 0.7;
-  }
-
-  .kb-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 20px;
-  }
-  .kb-section { display: none; }
-  .kb-section.active { display: block; }
-
-  .kb-section-title {
-    font-size: 11px;
-    color: var(--gold);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 12px;
-    font-weight: 600;
-  }
-
-  .kb-empty {
-    text-align: center;
-    color: var(--text-dim);
-    font-size: 13px;
-    padding: 32px 0;
-    font-style: italic;
-  }
-
-  /* Event cards */
-  .kb-event {
-    padding: 10px 12px;
-    background: var(--surface);
-    border-radius: 8px;
-    margin-bottom: 8px;
-    border-left: 3px solid var(--border);
-    font-size: 13px;
-  }
-  .kb-event.ECONOMIC { border-left-color: var(--blue); }
-  .kb-event.GEOPOLITICAL { border-left-color: var(--red); }
-  .kb-event.TECHNOLOGY { border-left-color: #b388ff; }
-  .kb-event.MARKET { border-left-color: var(--green); }
-  .kb-event .ev-headline {
-    color: var(--text-bright);
-    font-weight: 500;
-    margin-bottom: 4px;
-  }
-  .kb-event .ev-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .kb-event .ev-tag {
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    background: rgba(212,168,67,0.1);
-    color: var(--gold);
-  }
-
-  /* Indicator rows */
-  .kb-indicator {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 12px;
-    background: var(--surface);
-    border-radius: 6px;
-    margin-bottom: 6px;
-    font-size: 13px;
-  }
-  .kb-indicator .ind-name {
-    color: var(--text);
-    font-weight: 500;
-  }
-  .kb-indicator .ind-value {
-    font-family: var(--mono);
-    color: var(--text-bright);
-    font-size: 13px;
-  }
-  .kb-indicator .ind-change {
-    font-size: 11px;
-    margin-left: 8px;
-  }
-  .kb-indicator .ind-change.up { color: var(--green); }
-  .kb-indicator .ind-change.down { color: var(--red); }
-  .kb-indicator .ind-source {
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-
-  /* Concept cards */
-  .kb-concept {
-    padding: 10px 12px;
-    background: var(--surface);
-    border-radius: 8px;
-    margin-bottom: 8px;
-    border-left: 3px solid #00e676;
-  }
-  .kb-concept .c-name {
-    color: #00e676;
-    font-weight: 600;
-    font-size: 13px;
-  }
-  .kb-concept .c-type {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-left: 8px;
-    text-transform: uppercase;
-  }
-  .kb-concept .c-insight {
-    font-size: 12px;
-    color: var(--text);
-    margin-top: 4px;
-    line-height: 1.5;
-  }
-  .kb-concept .c-meta {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 4px;
-  }
-
-  /* Memory cards */
-  .kb-memory {
-    padding: 10px 12px;
-    background: var(--surface);
-    border-radius: 8px;
-    margin-bottom: 8px;
-    border-left: 3px solid #9060c0;
-  }
-  .kb-memory .m-problem {
-    color: var(--text-bright);
-    font-size: 13px;
-    font-weight: 500;
-    margin-bottom: 4px;
-  }
-  .kb-memory .m-distillate {
-    font-size: 12px;
-    color: var(--text);
-    font-style: italic;
-    line-height: 1.5;
-  }
-  .kb-memory .m-meta {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 4px;
-    display: flex;
-    gap: 10px;
-  }
-
-  /* Character section */
-  .kb-stance {
-    padding: 14px 16px;
-    background: var(--surface);
-    border-radius: 8px;
-    border-left: 3px solid #00bcd4;
-    font-size: 13px;
-    line-height: 1.7;
-    color: var(--text);
-    margin-bottom: 12px;
-    max-height: 200px;
-    overflow-y: auto;
-  }
-  .kb-tension {
-    padding: 8px 12px;
-    background: var(--surface);
-    border-radius: 6px;
-    margin-bottom: 6px;
-    border-left: 3px solid #ff9800;
-    font-size: 12px;
-  }
-  .kb-tension .t-between {
-    color: #ff9800;
-    font-weight: 600;
-    font-size: 11px;
-  }
-  .kb-tension .t-desc {
-    color: var(--text);
-    margin-top: 2px;
-    line-height: 1.5;
-  }
-
-  /* Recent runs */
-  .kb-run {
-    padding: 8px 12px;
-    background: var(--surface);
-    border-radius: 6px;
-    margin-bottom: 6px;
-    font-size: 12px;
-  }
-  .kb-run .r-problem {
-    color: var(--text-bright);
-    font-weight: 500;
-  }
-  .kb-run .r-distillate {
-    color: var(--text-dim);
-    font-style: italic;
-    margin-top: 2px;
-  }
-  .kb-run .r-concept {
-    color: #00e676;
-    font-size: 10px;
-    font-weight: 600;
-    margin-top: 2px;
-  }
-
-  /* ── Client Profile Selector ── */
-  .client-profile-area {
-    margin-top: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .profile-selector-row {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-  .profile-select {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: var(--text);
-    font-size: 13px;
-    outline: none;
-    cursor: pointer;
-    flex: 1;
-    max-width: 300px;
-  }
-  .profile-select:focus { border-color: var(--gold); }
-  .btn-profile-toggle {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 14px;
-    color: var(--text-dim);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
-    white-space: nowrap;
-  }
-  .btn-profile-toggle:hover { border-color: var(--gold); color: var(--gold); }
-  .btn-profile-toggle.active { border-color: var(--gold); color: var(--gold); background: rgba(212,168,67,0.08); }
-  .custom-profile-form {
-    display: none;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    gap: 10px;
-    flex-direction: column;
-  }
-  .custom-profile-form.visible { display: flex; }
-  .custom-profile-form label {
-    font-size: 11px;
-    color: var(--gold);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 2px;
-  }
-  .custom-profile-form input,
-  .custom-profile-form textarea {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 10px;
-    color: var(--text);
-    font-size: 13px;
-    font-family: var(--font);
-    outline: none;
-  }
-  .custom-profile-form input:focus,
-  .custom-profile-form textarea:focus { border-color: var(--gold); }
-  .custom-profile-form textarea { resize: vertical; min-height: 36px; }
-  .profile-fields-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .profile-field { display: flex; flex-direction: column; gap: 4px; }
-  .profile-field.full-width { grid-column: 1 / -1; }
-  .profile-hint {
-    font-size: 11px;
-    color: var(--text-dim);
-    text-align: center;
-    margin-top: 2px;
-  }
-
-  /* ── Robust Moves / Playbook styles ── */
-  .robust-move {
-    padding: 10px 14px;
-    background: rgba(76,175,80,0.06);
-    border-radius: 8px;
-    border-left: 3px solid #4caf50;
-    margin-bottom: 10px;
-  }
-  .robust-move .rm-action {
-    font-size: 14px;
-    color: var(--text-bright);
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-  .robust-move .rm-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .playbook-card {
-    background: var(--surface2);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 10px;
-    border-left: 2px solid #ffab40;
-  }
-  .playbook-card .pb-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-  }
-  .playbook-card .pb-name {
-    font-size: 13px;
-    font-weight: 600;
-    color: #ffab40;
-  }
-  .playbook-card .pb-prob {
-    font-size: 11px;
-    color: var(--text-dim);
-    font-family: var(--mono);
-  }
-  .playbook-action {
-    display: flex;
-    gap: 10px;
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    font-size: 13px;
-  }
-  .playbook-action:last-child { border-bottom: none; }
-  .playbook-action .pa-seq {
-    min-width: 24px;
-    height: 24px;
-    background: rgba(255,171,64,0.12);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: 700;
-    color: #ffab40;
-    flex-shrink: 0;
-  }
-  .playbook-action .pa-body { flex: 1; }
-  .playbook-action .pa-text { color: var(--text); }
-  .playbook-action .pa-meta {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
-
-  /* ── Decision Trigger styles ── */
-  .trigger-card {
-    background: rgba(255,152,0,0.04);
-    border: 1px solid rgba(255,152,0,0.15);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 10px;
-  }
-  .trigger-card .tc-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 8px;
-  }
-  .trigger-card .tc-id {
-    font-size: 11px;
-    font-family: var(--mono);
-    color: var(--text-dim);
-  }
-  .trigger-card .tc-action-label {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: rgba(255,152,0,0.12);
-    color: #ff9800;
-    font-weight: 600;
-  }
-  .trigger-condition {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 12px;
-  }
-  .trigger-condition .tc-signal-icon {
-    color: #ff9800;
-    font-weight: 700;
-    min-width: 16px;
-    text-align: center;
-  }
-  .trigger-condition .tc-signal { color: var(--text); }
-  .trigger-condition .tc-check { color: var(--text-dim); font-size: 11px; }
-  .trigger-then {
-    margin-top: 8px;
-    padding: 8px 12px;
-    background: rgba(76,175,80,0.06);
-    border-radius: 6px;
-    border-left: 2px solid #4caf50;
-    font-size: 12px;
-  }
-  .trigger-then .tt-label { color: #4caf50; font-weight: 600; font-size: 11px; text-transform: uppercase; }
-  .trigger-then .tt-scenario { color: var(--text); margin-top: 2px; }
-  .trigger-then .tt-playbook { color: var(--text-dim); margin-top: 2px; }
-  .trigger-then .tt-time { color: #ff9800; font-size: 11px; margin-top: 4px; }
-  .trigger-then .tt-risk { color: var(--text-dim); font-size: 11px; font-style: italic; }
-
-  /* Loading spinner */
-  .kb-loading {
-    text-align: center;
-    padding: 40px;
-    color: var(--text-dim);
-  }
-  .kb-loading .spinner {
-    display: inline-block;
-    width: 24px;
-    height: 24px;
-    border: 2px solid var(--border);
-    border-top-color: var(--gold);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    margin-bottom: 8px;
-  }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  /* Stats bar */
-  .kb-stats {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-bottom: 16px;
-  }
-  .kb-stat {
-    background: var(--surface);
-    border-radius: 8px;
-    padding: 10px 14px;
-    flex: 1;
-    min-width: 100px;
-    text-align: center;
-  }
-  .kb-stat .stat-num {
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--gold);
-    font-family: var(--mono);
-  }
-  .kb-stat .stat-label {
-    font-size: 10px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 2px;
-  }
-
-  /* ── Intelligence Panel ── */
-  .intel-btn {
-    background: rgba(196,64,64,0.08);
-    border: 1px solid rgba(196,64,64,0.3);
-    border-radius: 20px;
-    padding: 6px 16px;
-    color: var(--red);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 6px;
-  }
-  .intel-btn:hover { background: rgba(196,64,64,0.15); border-color: var(--red); }
-  .intel-btn .intel-pulse {
-    width: 7px;
-    height: 7px;
-    background: var(--red);
-    border-radius: 50%;
-    animation: intelPulse 2s ease-in-out infinite;
-  }
-  @keyframes intelPulse {
-    0%, 100% { opacity: 0.4; box-shadow: none; }
-    50% { opacity: 1; box-shadow: 0 0 6px rgba(196,64,64,0.6); }
-  }
-  .intel-btn .intel-score {
-    background: var(--red);
-    color: #fff;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .intel-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1001;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .intel-overlay.visible { display: block; }
-
-  .intel-panel {
-    position: fixed;
-    top: 0;
-    right: -600px;
-    width: 580px;
-    height: 100vh;
-    background: linear-gradient(180deg, #080810 0%, #0a0c14 100%);
-    border-left: 1px solid rgba(196,64,64,0.2);
-    z-index: 1002;
-    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .intel-panel.open { right: 0; }
-
-  .intel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    background: linear-gradient(90deg, rgba(196,64,64,0.08), transparent);
-    border-bottom: 1px solid rgba(196,64,64,0.15);
-    flex-shrink: 0;
-  }
-  .intel-header h2 {
-    font-size: 14px;
-    color: var(--red);
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .intel-header h2 .hdr-dot {
-    width: 6px;
-    height: 6px;
-    background: var(--red);
-    border-radius: 50%;
-    animation: intelPulse 2s ease-in-out infinite;
-  }
-  .intel-close {
-    background: none;
-    border: 1px solid rgba(196,64,64,0.2);
-    color: var(--text-dim);
-    font-size: 14px;
-    cursor: pointer;
-    padding: 4px 10px;
-    border-radius: 6px;
-    transition: all 0.2s;
-  }
-  .intel-close:hover { color: var(--red); border-color: var(--red); }
-
-  .intel-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  /* Strategic Risk Gauge */
-  .risk-gauge {
-    text-align: center;
-    padding: 20px;
-    background: rgba(196,64,64,0.04);
-    border: 1px solid rgba(196,64,64,0.1);
-    border-radius: 12px;
-  }
-  .risk-gauge .rg-score {
-    font-size: 48px;
-    font-weight: 800;
-    font-family: var(--mono);
-    line-height: 1;
-  }
-  .risk-gauge .rg-label {
-    font-size: 10px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    margin-top: 4px;
-  }
-  .risk-gauge .rg-sources {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 8px;
-  }
-
-  /* CII Country Rows */
-  .intel-section-title {
-    font-size: 10px;
-    color: var(--red);
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-weight: 700;
-    margin-bottom: 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid rgba(196,64,64,0.1);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .intel-section-title::before {
-    content: '▸';
-    font-size: 8px;
-  }
-
-  .cii-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    font-size: 13px;
-    transition: background 0.2s;
-  }
-  .cii-row:hover { background: rgba(255,255,255,0.02); }
-  .cii-row .cii-code {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-dim);
-    min-width: 24px;
-  }
-  .cii-row .cii-name {
-    flex: 1;
-    color: var(--text);
-    font-weight: 500;
-  }
-  .cii-row .cii-bar {
-    width: 80px;
-    height: 4px;
-    background: rgba(255,255,255,0.05);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .cii-row .cii-bar-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.5s;
-  }
-  .cii-row .cii-val {
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
-    min-width: 36px;
-    text-align: right;
-  }
-  .cii-row .cii-events {
-    font-size: 10px;
-    color: var(--text-dim);
-    min-width: 36px;
-    text-align: right;
-  }
-
-  /* Trending Keywords */
-  .trend-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    font-size: 12px;
-  }
-  .trend-row .tr-rank {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-dim);
-    min-width: 18px;
-  }
-  .trend-row .tr-term {
-    flex: 1;
-    color: var(--text-bright);
-    font-weight: 500;
-    font-family: var(--mono);
-  }
-  .trend-row .tr-count {
-    font-family: var(--mono);
-    color: var(--gold);
-    font-weight: 600;
-    font-size: 12px;
-  }
-  .trend-row .tr-sources {
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-
-  /* Spike Alert */
-  .spike-alert {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    background: rgba(196,64,64,0.06);
-    border: 1px solid rgba(196,64,64,0.15);
-    border-radius: 8px;
-    font-size: 12px;
-    animation: spikeFlash 0.6s ease-out;
-  }
-  @keyframes spikeFlash {
-    0% { background: rgba(196,64,64,0.2); }
-    100% { background: rgba(196,64,64,0.06); }
-  }
-  .spike-alert .sp-icon {
-    color: var(--red);
-    font-weight: 700;
-    font-size: 14px;
-  }
-  .spike-alert .sp-term {
-    font-family: var(--mono);
-    color: var(--text-bright);
-    font-weight: 600;
-  }
-  .spike-alert .sp-meta {
-    color: var(--text-dim);
-    font-size: 11px;
-    margin-left: auto;
-  }
-
-  /* Infrastructure mini */
-  .infra-stat {
-    display: flex;
-    gap: 16px;
-    padding: 10px 12px;
-    background: rgba(64,128,192,0.04);
-    border: 1px solid rgba(64,128,192,0.1);
-    border-radius: 8px;
-  }
-  .infra-stat .is-item {
-    text-align: center;
-    flex: 1;
-  }
-  .infra-stat .is-num {
-    font-size: 20px;
-    font-weight: 700;
-    font-family: var(--mono);
-    color: var(--blue);
-  }
-  .infra-stat .is-label {
-    font-size: 9px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  .intel-empty {
-    text-align: center;
-    padding: 32px;
-    color: var(--text-dim);
-    font-size: 12px;
-    font-style: italic;
-  }
-
-  .intel-ts {
-    text-align: right;
-    font-size: 10px;
-    color: rgba(255,255,255,0.15);
-    font-family: var(--mono);
-    padding-top: 8px;
-  }
-
-  /* Economic snapshot rows */
-  .econ-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 12px;
-    font-family: var(--mono);
-    border-bottom: 1px solid rgba(255,255,255,0.03);
-  }
-  .econ-label { color: var(--text-dim); flex: 1; }
-  .econ-val { color: var(--cyan); font-weight: 600; }
-  .econ-unit { color: rgba(255,255,255,0.25); font-size: 10px; min-width: 50px; }
-
-  /* Correlation alert rows */
-  .corr-alert {
-    padding: 6px 10px;
-    margin: 4px 0;
-    background: rgba(255,255,255,0.02);
-    border-radius: 4px;
-  }
-  .corr-sev { font-size: 9px; font-weight: 700; letter-spacing: 1px; }
-  .corr-summary { font-size: 11px; color: var(--text-dim); margin: 2px 0; }
-  .corr-types { font-size: 9px; color: rgba(255,255,255,0.25); font-family: var(--mono); }
-
-  /* Briefing download button */
-  .briefing-btn {
-    display: block;
-    margin: 8px auto 0;
-    padding: 6px 16px;
-    background: rgba(128,203,196,0.1);
-    color: var(--cyan);
-    border: 1px solid rgba(128,203,196,0.3);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 11px;
-    font-family: var(--mono);
-    transition: all 0.2s;
-  }
-  .briefing-btn:hover {
-    background: rgba(128,203,196,0.2);
-    border-color: var(--cyan);
-  }
-
-  /* ── Proactive Notification System ── */
-  .notif-btn {
-    background: rgba(255,152,0,0.08);
-    border: 1px solid rgba(255,152,0,0.3);
-    border-radius: 20px;
-    padding: 6px 14px;
-    color: #ff9800;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 6px;
-    position: relative;
-  }
-  .notif-btn:hover { background: rgba(255,152,0,0.15); border-color: #ff9800; }
-  .notif-btn .notif-badge {
-    background: #ff5722;
-    color: #fff;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-    min-width: 18px;
-    text-align: center;
-  }
-  .notif-btn .notif-badge.hidden { display: none; }
-  .notif-btn.has-unread { animation: notifGlow 2s ease-in-out infinite; }
-  @keyframes notifGlow {
-    0%, 100% { box-shadow: none; }
-    50% { box-shadow: 0 0 12px rgba(255,152,0,0.4); }
-  }
-
-  .notif-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1101;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .notif-overlay.visible { display: block; }
-
-  .notif-panel {
-    position: fixed;
-    top: 0; right: 0;
-    width: min(460px, 100vw);
-    height: 100vh;
-    background: var(--surface);
-    border-left: 1px solid var(--border);
-    z-index: 1102;
-    display: flex;
-    flex-direction: column;
-    transform: translateX(100%);
-    transition: transform 0.3s ease;
-  }
-  .notif-panel.visible { transform: translateX(0); }
-
-  .notif-header {
-    padding: 20px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .notif-header h2 {
-    color: #ff9800;
-    font-size: 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .notif-header-actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .notif-mark-read {
-    background: rgba(255,152,0,0.1);
-    border: 1px solid rgba(255,152,0,0.3);
-    color: #ff9800;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .notif-close {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 20px;
-    cursor: pointer;
-  }
-
-  .notif-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 12px;
-  }
-
-  .notif-item {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px;
-    margin-bottom: 10px;
-    transition: all 0.2s;
-    cursor: pointer;
-  }
-  .notif-item:hover { border-color: rgba(255,152,0,0.4); }
-  .notif-item.unread { border-left: 3px solid #ff9800; }
-  .notif-item.read { opacity: 0.65; }
-  .notif-item .notif-urgency {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    padding: 2px 8px;
-    border-radius: 3px;
-    margin-bottom: 6px;
-  }
-  .notif-item .notif-urgency.critical { background: rgba(244,67,54,0.2); color: #f44336; }
-  .notif-item .notif-urgency.important { background: rgba(255,152,0,0.2); color: #ff9800; }
-  .notif-item .notif-urgency.digest { background: rgba(100,181,246,0.2); color: #64b5f6; }
-  .notif-item .notif-headline {
-    font-weight: 600;
-    color: var(--text-bright);
-    font-size: 13px;
-    margin-bottom: 6px;
-  }
-  .notif-item .notif-summary {
-    color: var(--text);
-    font-size: 12px;
-    line-height: 1.5;
-  }
-  .notif-item .notif-meta {
-    margin-top: 8px;
-    font-size: 10px;
-    color: var(--text-dim);
-    display: flex;
-    gap: 12px;
-  }
-  .notif-empty {
-    text-align: center;
-    padding: 40px;
-    color: var(--text-dim);
-    font-size: 13px;
-  }
-
-  /* ── Tabs inside notification panel ── */
-  .notif-tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border);
-    padding: 0 12px;
-  }
-  .notif-tab {
-    flex: 1;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-dim);
-    padding: 10px 0;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .notif-tab:hover { color: var(--text-bright); }
-  .notif-tab.active {
-    color: #ff9800;
-    border-bottom-color: #ff9800;
-  }
-
-  /* ── Pattern items ── */
-  .pattern-item {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px;
-    margin-bottom: 10px;
-  }
-  .pattern-convergence-bar {
-    height: 6px;
-    background: rgba(255,255,255,0.06);
-    border-radius: 3px;
-    margin-bottom: 10px;
-    overflow: hidden;
-  }
-  .pattern-convergence-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.4s ease;
-  }
-  .pattern-convergence-fill.low { background: #64b5f6; }
-  .pattern-convergence-fill.warm { background: #ff9800; }
-  .pattern-convergence-fill.hot { background: #f44336; }
-  .pattern-convergence-fill.fired { background: #4caf50; }
-  .pattern-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
-  }
-  .pattern-score {
-    font-size: 18px;
-    font-weight: 700;
-    font-family: var(--mono);
-  }
-  .pattern-score.low { color: #64b5f6; }
-  .pattern-score.warm { color: #ff9800; }
-  .pattern-score.hot { color: #f44336; }
-  .pattern-score.fired { color: #4caf50; }
-  .pattern-meta {
-    font-size: 10px;
-    color: var(--text-dim);
-    display: flex;
-    gap: 8px;
-  }
-  .pattern-topics {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin: 8px 0;
-  }
-  .pattern-topic {
-    background: rgba(255,152,0,0.1);
-    color: #ff9800;
-    border-radius: 3px;
-    padding: 2px 6px;
-    font-size: 10px;
-    font-weight: 600;
-  }
-  .pattern-headlines {
-    font-size: 11px;
-    color: var(--text);
-    line-height: 1.5;
-    border-left: 2px solid rgba(255,152,0,0.3);
-    padding-left: 8px;
-    margin-top: 6px;
-  }
-  .pattern-headline-item { margin-bottom: 3px; }
-  .pattern-stats-bar {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-  .pattern-stat {
-    background: rgba(255,152,0,0.06);
-    border: 1px solid rgba(255,152,0,0.15);
-    border-radius: 6px;
-    padding: 10px;
-    text-align: center;
-  }
-  .pattern-stat-val {
-    font-size: 20px;
-    font-weight: 700;
-    color: #ff9800;
-    font-family: var(--mono);
-  }
-  .pattern-stat-label {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
-
-  /* Toast notification */
-  .notif-toast {
-    position: fixed;
-    top: 80px;
-    right: 24px;
-    min-width: 340px;
-    max-width: 440px;
-    background: var(--surface2);
-    border: 1px solid #ff9800;
-    border-left: 4px solid #ff9800;
-    border-radius: 8px;
-    padding: 16px;
-    z-index: 2000;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-    animation: toastSlideIn 0.3s ease;
-    cursor: pointer;
-  }
-  .notif-toast.critical { border-color: #f44336; border-left-color: #f44336; }
-  @keyframes toastSlideIn {
-    from { transform: translateX(120%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
-  }
-  .notif-toast-headline {
-    font-weight: 600;
-    color: var(--text-bright);
-    font-size: 13px;
-    margin-bottom: 6px;
-  }
-  .notif-toast-summary {
-    color: var(--text);
-    font-size: 12px;
-    line-height: 1.5;
-  }
-  .notif-toast-dismiss {
-    position: absolute;
-    top: 8px;
-    right: 10px;
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 14px;
-  }
-
-  /* ══════════════════════════════════════════════════════════════
-     PROPHECY COMMAND CENTER
-  ══════════════════════════════════════════════════════════════ */
-  .prophecy-btn {
-    background: rgba(124,77,255,0.08);
-    border: 1px solid rgba(124,77,255,0.3);
-    border-radius: 20px;
-    padding: 6px 16px;
-    color: #7c4dff;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 6px;
-  }
-  .prophecy-btn:hover { background: rgba(124,77,255,0.15); border-color: #7c4dff; }
-  .prophecy-btn .prop-badge {
-    background: #7c4dff;
-    color: #fff;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .prophecy-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1003;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .prophecy-overlay.visible { display: block; }
-
-  .prophecy-panel {
-    position: fixed;
-    top: 0; right: -640px;
-    width: 620px;
-    height: 100vh;
-    background: linear-gradient(180deg, #0a080f 0%, #0c0a14 100%);
-    border-left: 1px solid rgba(124,77,255,0.2);
-    z-index: 1004;
-    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .prophecy-panel.open { right: 0; }
-
-  .prophecy-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 20px;
-    background: linear-gradient(90deg, rgba(124,77,255,0.08), transparent);
-    border-bottom: 1px solid rgba(124,77,255,0.15);
-    flex-shrink: 0;
-  }
-  .prophecy-header h2 {
-    font-size: 14px; color: #7c4dff; font-weight: 700;
-    letter-spacing: 1.5px; text-transform: uppercase;
-  }
-  .prophecy-close {
-    background: none; border: 1px solid rgba(124,77,255,0.2);
-    color: var(--text-dim); font-size: 14px; cursor: pointer;
-    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
-  }
-  .prophecy-close:hover { color: #7c4dff; border-color: #7c4dff; }
-
-  .prophecy-tabs {
-    display: flex; border-bottom: 1px solid rgba(124,77,255,0.1);
-    background: rgba(124,77,255,0.03); flex-shrink: 0;
-  }
-  .prophecy-tab {
-    flex: 1; padding: 10px 16px; font-size: 12px;
-    color: var(--text-dim); cursor: pointer;
-    border: none; border-bottom: 2px solid transparent;
-    background: none; font-weight: 600; transition: all 0.2s;
-    text-align: center;
-  }
-  .prophecy-tab:hover { color: var(--text-bright); }
-  .prophecy-tab.active { color: #7c4dff; border-bottom-color: #7c4dff; }
-  .prophecy-tab .ptab-count {
-    margin-left: 4px; font-size: 10px; opacity: 0.7;
-  }
-
-  .prophecy-body {
-    flex: 1; overflow-y: auto; padding: 16px 20px;
-    display: flex; flex-direction: column; gap: 12px;
-  }
-
-  .prop-card {
-    background: rgba(124,77,255,0.04);
-    border: 1px solid rgba(124,77,255,0.1);
-    border-radius: 10px;
-    padding: 14px 16px;
-    transition: border-color 0.2s;
-  }
-  .prop-card:hover { border-color: rgba(124,77,255,0.25); }
-
-  .prop-card-header {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    margin-bottom: 8px;
-  }
-  .prop-name {
-    font-size: 14px; font-weight: 600; color: var(--text-bright);
-    line-height: 1.3; flex: 1; margin-right: 10px;
-  }
-  .prop-status {
-    font-size: 9px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 1px; padding: 3px 8px; border-radius: 4px;
-    white-space: nowrap;
-  }
-  .prop-status.active { background: rgba(124,77,255,0.15); color: #7c4dff; }
-  .prop-status.tracking { background: rgba(255,152,0,0.15); color: #ff9800; }
-  .prop-status.confirmed { background: rgba(76,175,80,0.15); color: #4caf50; }
-  .prop-status.disconfirmed { background: rgba(244,67,54,0.15); color: #f44336; }
-  .prop-status.expired { background: rgba(255,255,255,0.06); color: var(--text-dim); }
-  .prop-status.autonomous_proposed { background: rgba(255,215,64,0.15); color: #ffd740; }
-
-  .prop-narrative {
-    font-size: 12px; color: var(--text); line-height: 1.5;
-    margin-bottom: 8px; max-height: 80px; overflow-y: auto;
-  }
-  .prop-meta-row {
-    display: flex; gap: 12px; flex-wrap: wrap;
-    font-size: 11px; color: var(--text-dim); margin-bottom: 6px;
-  }
-  .prop-meta-row span { display: flex; align-items: center; gap: 3px; }
-  .prop-confidence {
-    font-family: var(--mono); font-weight: 700;
-  }
-  .prop-confidence.high { color: #4caf50; }
-  .prop-confidence.med { color: #ff9800; }
-  .prop-confidence.low { color: #f44336; }
-
-  .prop-markers {
-    display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
-  }
-  .prop-marker {
-    font-size: 10px; padding: 2px 8px; border-radius: 4px;
-    background: rgba(124,77,255,0.08); color: #b388ff;
-    border: 1px solid rgba(124,77,255,0.15);
-  }
-
-  .prop-actions {
-    display: flex; gap: 8px; margin-top: 10px;
-  }
-  .prop-action-btn {
-    padding: 5px 14px; border-radius: 6px; font-size: 11px;
-    font-weight: 600; cursor: pointer; transition: all 0.2s;
-    border: 1px solid transparent;
-  }
-  .prop-action-btn.approve {
-    background: rgba(76,175,80,0.12); color: #4caf50;
-    border-color: rgba(76,175,80,0.3);
-  }
-  .prop-action-btn.approve:hover { background: rgba(76,175,80,0.25); }
-  .prop-action-btn.reject {
-    background: rgba(244,67,54,0.08); color: #f44336;
-    border-color: rgba(244,67,54,0.2);
-  }
-  .prop-action-btn.reject:hover { background: rgba(244,67,54,0.2); }
-
-  /* Accuracy gauge */
-  .accuracy-gauge {
-    text-align: center; padding: 24px;
-    background: rgba(124,77,255,0.04);
-    border: 1px solid rgba(124,77,255,0.1);
-    border-radius: 12px; margin-bottom: 16px;
-  }
-  .accuracy-gauge .ag-score {
-    font-size: 48px; font-weight: 800; font-family: var(--mono); line-height: 1;
-  }
-  .accuracy-gauge .ag-label {
-    font-size: 10px; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 2px; margin-top: 4px;
-  }
-  .accuracy-gauge .ag-rating {
-    font-size: 13px; font-weight: 600; margin-top: 8px;
-  }
-
-  .prop-empty {
-    text-align: center; padding: 32px; color: var(--text-dim);
-    font-size: 12px; font-style: italic;
-  }
-
-  /* ══════════════════════════════════════════════════════════════
-     GOVERNANCE HUB
-  ══════════════════════════════════════════════════════════════ */
-  .gov-btn {
-    background: rgba(255,152,0,0.08);
-    border: 1px solid rgba(255,152,0,0.3);
-    border-radius: 20px;
-    padding: 6px 16px;
-    color: #ff9800;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 6px;
-  }
-  .gov-btn:hover { background: rgba(255,152,0,0.15); border-color: #ff9800; }
-  .gov-btn .gov-badge {
-    background: #ff9800;
-    color: #000;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .gov-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1005;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .gov-overlay.visible { display: block; }
-
-  .gov-panel {
-    position: fixed;
-    top: 0; right: -640px;
-    width: 620px;
-    height: 100vh;
-    background: linear-gradient(180deg, #0f0a08 0%, #120c0a 100%);
-    border-left: 1px solid rgba(255,152,0,0.2);
-    z-index: 1006;
-    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .gov-panel.open { right: 0; }
-
-  .gov-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 20px;
-    background: linear-gradient(90deg, rgba(255,152,0,0.08), transparent);
-    border-bottom: 1px solid rgba(255,152,0,0.15);
-    flex-shrink: 0;
-  }
-  .gov-header h2 {
-    font-size: 14px; color: #ff9800; font-weight: 700;
-    letter-spacing: 1.5px; text-transform: uppercase;
-  }
-  .gov-close {
-    background: none; border: 1px solid rgba(255,152,0,0.2);
-    color: var(--text-dim); font-size: 14px; cursor: pointer;
-    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
-  }
-  .gov-close:hover { color: #ff9800; border-color: #ff9800; }
-
-  .gov-tabs {
-    display: flex; border-bottom: 1px solid rgba(255,152,0,0.1);
-    background: rgba(255,152,0,0.03); flex-shrink: 0;
-  }
-  .gov-tab {
-    flex: 1; padding: 10px 12px; font-size: 11px;
-    color: var(--text-dim); cursor: pointer;
-    border: none; border-bottom: 2px solid transparent;
-    background: none; font-weight: 600; transition: all 0.2s;
-    text-align: center;
-  }
-  .gov-tab:hover { color: var(--text-bright); }
-  .gov-tab.active { color: #ff9800; border-bottom-color: #ff9800; }
-
-  .gov-body {
-    flex: 1; overflow-y: auto; padding: 16px 20px;
-    display: flex; flex-direction: column; gap: 12px;
-  }
-
-  .gov-card {
-    background: rgba(255,152,0,0.03);
-    border: 1px solid rgba(255,152,0,0.1);
-    border-radius: 8px;
-    padding: 12px 14px;
-    transition: border-color 0.2s;
-  }
-  .gov-card:hover { border-color: rgba(255,152,0,0.25); }
-
-  .gov-card-title {
-    font-size: 13px; font-weight: 600; color: var(--text-bright);
-    margin-bottom: 4px;
-  }
-  .gov-card-desc {
-    font-size: 11px; color: var(--text-dim); line-height: 1.5;
-    margin-bottom: 6px;
-  }
-  .gov-card-meta {
-    font-size: 10px; color: var(--text-dim);
-    display: flex; gap: 10px; flex-wrap: wrap;
-  }
-
-  .gov-section-title {
-    font-size: 10px; color: #ff9800; text-transform: uppercase;
-    letter-spacing: 1.5px; font-weight: 700; margin-bottom: 8px;
-    padding-bottom: 4px; border-bottom: 1px solid rgba(255,152,0,0.1);
-  }
-
-  .gov-empty {
-    text-align: center; padding: 32px; color: var(--text-dim);
-    font-size: 12px; font-style: italic;
-  }
-
-  .philosophy-switcher {
-    display: flex; gap: 8px; margin-bottom: 16px;
-  }
-  .philosophy-mode {
-    flex: 1; padding: 10px 12px; border-radius: 8px;
-    background: rgba(255,255,255,0.02);
-    border: 1px solid var(--border);
-    cursor: pointer; text-align: center; transition: all 0.2s;
-  }
-  .philosophy-mode:hover { border-color: rgba(255,152,0,0.3); }
-  .philosophy-mode.active-mode {
-    border-color: #ff9800;
-    background: rgba(255,152,0,0.08);
-  }
-  .philosophy-mode .pm-icon { font-size: 20px; display: block; margin-bottom: 4px; }
-  .philosophy-mode .pm-name {
-    font-size: 11px; font-weight: 600; color: var(--text-bright);
-  }
-  .philosophy-mode .pm-desc {
-    font-size: 9px; color: var(--text-dim); margin-top: 2px;
-  }
-
-  .sandbox-func {
-    background: rgba(255,255,255,0.02);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
-  }
-  .sandbox-func-header {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 4px;
-  }
-  .sandbox-func-name {
-    font-family: var(--mono); font-size: 12px; color: #ff9800; font-weight: 600;
-  }
-  .sandbox-func-version {
-    font-size: 10px; color: var(--text-dim); font-family: var(--mono);
-  }
-  .sandbox-func-desc {
-    font-size: 11px; color: var(--text-dim); line-height: 1.4;
-  }
-
-  /* ══════════════════════════════════════════════════════════════
-     KNOWLEDGE INJECTOR
-  ══════════════════════════════════════════════════════════════ */
-  .inject-btn {
-    background: rgba(0,230,118,0.08);
-    border: 1px solid rgba(0,230,118,0.3);
-    border-radius: 20px;
-    padding: 6px 16px;
-    color: #00e676;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 6px;
-  }
-  .inject-btn:hover { background: rgba(0,230,118,0.15); border-color: #00e676; }
-  .inject-btn .inject-badge {
-    background: #00e676;
-    color: #000;
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .inject-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1007;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .inject-overlay.visible { display: block; }
-
-  .inject-panel {
-    position: fixed;
-    top: 0; right: -520px;
-    width: 500px;
-    height: 100vh;
-    background: linear-gradient(180deg, #080f0a 0%, #0a120c 100%);
-    border-left: 1px solid rgba(0,230,118,0.2);
-    z-index: 1008;
-    transition: right 0.35s cubic-bezier(0.16,1,0.3,1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .inject-panel.open { right: 0; }
-
-  .inject-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 20px;
-    background: linear-gradient(90deg, rgba(0,230,118,0.08), transparent);
-    border-bottom: 1px solid rgba(0,230,118,0.15);
-    flex-shrink: 0;
-  }
-  .inject-header h2 {
-    font-size: 14px; color: #00e676; font-weight: 700;
-    letter-spacing: 1.5px; text-transform: uppercase;
-  }
-  .inject-close {
-    background: none; border: 1px solid rgba(0,230,118,0.2);
-    color: var(--text-dim); font-size: 14px; cursor: pointer;
-    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
-  }
-  .inject-close:hover { color: #00e676; border-color: #00e676; }
-
-  .inject-body {
-    flex: 1; overflow-y: auto; padding: 16px 20px;
-    display: flex; flex-direction: column; gap: 16px;
-  }
-
-  .inject-form {
-    display: flex; flex-direction: column; gap: 12px;
-  }
-  .inject-form label {
-    font-size: 11px; color: #00e676; text-transform: uppercase;
-    letter-spacing: 0.5px; font-weight: 600;
-  }
-  .inject-form input,
-  .inject-form textarea {
-    background: rgba(0,0,0,0.3);
-    border: 1px solid rgba(0,230,118,0.15);
-    border-radius: 8px;
-    padding: 10px 12px;
-    color: var(--text);
-    font-size: 13px;
-    font-family: var(--font);
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .inject-form input:focus,
-  .inject-form textarea:focus { border-color: #00e676; }
-  .inject-form textarea {
-    resize: vertical; min-height: 120px; line-height: 1.6;
-    font-family: var(--mono); font-size: 12px;
-  }
-  .inject-submit {
-    align-self: flex-start;
-    padding: 8px 20px; border-radius: 8px;
-    background: rgba(0,230,118,0.12); color: #00e676;
-    border: 1px solid rgba(0,230,118,0.3);
-    font-size: 12px; font-weight: 600; cursor: pointer;
-    transition: all 0.2s;
-  }
-  .inject-submit:hover { background: rgba(0,230,118,0.25); }
-  .inject-submit:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .inject-entry {
-    background: rgba(0,230,118,0.03);
-    border: 1px solid rgba(0,230,118,0.1);
-    border-radius: 8px;
-    padding: 10px 14px;
-  }
-  .inject-entry-source {
-    font-size: 10px; color: #00e676; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    margin-bottom: 4px;
-  }
-  .inject-entry-content {
-    font-size: 12px; color: var(--text); line-height: 1.5;
-    max-height: 80px; overflow-y: auto;
-  }
-  .inject-entry-time {
-    font-size: 10px; color: var(--text-dim); margin-top: 4px;
-  }
-
-  /* ══════════════════════════════════════════════════════════════════
-     LEFT-SIDE DRAWERS — Dashboard (JARVIS) + Entity Graph
-     ══════════════════════════════════════════════════════════════════ */
-
-  /* ── Left Drawer Base ── */
-  .left-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.45);
-    z-index: 1099;
-    display: none;
-    backdrop-filter: blur(2px);
-  }
-  .left-overlay.visible { display: block; }
-
-  .left-drawer {
-    position: fixed;
-    top: 0;
-    height: 100vh;
-    background: var(--bg);
-    border-right: 1px solid var(--border);
-    z-index: 1100;
-    transition: left 0.35s cubic-bezier(0.16,1,0.3,1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  /* ── Dashboard Drawer ── */
-  .dash-drawer {
-    left: -640px;
-    width: 620px;
-  }
-  .dash-drawer.open { left: 0; }
-
-  /* ── Entity Graph Drawer (D3.js) ── */
-  .egraph-drawer {
-    left: -820px;
-    width: 800px;
-  }
-  .egraph-drawer.open { left: 0; }
-
-  /* ── Vision Camera Drawer ── */
-  .vision-drawer {
-    left: -520px;
-    width: 500px;
-  }
-  .vision-drawer.open { left: 0; }
-
-  /* ── Live Events Map Drawer ── */
-  .map-drawer {
-    left: -920px;
-    width: 900px;
-  }
-  .map-drawer.open { left: 0; }
-  @media (max-width: 960px) {
-    .map-drawer { width: 100vw; left: -100vw; }
-  }
-  .map-drawer .left-drawer-header .map-title { color: #00d4ff; }
-  .map-drawer-container {
-    flex: 1;
-    position: relative;
-    z-index: 1;
-    min-height: 0;
-  }
-  .map-drawer-container .leaflet-container {
-    background: #070b10;
-    font-family: var(--font);
-  }
-  .map-drawer-container .leaflet-control-zoom a {
-    background: var(--surface2);
-    color: #00d4ff;
-    border-color: var(--border);
-  }
-  .map-drawer-container .leaflet-control-zoom a:hover {
-    background: #222d3d;
-  }
-  .map-drawer-container .leaflet-control-attribution {
-    background: rgba(10,14,20,0.7) !important;
-    color: var(--text-dim) !important;
-    font-size: 9px !important;
-  }
-  .map-drawer-container .leaflet-control-attribution a {
-    color: #0088aa !important;
-  }
-  .map-drawer-filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    z-index: 2;
-  }
-  .map-drawer-filter-btn {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 3px 10px;
-    color: var(--text-dim);
-    font-size: 11px;
-    cursor: pointer;
-    transition: all 0.2s;
-    white-space: nowrap;
-  }
-  .map-drawer-filter-btn:hover { border-color: #0088aa; color: var(--text); }
-  .map-drawer-filter-btn.active { border-color: #00d4ff; color: #00d4ff; background: rgba(0,212,255,0.08); }
-  .map-drawer-legend {
-    position: absolute;
-    bottom: 12px;
-    left: 12px;
-    background: rgba(17,24,34,0.92);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 10px;
-    z-index: 1000;
-    backdrop-filter: blur(4px);
-  }
-  .map-drawer-legend-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 2px;
-    color: var(--text-dim);
-  }
-  .map-drawer-legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    border: 1px solid rgba(255,255,255,0.15);
-  }
-  .map-drawer-stats {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-dim);
-    z-index: 1000;
-    background: rgba(17,24,34,0.85);
-    padding: 4px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-  }
-  .map-drawer-popup .leaflet-popup-content-wrapper {
-    background: var(--surface2);
-    color: var(--text);
-    border: 1px solid #0088aa;
-    border-radius: 8px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 10px rgba(0,212,255,0.1);
-  }
-  .map-drawer-popup .leaflet-popup-tip {
-    background: var(--surface2);
-    border: 1px solid #0088aa;
-  }
-  .map-drawer-popup .leaflet-popup-content {
-    margin: 10px 14px;
-    font-size: 11px;
-    line-height: 1.5;
-  }
-  .map-drawer-popup .mp-headline {
-    font-weight: 700;
-    color: var(--text-bright);
-    font-size: 12px;
-    margin-bottom: 6px;
-  }
-  .map-drawer-popup .mp-meta {
-    color: var(--text-dim);
-    font-size: 10px;
-  }
-  .map-drawer-popup .mp-domain {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-right: 6px;
-  }
-  .map-drawer-popup .mp-domain.geo { background: #c4404030; color: #ff6666; }
-  .map-drawer-popup .mp-domain.econ { background: #40a06030; color: #60d080; }
-  .map-drawer-popup .mp-domain.sec { background: #ff980030; color: #ffb840; }
-  .map-drawer-popup .mp-domain.tech { background: #9B59B630; color: #c080ff; }
-  .map-drawer-popup .mp-domain.mkt { background: #4A90D930; color: #6aafef; }
-  .map-drawer-popup .mp-domain.other { background: #80809030; color: #a0a0b0; }
-
-  .vision-feed {
-    width: 100%;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: #000;
-    min-height: 300px;
-  }
-  .vision-feed.offline {
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim); font-size: 1.1rem; min-height: 300px;
-  }
-  .vision-status-bar {
-    display: flex; gap: 12px; flex-wrap: wrap;
-    padding: 10px 0; font-size: 0.85rem; color: var(--text-dim);
-  }
-  .vision-status-bar .v-stat { display: flex; align-items: center; gap: 4px; }
-  .vision-status-bar .v-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    display: inline-block;
-  }
-  .vision-status-bar .v-dot.on { background: #0f0; }
-  .vision-status-bar .v-dot.off { background: #f44; }
-  .vision-identities {
-    margin-top: 10px; padding: 10px 14px;
-    background: var(--surface2); border-radius: 8px;
-  }
-  .vision-identities h4 { margin: 0 0 6px; color: var(--accent); font-size: 0.9rem; }
-  .vision-identity-item {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 4px 0; font-size: 0.85rem; color: var(--text);
-    border-bottom: 1px solid var(--border);
-  }
-  .vision-identity-item:last-child { border-bottom: none; }
-  .vision-controls {
-    display: flex; gap: 8px; margin-top: 12px;
-  }
-  .vision-controls button {
-    flex: 1; padding: 8px; border: 1px solid var(--border);
-    background: var(--surface2); color: var(--text); border-radius: 6px;
-    cursor: pointer; font-size: 0.85rem; transition: all 0.2s;
-  }
-  .vision-controls button:hover { background: var(--accent); color: #000; }
-  .vision-controls button.active { background: var(--accent); color: #000; }
-  .left-drawer-header .vision-title { color: #7cfc00; }
-
-  /* ── Drawer Header ── */
-  .left-drawer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(135deg, #0d0d15, #15152a);
-    flex-shrink: 0;
-  }
-  .left-drawer-header h2 {
-    font-size: 15px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  .left-drawer-header .dash-title { color: #00d4ff; }
-  .left-drawer-header .egraph-title { color: #4A90D9; }
-  .left-drawer-close {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 18px;
-    cursor: pointer;
-    padding: 2px 6px;
-    border-radius: 4px;
-    transition: all 0.2s;
-  }
-  .left-drawer-close:hover { color: var(--text); background: var(--surface2); }
-
-  /* ── Drawer Body ── */
-  .left-drawer-body {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 14px;
-  }
-
-  /* ── Dashboard KPIs ── */
-  .dash-kpi-strip {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-bottom: 14px;
-  }
-  .dash-kpi {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    text-align: center;
-  }
-  .dash-kpi-val {
-    font-size: 20px;
-    font-weight: 700;
-    font-family: var(--mono);
-  }
-  .dash-kpi-label {
-    font-size: 10px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 2px;
-  }
-  .dash-kpi-sub {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 1px;
-  }
-
-  /* ── Dashboard Sections ── */
-  .dash-section {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-bottom: 12px;
-    overflow: hidden;
-  }
-  .dash-section-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #00d4ff;
-    padding: 10px 14px 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-    user-select: none;
-  }
-  .dash-section-title:hover { background: var(--surface2); }
-  .dash-section-title .toggle-icon {
-    font-size: 10px;
-    transition: transform 0.2s;
-    margin-left: auto;
-  }
-  .dash-section-title .toggle-icon.collapsed { transform: rotate(-90deg); }
-  .dash-section-body {
-    max-height: 320px;
-    overflow-y: auto;
-    padding: 8px 12px;
-  }
-  .dash-section-body.collapsed { display: none; }
-
-  /* ── World Feed Items ── */
-  .dash-feed-item {
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(42,42,58,0.5);
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    font-size: 12px;
-  }
-  .dash-feed-item:last-child { border-bottom: none; }
-  .dash-domain-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    margin-top: 4px;
-  }
-  .dash-feed-headline {
-    flex: 1;
-    color: var(--text);
-    line-height: 1.4;
-  }
-  .dash-feed-meta {
-    font-size: 10px;
-    color: var(--text-dim);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  /* ── Prophecy Items ── */
-  .dash-prophecy {
-    padding: 8px 0;
-    border-bottom: 1px solid rgba(42,42,58,0.5);
-  }
-  .dash-prophecy:last-child { border-bottom: none; }
-  .dash-prophecy-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-bright);
-  }
-  .dash-prophecy-meta {
-    display: flex;
-    gap: 10px;
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 3px;
-  }
-  .dash-conf-bar {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--surface2);
-    margin-top: 4px;
-    overflow: hidden;
-  }
-  .dash-conf-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.3s;
-  }
-
-  /* ── Intel Metric Bars ── */
-  .dash-metric-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 0;
-    font-size: 12px;
-  }
-  .dash-metric-label {
-    width: 100px;
-    color: var(--text-dim);
-    flex-shrink: 0;
-    font-size: 11px;
-  }
-  .dash-metric-bar {
-    flex: 1;
-    height: 6px;
-    border-radius: 3px;
-    background: var(--surface2);
-    overflow: hidden;
-  }
-  .dash-metric-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.3s;
-  }
-  .dash-metric-val {
-    width: 45px;
-    text-align: right;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text);
-    flex-shrink: 0;
-  }
-
-  /* ── Evolution Timeline Items ── */
-  .dash-evo-item {
-    padding: 6px 0;
-    border-bottom: 1px solid rgba(42,42,58,0.5);
-  }
-  .dash-evo-item:last-child { border-bottom: none; }
-  .dash-evo-type {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    padding: 1px 6px;
-    border-radius: 3px;
-    display: inline-block;
-  }
-  .dash-evo-desc {
-    font-size: 12px;
-    color: var(--text);
-    margin-top: 2px;
-    line-height: 1.4;
-  }
-  .dash-evo-time {
-    font-size: 10px;
-    color: var(--text-dim);
-    margin-top: 1px;
-  }
-
-  /* ── Entity Graph Drawer (D3.js) ── */
-  .egraph-controls {
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    flex-shrink: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: center;
-  }
-  .egraph-stat {
-    font-size: 11px;
-    color: var(--text-dim);
-    font-family: var(--mono);
-  }
-  .egraph-search {
-    flex: 1;
-    min-width: 120px;
-    padding: 5px 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 12px;
-    font-family: var(--mono);
-    outline: none;
-  }
-  .egraph-search:focus { border-color: #00d4ff; }
-  .egraph-search::placeholder { color: var(--text-dim); }
-  .egraph-filter-btn {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 3px 8px;
-    color: var(--text-dim);
-    font-size: 10px;
-    cursor: pointer;
-    transition: all 0.2s;
-    white-space: nowrap;
-  }
-  .egraph-filter-btn:hover { border-color: #4A90D9; color: var(--text); }
-  .egraph-filter-btn.active { border-color: #4A90D9; color: #4A90D9; background: rgba(74,144,217,0.1); }
-  .egraph-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 14px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .egraph-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-  .egraph-legend-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-  .egraph-container {
-    flex: 1;
-    min-height: 0;
-    position: relative;
-    overflow: hidden;
-  }
-  .egraph-container svg {
-    width: 100%;
-    height: 100%;
-    display: block;
-  }
-  .egraph-tooltip {
-    position: absolute;
-    display: none;
-    z-index: 1200;
-    background: rgba(17,24,34,0.95);
-    border: 1px solid rgba(0,212,255,0.4);
-    border-radius: 8px;
-    padding: 10px 14px;
-    max-width: 320px;
-    font-size: 11px;
-    color: var(--text);
-    pointer-events: none;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 15px rgba(0,212,255,0.1);
-    backdrop-filter: blur(8px);
-  }
-  .egraph-tooltip .tt-name { font-weight: 700; color: var(--text-bright); font-size: 13px; }
-  .egraph-tooltip .tt-type { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
-  .egraph-tooltip .tt-stat { margin-top: 4px; color: var(--text-dim); }
-  .egraph-tooltip .tt-headline { margin-top: 6px; font-style: italic; color: var(--text-dim); font-size: 10px; border-top: 1px solid var(--border); padding-top: 5px; }
-  .egraph-stats-overlay {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-dim);
-    z-index: 5;
-    pointer-events: none;
-  }
-  .egraph-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--text-dim);
-    font-size: 13px;
-    gap: 8px;
-  }
-
-  /* ── Left Drawer Header Buttons ── */
-  .left-drawer-btn {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: all 0.2s;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .left-drawer-btn:hover { background: var(--surface2); }
-  .dash-btn { color: #00d4ff; border-color: rgba(0,212,255,0.3); background: rgba(0,212,255,0.06); }
-  .dash-btn:hover { border-color: #00d4ff; }
-  .egraph-btn { color: #4A90D9; border-color: rgba(74,144,217,0.3); background: rgba(74,144,217,0.06); }
-  .egraph-btn:hover { border-color: #4A90D9; }
-
-  /* ── Loading Spinner ── */
-  .left-drawer-loading {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 40px;
-    color: var(--text-dim);
-    font-size: 13px;
-    gap: 12px;
-  }
-
-  /* ── Vision Canvas Overlay ── */
-  #visionFeedWrap { position: relative; }
-  #visionVideo {
-    width: 100%; border-radius: 8px; background: #000;
-    display: block; min-height: 300px;
-  }
-  #visionCanvas {
-    position: absolute; top: 0; left: 0;
-    width: 100%; height: 100%; pointer-events: none;
-    border-radius: 8px;
-  }
-  .vision-scene-objects {
-    margin-top: 10px; padding: 10px 14px;
-    background: var(--surface2); border-radius: 8px;
-  }
-  .vision-scene-objects h4 { margin: 0 0 6px; color: #7cfc00; font-size: 0.9rem; }
-  .vision-obj-list { font-size: 0.85rem; color: var(--text); }
-  .vision-obj-item {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 3px 0; border-bottom: 1px solid var(--border);
-  }
-  .vision-obj-item:last-child { border-bottom: none; }
-  .vision-obj-badge {
-    padding: 1px 8px; border-radius: 10px; font-size: 0.75rem;
-    background: rgba(124,252,0,0.15); color: #7cfc00;
-  }
-
-</style>
-<!-- Leaflet.js for Live Events Map -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-<!-- TensorFlow.js + COCO-SSD for browser-side object detection (80 object classes) -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-</head>
-<body>
-
-<header>
-  <div class="logo">
-    <div class="logo-symbol">◈</div>
-    <div class="logo-text">
-      <h1>XDART-Φ × XHEART</h1>
-      <p>«Δεν χρειαζόμαστε LLMs που ξέρουν περισσότερα. Χρειαζόμαστε LLMs που βλέπουν βαθύτερα.»</p>
-    </div>
-  </div>
-  <div class="health-badge">
-    <div class="health-dot" id="healthDot"></div>
-    <span id="healthText">Connecting...</span>
-  </div>
-  <button class="kb-toggle" id="kbToggle" onclick="toggleKnowledge()">
-    ◈ Knowledge <span class="kb-count" id="kbCountBadge">—</span>
-  </button>
-  <button class="kb-toggle" id="saToggle" onclick="toggleSelfAwareness()" style="margin-left:6px;background:rgba(128,203,196,0.08);border-color:#80cbc4">
-    ψ Self <span class="kb-count" id="saCountBadge" style="background:#80cbc4">—</span>
-  </button>
-  <button class="intel-btn" id="intelToggle" onclick="toggleIntel()">
-    <span class="intel-pulse"></span>
-    INTEL
-    <span class="intel-score" id="intelScoreBadge">—</span>
-  </button>
-  <button class="prophecy-btn" id="prophecyToggle" onclick="toggleProphecy()">
-    🔮 Prophecies <span class="prop-badge" id="propCountBadge">—</span>
-  </button>
-  <button class="gov-btn" id="govToggle" onclick="toggleGovernance()">
-    ⚙ Governance <span class="gov-badge" id="govCountBadge">—</span>
-  </button>
-  <button class="inject-btn" id="injectToggle" onclick="toggleInject()">
-    📚 Inject <span class="inject-badge" id="injectCountBadge">0</span>
-  </button>
-  <button class="left-drawer-btn egraph-btn" id="egraphToggle" onclick="toggleEgraph()">
-    🕸 Graph
-  </button>
-  <button class="left-drawer-btn dash-btn" id="dashToggle" onclick="toggleDash()">
-    Φ JARVIS
-  </button>
-  <button class="left-drawer-btn" id="visionToggle" onclick="toggleVision()" style="color:#7cfc00">
-    👁 Vision
-  </button>
-  <button class="left-drawer-btn" id="mapToggle" onclick="toggleMapDrawer()" style="color:#00d4ff">
-    🌍 Map
-  </button>
-  <button class="notif-btn" id="notifToggle" onclick="toggleNotifications()">
-    🔔 <span class="notif-badge hidden" id="notifBadge">0</span>
-  </button>
-</header>
-
-<!-- ══════ LEFT-SIDE DRAWERS ══════ -->
-
-<!-- Dashboard (JARVIS) Overlay -->
-<div class="left-overlay" id="dashOverlay" onclick="toggleDash()"></div>
-
-<!-- Dashboard (JARVIS) Drawer -->
-<div class="left-drawer dash-drawer" id="dashDrawer">
-  <div class="left-drawer-header">
-    <h2 class="dash-title">Φ JARVIS — System Dashboard</h2>
-    <button class="left-drawer-close" onclick="toggleDash()">✕</button>
-  </div>
-  <div class="left-drawer-body" id="dashBody">
-    <div class="left-drawer-loading"><div class="spinner"></div><br>Loading dashboard...</div>
-  </div>
-</div>
-
-<!-- Entity Graph Overlay -->
-<div class="left-overlay" id="egraphOverlay" onclick="toggleEgraph()"></div>
-
-<!-- Entity Graph Drawer (D3.js Force-Directed) -->
-<div class="left-drawer egraph-drawer" id="egraphDrawer">
-  <div class="left-drawer-header">
-    <h2 class="egraph-title">🕸 Entity Knowledge Graph</h2>
-    <button class="left-drawer-close" onclick="toggleEgraph()">✕</button>
-  </div>
-  <div class="egraph-controls" id="egraphControls">
-    <input class="egraph-search" id="egraphSearch" type="text" placeholder="Search entity..." />
-    <button class="egraph-filter-btn active" data-type="ALL" onclick="egraphToggleFilter(this)">ALL</button>
-    <button class="egraph-filter-btn" data-type="GPE" onclick="egraphToggleFilter(this)">GPE</button>
-    <button class="egraph-filter-btn" data-type="PERSON" onclick="egraphToggleFilter(this)">PER</button>
-    <button class="egraph-filter-btn" data-type="ORG" onclick="egraphToggleFilter(this)">ORG</button>
-    <button class="egraph-filter-btn" data-type="NORP" onclick="egraphToggleFilter(this)">NORP</button>
-    <button class="egraph-filter-btn" data-type="EVENT" onclick="egraphToggleFilter(this)">EVT</button>
-  </div>
-  <div class="egraph-legend" id="egraphLegend"></div>
-  <div class="egraph-container" id="egraphContainer">
-    <div class="egraph-empty" id="egraphEmpty"><span style="font-size:28px">🕸</span><p>Open to load entity graph...</p></div>
-    <div class="egraph-tooltip" id="egraphTooltip"></div>
-    <div class="egraph-stats-overlay" id="egraphStatsOverlay"></div>
-  </div>
-</div>
-
-<!-- Vision Camera Overlay -->
-<div class="left-overlay" id="visionOverlay" onclick="toggleVision()"></div>
-
-<!-- Vision Camera Drawer -->
-<div class="left-drawer vision-drawer" id="visionDrawer">
-  <div class="left-drawer-header">
-    <h2 class="vision-title">👁 Αίολος Vision</h2>
-    <button class="left-drawer-close" onclick="toggleVision()">✕</button>
-  </div>
-  <div class="left-drawer-body" id="visionBody">
-    <div id="visionFeedWrap">
-      <video id="visionVideo" autoplay playsinline muted></video>
-      <canvas id="visionCanvas"></canvas>
-    </div>
-    <div class="vision-status-bar" id="visionStatusBar">
-      <span class="v-stat"><span class="v-dot off" id="visionDot"></span> <span id="visionCamLabel">Offline</span></span>
-      <span class="v-stat">Objects: <b id="visionObjCount">0</b></span>
-      <span class="v-stat">Faces: <b id="visionFaceCount">0</b></span>
-      <span class="v-stat">FPS: <b id="visionFPS">0</b></span>
-    </div>
-    <div class="vision-scene-objects" id="visionSceneWrap">
-      <h4>🔍 Αντικείμενα στη σκηνή</h4>
-      <div class="vision-obj-list" id="visionObjList"><em style="color:var(--text-dim)">Η κάμερα δεν είναι ενεργή</em></div>
-    </div>
-    <div class="vision-identities" id="visionIdentities">
-      <h4>👤 Αναγνωρισμένα πρόσωπα</h4>
-      <div id="visionIdentityList"><em style="color:var(--text-dim)">Δεν έχουν εντοπιστεί πρόσωπα ακόμα</em></div>
-    </div>
-    <div id="visionDataFlow" style="padding:4px 12px;font-size:11px;color:var(--text-dim)"></div>
-    <div class="vision-controls">
-      <button id="visionStartBtn" onclick="visionStart()">▶ Start</button>
-      <button id="visionStopBtn" onclick="visionStop()">⏹ Stop</button>
-      <button id="visionSnapshotBtn" onclick="visionSnapshot()">📷 Snapshot</button>
-    </div>
-  </div>
-</div>
-
-<!-- Live Events Map Overlay -->
-<div class="left-overlay" id="mapOverlay" onclick="toggleMapDrawer()"></div>
-
-<!-- Live Events Map Drawer -->
-<div class="left-drawer map-drawer" id="mapDrawer">
-  <div class="left-drawer-header">
-    <h2 class="map-title">🌍 Live Events Map</h2>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <span id="mapDrawerBadge" style="font-size:11px;color:var(--text-dim);font-family:var(--mono)">0 events</span>
-      <button class="left-drawer-close" onclick="toggleMapDrawer()">✕</button>
-    </div>
-  </div>
-  <div class="map-drawer-filter-bar">
-    <button class="map-drawer-filter-btn active" data-domain="ALL" onclick="mapDrawerFilter(this)">ALL</button>
-    <button class="map-drawer-filter-btn" data-domain="GEOPOLITICAL" onclick="mapDrawerFilter(this)">GEO</button>
-    <button class="map-drawer-filter-btn" data-domain="ECONOMIC" onclick="mapDrawerFilter(this)">ECON</button>
-    <button class="map-drawer-filter-btn" data-domain="SECURITY" onclick="mapDrawerFilter(this)">SEC</button>
-    <button class="map-drawer-filter-btn" data-domain="TECHNOLOGY" onclick="mapDrawerFilter(this)">TECH</button>
-    <button class="map-drawer-filter-btn" data-domain="MARKET" onclick="mapDrawerFilter(this)">MKT</button>
-  </div>
-  <div class="map-drawer-container" id="mapDrawerContainer">
-    <div class="map-drawer-legend" id="mapDrawerLegend"></div>
-    <div class="map-drawer-stats" id="mapDrawerStats">0 events</div>
-  </div>
-</div>
-
-<!-- ══════ RIGHT-SIDE PANELS ══════ -->
-
-<!-- Notification Panel Overlay -->
-<div class="notif-overlay" id="notifOverlay" onclick="toggleNotifications()"></div>
-
-<!-- Notification Panel -->
-<div class="notif-panel" id="notifPanel">
-  <div class="notif-header">
-    <h2>🔔 Αίολος — Proactive</h2>
-    <div class="notif-header-actions">
-      <button class="notif-mark-read" onclick="markAllNotificationsRead()">Mark all read</button>
-      <button class="notif-close" onclick="toggleNotifications()">✕</button>
-    </div>
-  </div>
-  <!-- Tabs: Notifications | Patterns -->
-  <div class="notif-tabs">
-    <button class="notif-tab active" data-tab="notifications" onclick="switchNotifTab('notifications')">Notifications</button>
-    <button class="notif-tab" data-tab="patterns" onclick="switchNotifTab('patterns')">🧬 Patterns</button>
-  </div>
-  <div class="notif-body" id="notifBody">
-    <div class="notif-empty">No notifications yet. Αίολος will reach out when he finds something important.</div>
-  </div>
-  <div class="notif-body hidden" id="patternsBody">
-    <div class="notif-empty">Loading patterns...</div>
-  </div>
-</div>
-
-<!-- Knowledge Dashboard Overlay -->
-<div class="kb-overlay" id="kbOverlay" onclick="toggleKnowledge()"></div>
-
-<!-- Knowledge Dashboard Panel -->
-<div class="kb-panel" id="kbPanel">
-  <div class="kb-header">
-    <h2>◈ Τι ξέρει το framework</h2>
-    <button class="kb-close" onclick="toggleKnowledge()">✕</button>
-  </div>
-  <div class="kb-tabs">
-    <button class="kb-tab active" onclick="switchKbTab('overview', this)">Overview</button>
-    <button class="kb-tab" onclick="switchKbTab('perception', this)">🌍 World<span class="tab-count" id="tabCountEvents"></span></button>
-    <button class="kb-tab" onclick="switchKbTab('indicators', this)">📊 Indicators<span class="tab-count" id="tabCountIndicators"></span></button>
-    <button class="kb-tab" onclick="switchKbTab('concepts', this)">🧠 Concepts<span class="tab-count" id="tabCountConcepts"></span></button>
-    <button class="kb-tab" onclick="switchKbTab('memories', this)">∞ Memories<span class="tab-count" id="tabCountMemories"></span></button>
-    <button class="kb-tab" onclick="switchKbTab('identity', this)">◉ Identity</button>
-  </div>
-  <div class="kb-body">
-    <div id="kbContent">
-      <div class="kb-loading"><div class="spinner"></div><br>Loading knowledge...</div>
-    </div>
-  </div>
-</div>
-
-<!-- Self-Awareness Panel Overlay -->
-<div class="kb-overlay" id="saOverlay" onclick="toggleSelfAwareness()"></div>
-
-<!-- Self-Awareness Panel -->
-<div class="kb-panel" id="saPanel" style="border-left-color:#80cbc4">
-  <div class="kb-header" style="border-bottom-color:rgba(128,203,196,0.2)">
-    <h2>ψ Αυτογνωσία</h2>
-    <button class="kb-close" onclick="toggleSelfAwareness()">✕</button>
-  </div>
-  <div class="kb-tabs">
-    <button class="kb-tab active" onclick="switchSaTab('introspection', this)">🔍 Introspection</button>
-    <button class="kb-tab" onclick="switchSaTab('evolution', this)">⟳ Self-Evolution</button>
-    <button class="kb-tab" onclick="switchSaTab('wisdom', this)">⚖ Wisdom</button>
-  </div>
-  <div class="kb-body">
-    <div id="saContent">
-      <div class="kb-loading"><div class="spinner"></div><br>Loading self-awareness data...</div>
-    </div>
-  </div>
-</div>
-
-<!-- Intelligence Overlay -->
-<div class="intel-overlay" id="intelOverlay" onclick="toggleIntel()"></div>
-
-<!-- Intelligence Panel -->
-<div class="intel-panel" id="intelPanel">
-  <div class="intel-header">
-    <h2><span class="hdr-dot"></span> INTELLIGENCE BRIEF</h2>
-    <button class="intel-close" onclick="toggleIntel()">✕</button>
-  </div>
-  <div class="intel-body" id="intelBody">
-    <div class="intel-empty">Awaiting intelligence data…</div>
-  </div>
-</div>
-
-<!-- Prophecy Command Center Overlay -->
-<div class="prophecy-overlay" id="prophecyOverlay" onclick="toggleProphecy()"></div>
-
-<!-- Prophecy Command Center Panel -->
-<div class="prophecy-panel" id="prophecyPanel">
-  <div class="prophecy-header">
-    <h2>🔮 PROPHECY COMMAND CENTER</h2>
-    <button class="prophecy-close" onclick="toggleProphecy()">✕</button>
-  </div>
-  <div class="prophecy-tabs">
-    <button class="prophecy-tab active" onclick="switchProphecyTab('active', this)">
-      Active <span class="ptab-count" id="ptabActive"></span>
-    </button>
-    <button class="prophecy-tab" onclick="switchProphecyTab('autonomous', this)">
-      🤖 Autonomous <span class="ptab-count" id="ptabAutonomous"></span>
-    </button>
-    <button class="prophecy-tab" onclick="switchProphecyTab('accuracy', this)">
-      📊 Accuracy
-    </button>
-    <button class="prophecy-tab" onclick="switchProphecyTab('resolved', this)">
-      ✅ Resolved <span class="ptab-count" id="ptabResolved"></span>
-    </button>
-  </div>
-  <div class="prophecy-body" id="prophecyBody">
-    <div class="prop-empty">Loading prophecies…</div>
-  </div>
-</div>
-
-<!-- Governance Hub Overlay -->
-<div class="gov-overlay" id="govOverlay" onclick="toggleGovernance()"></div>
-
-<!-- Governance Hub Panel -->
-<div class="gov-panel" id="govPanel">
-  <div class="gov-header">
-    <h2>⚙ GOVERNANCE HUB</h2>
-    <button class="gov-close" onclick="toggleGovernance()">✕</button>
-  </div>
-  <div class="gov-tabs">
-    <button class="gov-tab active" onclick="switchGovTab('principles', this)">
-      📜 Principles
-    </button>
-    <button class="gov-tab" onclick="switchGovTab('sandbox', this)">
-      🧪 Logic Sandbox
-    </button>
-    <button class="gov-tab" onclick="switchGovTab('strategies', this)">
-      🧠 Strategies
-    </button>
-  </div>
-  <div class="gov-body" id="govBody">
-    <div class="gov-empty">Loading governance data…</div>
-  </div>
-</div>
-
-<!-- Knowledge Injector Overlay -->
-<div class="inject-overlay" id="injectOverlay" onclick="toggleInject()"></div>
-
-<!-- Knowledge Injector Panel -->
-<div class="inject-panel" id="injectPanel">
-  <div class="inject-header">
-    <h2>📚 KNOWLEDGE INJECTOR</h2>
-    <button class="inject-close" onclick="toggleInject()">✕</button>
-  </div>
-  <div class="inject-body" id="injectBody">
-    <div class="inject-form">
-      <label>Source</label>
-      <input type="text" id="injectSource" placeholder="e.g. academic_paper, expert_briefing, classified" />
-      <label>Knowledge Content</label>
-      <textarea id="injectContent" placeholder="Paste the knowledge text here... (academic papers, expert analysis, domain insights)"></textarea>
-      <button class="inject-submit" id="injectSubmitBtn" onclick="submitKnowledgeInjection()">
-        Inject Knowledge
-      </button>
-    </div>
-    <div id="injectExistingList"></div>
-  </div>
-</div>
-
-<main>
-  <!-- Conversation / Results (scrollable area) -->
-  <div class="conversation" id="conversation">
-    <div class="empty-state" id="emptyState">
-      <div class="symbol">◈</div>
-      <h2>Prophetic Intelligence System</h2>
-      <p>
-        <strong>Chat</strong> (Enter) — Ask anything. The system decides whether to respond
-        directly or trigger a full prophetic analysis.<br>
-        <strong>Analyze</strong> (Ctrl+Shift+Enter) — Force a full 12-phase deep analysis
-        with scenario generation, historical resonance, and falsifiable bets.<br>
-        <strong>Client Profile</strong> — Select who the analysis is for to get
-        concrete action playbooks and decision triggers.
-      </p>
-    </div>
-  </div>
-
-  <!-- Pipeline progress bar (hidden until running) -->
-  <div id="progressBar" class="pipeline-progress" style="display:none; justify-content:center; padding:8px 0;">
-    <div class="phase-pip" data-phase="wakeup_complete">
-      <div class="dot" id="pip-wakeup"></div>
-      <span class="label">Wakeup</span>
-    </div>
-    <div class="phase-connector" id="conn-w0"></div>
-    <div class="phase-pip" data-phase="phase0_ontology">
-      <div class="dot" id="pip-phase0"></div>
-      <span class="label">Ontology</span>
-    </div>
-    <div class="phase-connector" id="conn-01"></div>
-    <div class="phase-pip" data-phase="phase1_xdart">
-      <div class="dot" id="pip-phase1"></div>
-      <span class="label">Cross-Domain</span>
-    </div>
-    <div class="phase-connector" id="conn-12"></div>
-    <div class="phase-pip" data-phase="phase2_views">
-      <div class="dot" id="pip-phase2"></div>
-      <span class="label">Views</span>
-    </div>
-    <div class="phase-connector" id="conn-2s"></div>
-    <div class="phase-pip" data-phase="phase2_5_scenarios">
-      <div class="dot" id="pip-scenarios"></div>
-      <span class="label">Scenarios</span>
-    </div>
-    <div class="phase-connector" id="conn-st"></div>
-    <div class="phase-pip" data-phase="phase2_9_tribunal">
-      <div class="dot" id="pip-tribunal"></div>
-      <span class="label">Tribunal</span>
-    </div>
-    <div class="phase-connector" id="conn-tq"></div>
-    <div class="phase-pip" data-phase="phase2_91_quantum">
-      <div class="dot" id="pip-quantum"></div>
-      <span class="label">Quantum</span>
-    </div>
-    <div class="phase-connector" id="conn-qa"></div>
-    <div class="phase-pip" data-phase="phase2_95_actions">
-      <div class="dot" id="pip-actions"></div>
-      <span class="label">Actions</span>
-    </div>
-    <div class="phase-connector" id="conn-a3"></div>
-    <div class="phase-pip" data-phase="phase3_xheart">
-      <div class="dot" id="pip-phase3"></div>
-      <span class="label">XHEART</span>
-    </div>
-    <div class="phase-connector" id="conn-3h"></div>
-    <div class="phase-pip" data-phase="phase3_5_historical">
-      <div class="dot" id="pip-historical"></div>
-      <span class="label">History</span>
-    </div>
-    <div class="phase-connector" id="conn-hs"></div>
-    <div class="phase-pip" data-phase="phase3_7_strategic">
-      <div class="dot" id="pip-strategic"></div>
-      <span class="label">Strategy</span>
-    </div>
-    <div class="phase-connector" id="conn-sb"></div>
-    <div class="phase-pip" data-phase="phase3_9_bets">
-      <div class="dot" id="pip-bets"></div>
-      <span class="label">Bets</span>
-    </div>
-    <div class="phase-connector" id="conn-b4"></div>
-    <div class="phase-pip" data-phase="phase4_memory">
-      <div class="dot" id="pip-phase4"></div>
-      <span class="label">Memory</span>
-    </div>
-  </div>
-  <div id="timerDisplay" class="pipeline-timer" style="display:none;"></div>
-
-  <!-- Input area (pinned at bottom) -->
-  <div class="input-area">
-    <div class="input-row">
-      <textarea id="problemInput" placeholder="Ask anything... the system will decide whether to respond directly or trigger a full prophetic analysis." rows="2"></textarea>
-      <div class="input-controls">
-        <button class="btn-run" id="btnMic" onclick="toggleVoiceRecording()" title="Hold to record voice" style="background:linear-gradient(135deg,#1b5e20,#2e7d32);min-width:44px;font-size:18px;padding:10px;display:none">🎙</button>
-        <button class="btn-run" id="btnChat" onclick="sendChat()" style="background:linear-gradient(135deg,#1a237e,#283593);min-width:70px">Chat</button>
-        <button class="btn-run" id="btnRun" onclick="startAnalysis()" style="min-width:90px">Analyze ◈</button>
-        <button class="btn-run" id="btnVoiceToggle" onclick="toggleAutoVoice()" title="Voice OFF — click to enable" style="background:linear-gradient(135deg,#4a148c,#6a1b9a);min-width:44px;font-size:16px;padding:10px;opacity:0.3;display:none">🔇</button>
-      </div>
-    </div>
-    <!-- Client Profile Selector -->
-    <div class="client-profile-area">
-      <div class="profile-selector-row">
-        <select class="profile-select" id="profileSelect" onchange="onProfileSelect()">
-          <option value="">— No client profile (generic analysis) —</option>
-          <option value="pm_advisor_greece">🏛 Σύμβουλος Πρωθυπουργού Ελλάδας</option>
-          <option value="shipping_ceo">🚢 CEO ναυτιλιακής (12 tankers)</option>
-          <option value="hedge_fund_pm">📈 Hedge Fund PM ($2B AUM)</option>
-          <option value="ngo_director">🌍 Director, Humanitarian NGO</option>
-          <option value="custom">✎ Custom profile...</option>
-        </select>
-        <button class="btn-profile-toggle" id="btnProfileToggle" onclick="toggleProfileForm()" title="Expand custom profile form">⚙ Custom</button>
-      </div>
-      <div class="custom-profile-form" id="customProfileForm">
-        <div class="profile-fields-grid">
-          <div class="profile-field full-width">
-            <label>Role</label>
-            <input type="text" id="cpRole" placeholder="e.g. Prime Minister advisor, shipping CEO">
-          </div>
-          <div class="profile-field">
-            <label>Decisions I Make</label>
-            <textarea id="cpDecisions" rows="2" placeholder="One per line"></textarea>
-          </div>
-          <div class="profile-field">
-            <label>Resources I Control</label>
-            <textarea id="cpResources" rows="2" placeholder="Ministries, fleets, budgets..."></textarea>
-          </div>
-          <div class="profile-field">
-            <label>Time Horizon</label>
-            <input type="text" id="cpTimeHorizon" placeholder="72 hours, 6 months...">
-          </div>
-          <div class="profile-field">
-            <label>Risk Tolerance</label>
-            <input type="text" id="cpRiskTolerance" placeholder="Cannot afford escalation...">
-          </div>
-          <div class="profile-field">
-            <label>Constraints</label>
-            <textarea id="cpConstraints" rows="2" placeholder="One per line"></textarea>
-          </div>
-          <div class="profile-field">
-            <label>Stakeholders</label>
-            <textarea id="cpStakeholders" rows="2" placeholder="One per line"></textarea>
-          </div>
-        </div>
-        <div class="profile-hint">Fill in the fields that matter — leave others empty. The more context, the better the playbooks.</div>
-      </div>
-    </div>
-  </div>
-</main>
-
-<footer>
-  © Panos Skouras  &nbsp;|&nbsp; XDART-Φ × XHEART v1.0
-</footer>
-
-<script>
+﻿
 const API_BASE = window.location.origin;
 let isRunning = false;
 let timerInterval = null;
 let timerStart = 0;
 let _lastAnalysisData = null; // stored for PDF export
-let _deferredProactiveAlerts = []; // kept for legacy compat — queue now handles ordering
+let _deferredProactiveAlerts = []; // kept for legacy compat β€” queue now handles ordering
 
-// ── Health check ──
+// β”€β”€ Health check β”€β”€
 async function checkHealth() {
   try {
     const res = await fetch(`${API_BASE}/xdart/health`);
@@ -3375,25 +21,25 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 15000);
 
-// ── Voice system init ──
+// β”€β”€ Voice system init β”€β”€
 _initVoice();
 
-// ── Timer ──
+// β”€β”€ Timer β”€β”€
 function startTimer() {
   timerStart = Date.now();
   const el = document.getElementById('timerDisplay');
   el.style.display = 'block';
   timerInterval = setInterval(() => {
     const s = ((Date.now() - timerStart) / 1000).toFixed(1);
-    el.textContent = `⏱ ${s}s`;
+    el.textContent = `β± ${s}s`;
   }, 100);
 }
 function stopTimer(total) {
   clearInterval(timerInterval);
-  document.getElementById('timerDisplay').textContent = `⏱ ${total}s total`;
+  document.getElementById('timerDisplay').textContent = `β± ${total}s total`;
 }
 
-// ── Reset progress pips ──
+// β”€β”€ Reset progress pips β”€β”€
 function resetPips() {
   ['pip-wakeup','pip-phase0','pip-phase1','pip-phase2','pip-scenarios','pip-tribunal','pip-quantum','pip-actions','pip-phase3','pip-historical','pip-strategic','pip-bets','pip-phase4'].forEach(id => {
     const el = document.getElementById(id);
@@ -3441,12 +87,12 @@ function markAllPipsDone() {
   });
 }
 
-// ── Build phase cards ──
+// β”€β”€ Build phase cards β”€β”€
 function buildPhase0Card(data, elapsed) {
   return `
   <div class="phase-card phase0">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon">Φ</span><h3>Phase 0 — Ontological Grounding</h3></div>
+      <div class="phase-card-title"><span class="icon">Ξ¦</span><h3>Phase 0 β€” Ontological Grounding</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3483,7 +129,7 @@ function buildPhase1Card(data, elapsed) {
   return `
   <div class="phase-card phase1">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon">01</span><h3>Phase 1 — XDART-Φ Cross-Domain</h3></div>
+      <div class="phase-card-title"><span class="icon">01</span><h3>Phase 1 β€” XDART-Ξ¦ Cross-Domain</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span class="layer-badge ${layerCls}">${esc(data.layer)}</span>
         <span class="phase-card-time">${elapsed}s</span>
@@ -3512,7 +158,7 @@ function buildPhase2Card(data, elapsed) {
         <span class="view-card-name">${esc(v.name)}</span>
       </div>
       <p>${esc(v.insight)}</p>
-      <p class="reveals">→ Reveals: ${esc(v.reveals)}</p>
+      <p class="reveals">β†’ Reveals: ${esc(v.reveals)}</p>
     </div>`;
   });
 
@@ -3524,7 +170,7 @@ function buildPhase2Card(data, elapsed) {
   return `
   <div class="phase-card phase2">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon">02</span><h3>Phase 2 — Multiple Views (${(data.views||[]).length} applied)</h3></div>
+      <div class="phase-card-title"><span class="icon">02</span><h3>Phase 2 β€” Multiple Views (${(data.views||[]).length} applied)</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3547,7 +193,7 @@ function buildScenarioGenesisCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #ffab40">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#ffab40">⚡</span><h3>Phase 2.5 — Scenario Genesis (${data.count || 0} scenarios)</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ffab40">β΅</span><h3>Phase 2.5 β€” Scenario Genesis (${data.count || 0} scenarios)</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3561,7 +207,7 @@ function buildSimulationCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #ff8a65">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#ff8a65">⏩</span><h3>Phase 2.7 — Scenario Simulation (${data.count || 0} simulated)</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ff8a65">β©</span><h3>Phase 2.7 β€” Scenario Simulation (${data.count || 0} simulated)</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3579,7 +225,7 @@ function buildTribunalCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #ef5350">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#ef5350">⚖</span><h3>Phase 2.9 — Scenario Tribunal</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ef5350">β–</span><h3>Phase 2.9 β€” Scenario Tribunal</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3595,12 +241,12 @@ function buildTribunalCard(data, elapsed) {
 }
 
 function buildQuantumCard(data, elapsed) {
-  const qDom = data.quantum_dominant || '—';
+  const qDom = data.quantum_dominant || 'β€”';
   const qProb = typeof data.quantum_probability === 'number' ? (data.quantum_probability * 100).toFixed(1) : '?';
-  const cDom = data.classical_dominant || '—';
+  const cDom = data.classical_dominant || 'β€”';
   const shifted = data.observer_shifted;
   const iCount = data.interference_count || 0;
-  const basis = data.measurement_basis || '—';
+  const basis = data.measurement_basis || 'β€”';
   const narrative = data.quantum_narrative || '';
   const hidden = Array.isArray(data.hidden_signals) ? data.hidden_signals : [];
   const entClusters = Array.isArray(data.entanglement_clusters) ? data.entanglement_clusters : [];
@@ -3616,7 +262,7 @@ function buildQuantumCard(data, elapsed) {
     probBarsHtml += `
     <div style="margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
-        <span style="color:${isQuantumDom ? '#b388ff' : 'var(--text-dim)'};font-weight:${isQuantumDom ? '700' : '400'}">${esc(name)}${isQuantumDom ? ' ◈' : ''}</span>
+        <span style="color:${isQuantumDom ? '#b388ff' : 'var(--text-dim)'};font-weight:${isQuantumDom ? '700' : '400'}">${esc(name)}${isQuantumDom ? ' β—' : ''}</span>
         <span style="color:var(--text-dim);font-family:var(--mono)">${pct}%</span>
       </div>
       <div style="height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">
@@ -3629,7 +275,7 @@ function buildQuantumCard(data, elapsed) {
   let hiddenHtml = '';
   if (hidden.length) {
     hiddenHtml = `<div style="margin-top:14px">
-      <div style="font-size:11px;color:#b388ff;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">⚡ Hidden Signals (${hidden.length})</div>
+      <div style="font-size:11px;color:#b388ff;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">β΅ Hidden Signals (${hidden.length})</div>
       <div class="chip-list">${hidden.map(s => `<span class="chip" style="border-color:#7c4dff;color:#b388ff;font-size:11px">${esc(typeof s === 'string' ? s : s.signal || s.name || JSON.stringify(s))}</span>`).join('')}</div>
     </div>`;
   }
@@ -3638,7 +284,7 @@ function buildQuantumCard(data, elapsed) {
   let entHtml = '';
   if (entClusters.length) {
     entHtml = `<div style="margin-top:14px">
-      <div style="font-size:11px;color:#b388ff;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🔗 Entanglement Clusters (${entClusters.length})</div>
+      <div style="font-size:11px;color:#b388ff;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">π”— Entanglement Clusters (${entClusters.length})</div>
       <div class="chip-list">${entClusters.map(c => `<span class="chip" style="border-color:#651fff;color:#ea80fc">${esc(typeof c === 'string' ? c : c.shared_condition || c.name || JSON.stringify(c))}</span>`).join('')}</div>
     </div>`;
   }
@@ -3646,23 +292,23 @@ function buildQuantumCard(data, elapsed) {
   // Observer shift banner
   const shiftBanner = shifted
     ? `<div style="margin-bottom:14px;padding:10px 14px;background:rgba(124,77,255,0.12);border-radius:8px;border:1px solid rgba(124,77,255,0.3);display:flex;align-items:center;gap:10px">
-        <span style="font-size:20px">🔮</span>
+        <span style="font-size:20px">π”®</span>
         <div>
           <div style="font-size:12px;color:#b388ff;font-weight:700;text-transform:uppercase">Observer Effect Detected</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:2px">Quantum measurement shifted dominance from <strong style="color:#ef5350">${esc(cDom)}</strong> → <strong style="color:#7c4dff">${esc(qDom)}</strong></div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:2px">Quantum measurement shifted dominance from <strong style="color:#ef5350">${esc(cDom)}</strong> β†’ <strong style="color:#7c4dff">${esc(qDom)}</strong></div>
         </div>
       </div>`
     : `<div style="margin-bottom:14px;padding:10px 14px;background:rgba(124,77,255,0.06);border-radius:8px;border:1px dashed rgba(124,77,255,0.2);display:flex;align-items:center;gap:10px">
-        <span style="font-size:16px;opacity:0.5">📐</span>
-        <div style="font-size:12px;color:var(--text-dim)">Classical dominant <strong style="color:var(--text)">${esc(cDom)}</strong> confirmed — no observer shift</div>
+        <span style="font-size:16px;opacity:0.5">π“</span>
+        <div style="font-size:12px;color:var(--text-dim)">Classical dominant <strong style="color:var(--text)">${esc(cDom)}</strong> confirmed β€” no observer shift</div>
       </div>`;
 
   return `
   <div class="phase-card quantum" style="border-left:3px solid #7c4dff">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')" style="background:linear-gradient(135deg,#12121a,#1a1230)">
-      <div class="phase-card-title"><span class="icon" style="color:#7c4dff">⚛</span><h3>Phase 2.91 — Quantum Scenario Engine</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#7c4dff">β›</span><h3>Phase 2.91 β€” Quantum Scenario Engine</h3></div>
       <div style="display:flex;align-items:center;gap:10px">
-        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(124,77,255,0.12);color:#b388ff;font-weight:600">${iCount} interference · ${hidden.length} hidden</span>
+        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(124,77,255,0.12);color:#b388ff;font-weight:600">${iCount} interference Β· ${hidden.length} hidden</span>
         <span class="phase-card-time">${elapsed}s</span>
       </div>
     </div>
@@ -3700,7 +346,7 @@ function buildActionsCard(data, elapsed) {
     <div class="robust-move">
       <div class="rm-action">${esc(rm.action)}</div>
       <div class="rm-meta">
-        <span style="color:#4caf50;font-weight:600">⏱ ${esc(rm.urgency || 'N/A')}</span>
+        <span style="color:#4caf50;font-weight:600">β± ${esc(rm.urgency || 'N/A')}</span>
         <span>Appears in: ${scenarios.map(s => esc(s)).join(', ')}</span>
       </div>
       ${rm.reasoning ? `<div style="font-size:12px;color:var(--text-dim);margin-top:4px">${esc(rm.reasoning)}</div>` : ''}
@@ -3718,7 +364,7 @@ function buildActionsCard(data, elapsed) {
         <div class="pa-body">
           <div class="pa-text">${esc(a.action)}</div>
           <div class="pa-meta">
-            ⏱ ${esc(a.deadline || '?')}${a.mechanism ? ` · ${esc(a.mechanism)}` : ''}${a.depends_on ? ` · depends: ${esc(a.depends_on)}` : ''}
+            β± ${esc(a.deadline || '?')}${a.mechanism ? ` Β· ${esc(a.mechanism)}` : ''}${a.depends_on ? ` Β· depends: ${esc(a.depends_on)}` : ''}
           </div>
         </div>
       </div>`;
@@ -3738,17 +384,17 @@ function buildActionsCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #4caf50">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#4caf50">🎯</span><h3>Phase 2.95 — Scenario-Action Mapping</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#4caf50">π―</span><h3>Phase 2.95 β€” Scenario-Action Mapping</h3></div>
       <div style="display:flex;align-items:center;gap:10px">
         ${clientRole ? `<span style="font-size:11px;color:var(--text-dim)">For: ${esc(clientRole)}</span>` : ''}
-        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(76,175,80,0.12);color:#4caf50;font-weight:600">${robustMoves.length} robust · ${playbooks.length} playbooks</span>
+        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(76,175,80,0.12);color:#4caf50;font-weight:600">${robustMoves.length} robust Β· ${playbooks.length} playbooks</span>
         <span class="phase-card-time">${elapsed}s</span>
       </div>
     </div>
     <div class="phase-card-body">
       ${robustMoves.length ? `
         <div style="margin-bottom:16px">
-          <div style="font-size:13px;font-weight:700;color:#4caf50;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px">✓ Do These Regardless of Scenario</div>
+          <div style="font-size:13px;font-weight:700;color:#4caf50;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px">β“ Do These Regardless of Scenario</div>
           ${robustHtml}
         </div>` : ''}
       ${playbooks.length ? `
@@ -3763,17 +409,17 @@ function buildActionsCard(data, elapsed) {
 function buildPhase3Card(data, elapsed) {
   const synthCls = data.has_synthesis ? 'has-synthesis' : 'no-synthesis';
   const synthText = data.has_synthesis
-    ? '✓ Synthesis survived — Layer-3 confirmed'
-    : '⚠ No synthesis — speculation only';
+    ? 'β“ Synthesis survived β€” Layer-3 confirmed'
+    : 'β  No synthesis β€” speculation only';
   return `
   <div class="phase-card phase3">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:var(--red)">♥</span><h3>Phase 3 — XHEART Distillation</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:var(--red)">β™¥</span><h3>Phase 3 β€” XHEART Distillation</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
       <div class="xheart-internal">
-        <div class="heart">♥</div>
+        <div class="heart">β™¥</div>
         <p>Internal affective distillation processed.<br>The XHEART state shapes the output but is never shown.</p>
         <p class="xheart-status ${synthCls}">${synthText}</p>
       </div>
@@ -3785,12 +431,12 @@ function buildExpansionCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #b388ff">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#b388ff">⟳</span><h3>Self-Generated Layer: ${esc(data.layer_name)}</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#b388ff">β³</span><h3>Self-Generated Layer: ${esc(data.layer_name)}</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
       <div style="margin-bottom:10px;font-size:12px;color:var(--text-dim)">
-        Type: <strong style="color:#b388ff">${esc(data.layer_type)}</strong> — XHEART detected a gap and invented a new reasoning layer
+        Type: <strong style="color:#b388ff">${esc(data.layer_type)}</strong> β€” XHEART detected a gap and invented a new reasoning layer
       </div>
       <div style="margin-bottom:10px">
         <strong>Gap detected:</strong><br>
@@ -3819,14 +465,14 @@ function buildHistoricalCard(data, elapsed) {
         <strong style="color:#ff9800">${esc(a.event_name || '?')}</strong>
         <span style="color:var(--text-dim);font-size:11px;margin-left:8px">${esc(a.event_period || '')}</span>
         <span style="color:var(--text-dim);font-size:11px;margin-left:8px">confidence: ${confidence}</span>
-        ${insights ? `<div style="margin-top:4px;font-size:12px;color:var(--text-secondary)">→ ${insights}</div>` : ''}
+        ${insights ? `<div style="margin-top:4px;font-size:12px;color:var(--text-secondary)">β†’ ${insights}</div>` : ''}
       </div>`;
   }
 
   return `
   <div class="phase-card" style="border-left:3px solid #ff9800">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#ff9800">📜</span><h3>Phase 3.5 — Historical Resonance</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ff9800">π“</span><h3>Phase 3.5 β€” Historical Resonance</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -3835,7 +481,7 @@ function buildHistoricalCard(data, elapsed) {
       </div>
       ${parallelsHtml}
       ${verdict.historical_warning ? `<div style="margin-top:12px;padding:10px;background:rgba(255,152,0,0.1);border-radius:6px">
-        <strong style="color:#ff9800">⚠ Historical Warning:</strong><br>
+        <strong style="color:#ff9800">β  Historical Warning:</strong><br>
         <span style="color:var(--text-primary);font-size:13px">${esc(verdict.historical_warning)}</span>
       </div>` : ''}
       ${verdict.pattern_beneath ? `<div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">
@@ -3865,7 +511,7 @@ function buildStrategicCard(data, elapsed) {
   let decisionsHtml = '';
   for (const d of decisions.slice(0, 5)) {
     const decision = typeof d === 'object' ? (d.decision || d.description || d.what || JSON.stringify(d)) : String(d);
-    const deadline = typeof d === 'object' && d.deadline_description ? `<span style="color:var(--text-dim);font-size:11px;margin-left:6px">⏱ ${esc(d.deadline_description)}</span>` : '';
+    const deadline = typeof d === 'object' && d.deadline_description ? `<span style="color:var(--text-dim);font-size:11px;margin-left:6px">β± ${esc(d.deadline_description)}</span>` : '';
     decisionsHtml += `<li style="margin-bottom:6px;color:var(--text-secondary)">${esc(decision)}${deadline}</li>`;
   }
 
@@ -3873,7 +519,7 @@ function buildStrategicCard(data, elapsed) {
   let immediateHtml = '';
   for (const a of immediateActions.slice(0, 8)) {
     const txt = typeof a === 'object' ? (a.action || a.description || JSON.stringify(a)) : String(a);
-    const urgency = typeof a === 'object' && a.urgency ? `<span style="color:#4caf50;font-size:11px;margin-left:6px">⏱ ${esc(a.urgency)}</span>` : '';
+    const urgency = typeof a === 'object' && a.urgency ? `<span style="color:#4caf50;font-size:11px;margin-left:6px">β± ${esc(a.urgency)}</span>` : '';
     immediateHtml += `<li style="margin-bottom:6px;color:var(--text-secondary)">${esc(txt)}${urgency}</li>`;
   }
 
@@ -3891,11 +537,11 @@ function buildStrategicCard(data, elapsed) {
   let riskHtml = '';
   for (const r of risks.slice(0, 4)) {
     const label = typeof r === 'object' ? (r.item || r.risk || r.label || JSON.stringify(r)) : String(r);
-    riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #ff5252;font-size:12px;color:var(--text-secondary)">⚠ ${esc(label)}</div>`;
+    riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #ff5252;font-size:12px;color:var(--text-secondary)">β  ${esc(label)}</div>`;
   }
   for (const o of opportunities.slice(0, 3)) {
     const label = typeof o === 'object' ? (o.item || o.opportunity || o.label || JSON.stringify(o)) : String(o);
-    riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #69f0ae;font-size:12px;color:var(--text-secondary)">✦ ${esc(label)}</div>`;
+    riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #69f0ae;font-size:12px;color:var(--text-secondary)">β¦ ${esc(label)}</div>`;
   }
 
   // Legacy: what_to_watch + recommendations_by_role
@@ -3915,7 +561,7 @@ function buildStrategicCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #e040fb">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#e040fb">🎯</span><h3>Phase 3.7 — Strategic Foresight</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#e040fb">π―</span><h3>Phase 3.7 β€” Strategic Foresight</h3></div>
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:11px;color:var(--text-dim)">Confidence: ${confPercent}</span>
         <span class="phase-card-time">${elapsed}s</span>
@@ -3966,11 +612,11 @@ function buildBetsCard(data, elapsed) {
       </div>
       ${condHtml}
       <div class="trigger-then">
-        <div class="tt-label">Then →</div>
+        <div class="tt-label">Then β†’</div>
         <div class="tt-scenario">Scenario: <strong>${esc(t.activates_scenario || '?')}</strong></div>
         <div class="tt-playbook">Execute: ${esc(t.activates_playbook || '?')}</div>
-        ${t.time_to_act ? `<div class="tt-time">⏱ Time to act: ${esc(t.time_to_act)}</div>` : ''}
-        ${t.false_positive_risk ? `<div class="tt-risk">⚠ False positive: ${esc(t.false_positive_risk)}</div>` : ''}
+        ${t.time_to_act ? `<div class="tt-time">β± Time to act: ${esc(t.time_to_act)}</div>` : ''}
+        ${t.false_positive_risk ? `<div class="tt-risk">β  False positive: ${esc(t.false_positive_risk)}</div>` : ''}
       </div>
     </div>`;
   }
@@ -3997,7 +643,7 @@ function buildBetsCard(data, elapsed) {
         <span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${noveltyBg};color:${noveltyColor};font-weight:600;white-space:nowrap;margin-left:10px">${esc(novelty)}</span>
       </div>
       <div style="display:flex;gap:14px;margin-bottom:8px;flex-wrap:wrap">
-        <span style="font-size:11px;color:#ffd740;font-weight:600">⏱ ${esc(deadline)}</span>
+        <span style="font-size:11px;color:#ffd740;font-weight:600">β± ${esc(deadline)}</span>
         <span style="font-size:11px;color:var(--text-dim)">Confidence: ${conf}</span>
         ${betId ? `<span style="font-size:11px;color:var(--text-dim)">${esc(betId)}</span>` : ''}
       </div>
@@ -4010,17 +656,17 @@ function buildBetsCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #ff9800">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#ff9800">⚡</span><h3>Phase 3.9 — Decision Triggers</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ff9800">β΅</span><h3>Phase 3.9 β€” Decision Triggers</h3></div>
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:11px;color:var(--text-dim)">Prophet confidence: ${prophetConfidence}</span>
-        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(255,152,0,0.12);color:#ff9800;font-weight:600">${triggers.length} triggers · ${bets.length} bets</span>
+        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(255,152,0,0.12);color:#ff9800;font-weight:600">${triggers.length} triggers Β· ${bets.length} bets</span>
         <span class="phase-card-time">${elapsed}s</span>
       </div>
     </div>
     <div class="phase-card-body">
       ${triggers.length ? `
         <div style="margin-bottom:18px">
-          <div style="font-size:13px;font-weight:700;color:#ff9800;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px">Decision Triggers — If/Then Rules</div>
+          <div style="font-size:13px;font-weight:700;color:#ff9800;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px">Decision Triggers β€” If/Then Rules</div>
           ${triggersHtml}
         </div>` : ''}
       ${bets.length ? `
@@ -4050,7 +696,7 @@ function buildConceptsCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #00e676">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#00e676">🧠</span><h3>Concept Registry — ${concepts.length} concept${concepts.length > 1 ? 's' : ''} activated</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#00e676">π§ </span><h3>Concept Registry β€” ${concepts.length} concept${concepts.length > 1 ? 's' : ''} activated</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -4069,16 +715,16 @@ function buildWorldContextCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #26c6da">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#26c6da">🌍</span><h3>Phase 0.35 — World Perception</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#26c6da">π</span><h3>Phase 0.35 β€” World Perception</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(38,198,218,0.12);color:#26c6da;font-weight:600">${evCount} events · ${indCount} indicators</span>
+        <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(38,198,218,0.12);color:#26c6da;font-weight:600">${evCount} events Β· ${indCount} indicators</span>
         <span class="phase-card-time">${elapsed}s</span>
       </div>
     </div>
     <div class="phase-card-body">
       <div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;max-height:200px;overflow-y:auto;font-family:var(--mono);font-size:12px;background:var(--surface2);padding:12px;border-radius:6px">${esc(sample)}</div>
       <div style="margin-top:8px;font-size:11px;color:var(--text-dim);text-align:center">
-        Real-world context injected into Phase 0 — RSS, FRED, ECB, World Bank
+        Real-world context injected into Phase 0 β€” RSS, FRED, ECB, World Bank
       </div>
     </div>
   </div>`;
@@ -4093,7 +739,7 @@ function buildWakeupCard(data, elapsed) {
   return `
   <div class="phase-card wakeup">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
-      <div class="phase-card-title"><span class="icon" style="color:#00bcd4">◉</span><h3>Phase 0.0 — Identity Wakeup</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#00bcd4">β—‰</span><h3>Phase 0.0 β€” Identity Wakeup</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:12px;color:#00bcd4;font-weight:600">v${data.version || 0}</span>
         <span class="phase-card-time">${elapsed}s</span>
@@ -4104,10 +750,10 @@ function buildWakeupCard(data, elapsed) {
         ${esc(stance)}
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;">
-        <span style="color:#00bcd4">◈ ${concepts} concepts owned</span>
-        <span style="color:#ff9800">⚡ ${tensions} active tensions</span>
-        <span style="color:#b388ff">↻ ${changes} character changes</span>
-        <span style="color:var(--text-dim)">📝 ${runs} recent runs in memory</span>
+        <span style="color:#00bcd4">β— ${concepts} concepts owned</span>
+        <span style="color:#ff9800">β΅ ${tensions} active tensions</span>
+        <span style="color:#b388ff">β†» ${changes} character changes</span>
+        <span style="color:var(--text-dim)">π“ ${runs} recent runs in memory</span>
       </div>
     </div>
   </div>`;
@@ -4117,7 +763,7 @@ function buildCharacterUpdatedCard(data, elapsed) {
   return `
   <div class="phase-card character">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#ff9800">↻</span><h3>Phase 5b — Character Update</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ff9800">β†»</span><h3>Phase 5b β€” Character Update</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:12px;color:#ff9800;font-weight:600">v${data.version || '?'}</span>
         <span class="phase-card-time">${elapsed}s</span>
@@ -4125,7 +771,7 @@ function buildCharacterUpdatedCard(data, elapsed) {
     </div>
     <div class="phase-card-body">
       <div style="font-size:13px;color:var(--text-dim);text-align:center;padding:8px 0;">
-        Character state rewritten — ${data.tensions || 0} active tensions, ${data.changes || 0} epistemic shifts recorded.
+        Character state rewritten β€” ${data.tensions || 0} active tensions, ${data.changes || 0} epistemic shifts recorded.
       </div>
     </div>
   </div>`;
@@ -4135,7 +781,7 @@ function buildCoreChangeCard(data, elapsed) {
   const isApplied = data.applied === true;
   const statusColor = isApplied ? '#4caf50' : '#ff5252';
   const statusLabel = isApplied ? 'AUTO-APPLIED' : 'PROPOSED (not applied)';
-  const statusIcon = isApplied ? '✓' : '⚙';
+  const statusIcon = isApplied ? 'β“' : 'β™';
   const borderColor = isApplied ? '#4caf50' : '#ff5252';
   const bgGradient = isApplied
     ? 'linear-gradient(135deg, #0a1a0a, var(--surface))'
@@ -4143,7 +789,7 @@ function buildCoreChangeCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid ${borderColor};border:1px solid ${borderColor};background:${bgGradient}">
     <div class="phase-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')" style="background:rgba(${isApplied ? '76,175,80' : '255,82,82'},0.08)">
-      <div class="phase-card-title"><span class="icon" style="color:${statusColor}">${statusIcon}</span><h3>Core Change — ${statusLabel}</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:${statusColor}">${statusIcon}</span><h3>Core Change β€” ${statusLabel}</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:11px;padding:2px 10px;border-radius:10px;background:rgba(${isApplied ? '76,175,80' : '255,82,82'},0.15);color:${statusColor};font-weight:600">${esc(data.change_type)}</span>
         <span class="phase-card-time">${elapsed}s</span>
@@ -4155,7 +801,7 @@ function buildCoreChangeCard(data, elapsed) {
       <div class="kv-row"><div class="kv-label" style="color:${statusColor}">Reasoning</div><div class="kv-value" style="font-style:italic">${esc(data.reasoning)}</div></div>
       ${data.applied_patch ? `<div class="kv-row"><div class="kv-label" style="color:#4caf50">Patch</div><div class="kv-value" style="font-size:12px;color:#4caf50">${esc(data.applied_patch)}</div></div>` : ''}
       <div style="margin-top:10px;font-size:11px;color:var(--text-dim);text-align:center">
-        Entry ID: ${esc(data.change_id)} — ${isApplied ? 'applied to character_state.json' : 'logged to core_change_log.jsonl'}
+        Entry ID: ${esc(data.change_id)} β€” ${isApplied ? 'applied to character_state.json' : 'logged to core_change_log.jsonl'}
       </div>
     </div>
   </div>`;
@@ -4165,7 +811,7 @@ function buildEvolutionCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #69f0ae">
     <div class="phase-card-header">
-      <div class="phase-card-title"><span class="icon" style="color:#69f0ae">🧬</span><h3>Evolution — Tool Deployed</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#69f0ae">π§¬</span><h3>Evolution β€” Tool Deployed</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -4179,7 +825,7 @@ function buildEvolutionCard(data, elapsed) {
 function buildFinalCard(data) {
   const layerCls = data.layer === 'Layer-3' ? 'layer-3' : data.layer === 'Layer-2' ? 'layer-2' : 'layer-1';
 
-  // ── Scenario-Action Mapping summary in final card ──
+  // β”€β”€ Scenario-Action Mapping summary in final card β”€β”€
   let actionsHtml = '';
   const sa = data.scenario_actions;
   if (sa && (Array.isArray(sa.robust_moves) && sa.robust_moves.length)) {
@@ -4188,20 +834,20 @@ function buildFinalCard(data) {
       movesHtml += `
         <div style="margin-bottom:6px;padding:6px 10px;border-left:2px solid #4caf50;font-size:12px">
           <strong style="color:#4caf50">${esc(rm.action)}</strong>
-          <span style="color:var(--text-dim);font-size:11px;margin-left:6px">⏱ ${esc(rm.urgency || '')}</span>
+          <span style="color:var(--text-dim);font-size:11px;margin-left:6px">β± ${esc(rm.urgency || '')}</span>
         </div>`;
     }
     const pbCount = Array.isArray(sa.scenario_playbooks) ? sa.scenario_playbooks.length : 0;
     actionsHtml = `
       <div style="margin-top:14px;padding:16px;background:rgba(76,175,80,0.05);border:1px solid rgba(76,175,80,0.2);border-radius:8px">
-        <div style="font-size:14px;font-weight:700;color:#4caf50;margin-bottom:12px">🎯 Action Playbooks${sa.client_role ? ` <span style="font-size:11px;font-weight:400;color:var(--text-dim)">for: ${esc(sa.client_role)}</span>` : ''}</div>
+        <div style="font-size:14px;font-weight:700;color:#4caf50;margin-bottom:12px">π― Action Playbooks${sa.client_role ? ` <span style="font-size:11px;font-weight:400;color:var(--text-dim)">for: ${esc(sa.client_role)}</span>` : ''}</div>
         <div style="margin-bottom:8px"><strong style="color:#4caf50;font-size:12px">DO REGARDLESS:</strong></div>
         ${movesHtml}
         <div style="font-size:11px;color:var(--text-dim);margin-top:8px">${pbCount} scenario-specific playbooks available (see Phase 2.95 card above)</div>
       </div>`;
   }
 
-  // ── Strategic Foresight section ──
+  // β”€β”€ Strategic Foresight section β”€β”€
   let strategicHtml = '';
   const sf = data.strategic_foresight;
   if (sf && sf.strategic_assessment) {
@@ -4246,11 +892,11 @@ function buildFinalCard(data) {
     let riskHtml = '';
     for (const r of risks.slice(0, 4)) {
       const label = typeof r === 'object' ? (r.item || r.risk || r.label || JSON.stringify(r)) : String(r);
-      riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #ff5252;font-size:12px;color:var(--text-secondary)">⚠ ${esc(label)}</div>`;
+      riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #ff5252;font-size:12px;color:var(--text-secondary)">β  ${esc(label)}</div>`;
     }
     for (const o of opportunities.slice(0, 3)) {
       const label = typeof o === 'object' ? (o.item || o.opportunity || o.label || JSON.stringify(o)) : String(o);
-      riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #69f0ae;font-size:12px;color:var(--text-secondary)">✦ ${esc(label)}</div>`;
+      riskHtml += `<div style="margin-bottom:4px;padding:4px 10px;border-left:2px solid #69f0ae;font-size:12px;color:var(--text-secondary)">β¦ ${esc(label)}</div>`;
     }
 
     const confCal = (typeof sf.confidence_calibration === 'object' && sf.confidence_calibration) ? sf.confidence_calibration : {};
@@ -4258,31 +904,31 @@ function buildFinalCard(data) {
 
     strategicHtml = `
       <div style="margin-top:20px;padding:16px;background:rgba(224,64,251,0.05);border:1px solid rgba(224,64,251,0.2);border-radius:8px">
-        <div style="font-size:14px;font-weight:700;color:#e040fb;margin-bottom:12px">🎯 Strategic Foresight${confP ? ` <span style="font-size:11px;font-weight:400;color:var(--text-dim)">(confidence: ${confP})</span>` : ''}</div>
+        <div style="font-size:14px;font-weight:700;color:#e040fb;margin-bottom:12px">π― Strategic Foresight${confP ? ` <span style="font-size:11px;font-weight:400;color:var(--text-dim)">(confidence: ${confP})</span>` : ''}</div>
         <div style="font-size:13px;color:var(--text-primary);line-height:1.6;margin-bottom:14px">${esc(sf.strategic_assessment)}</div>
         ${immediateHtml ? `<div style="margin-bottom:12px"><strong style="color:#4caf50;font-size:12px">IMMEDIATE ACTIONS</strong><ul style="margin:6px 0;padding-left:18px">${immediateHtml}</ul></div>` : ''}
         ${contingencyHtml ? `<div style="margin-bottom:12px"><strong style="color:#ffab40;font-size:12px">CONTINGENCY SUMMARIES</strong><div style="margin-top:6px">${contingencyHtml}</div></div>` : ''}
         ${decisionsHtml ? `<div style="margin-bottom:12px"><strong style="color:#e040fb;font-size:12px">KEY DECISION POINTS</strong><ul style="margin:6px 0;padding-left:18px">${decisionsHtml}</ul></div>` : ''}
         ${riskHtml ? `<div style="margin-bottom:12px"><strong style="color:#e040fb;font-size:12px">RISK / OPPORTUNITY MATRIX</strong><div style="margin-top:6px">${riskHtml}</div></div>` : ''}
         ${watchHtml ? `<div style="margin-bottom:12px"><strong style="color:#e040fb;font-size:12px">WHAT TO WATCH</strong><ul style="margin:6px 0;padding-left:18px">${watchHtml}</ul></div>` : ''}
-        ${sf.historical_warning ? `<div style="padding:10px;background:rgba(255,152,0,0.08);border-radius:6px;border-left:2px solid #ff9800"><strong style="color:#ff9800;font-size:12px">⚠ HISTORICAL WARNING</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${esc(sf.historical_warning)}</div></div>` : ''}
+        ${sf.historical_warning ? `<div style="padding:10px;background:rgba(255,152,0,0.08);border-radius:6px;border-left:2px solid #ff9800"><strong style="color:#ff9800;font-size:12px">β  HISTORICAL WARNING</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${esc(sf.historical_warning)}</div></div>` : ''}
       </div>`;
   }
 
-  // ── Historical summary ──
+  // β”€β”€ Historical summary β”€β”€
   let historicalSummary = '';
   const hr = data.historical_resonance;
   if (hr && hr.parallels_found) {
     const v = (typeof hr.verdict === 'object' && hr.verdict) ? hr.verdict : {};
     historicalSummary = `
       <div style="margin-top:14px;padding:12px;background:rgba(255,152,0,0.05);border:1px solid rgba(255,152,0,0.2);border-radius:8px">
-        <div style="font-size:13px;font-weight:700;color:#ff9800;margin-bottom:8px">📜 Historical Resonance — ${hr.parallels_found} parallels${v.strongest_parallel ? ` · strongest: ${esc(v.strongest_parallel)}` : ''}</div>
+        <div style="font-size:13px;font-weight:700;color:#ff9800;margin-bottom:8px">π“ Historical Resonance β€” ${hr.parallels_found} parallels${v.strongest_parallel ? ` Β· strongest: ${esc(v.strongest_parallel)}` : ''}</div>
         ${v.historical_consensus ? `<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px">${esc(v.historical_consensus)}</div>` : ''}
         ${v.historical_warning ? `<div style="font-size:12px;color:#ff9800;font-style:italic">${esc(v.historical_warning)}</div>` : ''}
       </div>`;
   }
 
-  // ── Decision Triggers + Bets ──
+  // β”€β”€ Decision Triggers + Bets β”€β”€
   let triggersAndBetsHtml = '';
   const dt = data.decision_triggers;
   if (dt) {
@@ -4295,7 +941,7 @@ function buildFinalCard(data) {
       trigItems += `
         <div style="margin-bottom:8px;padding:8px 10px;background:rgba(255,152,0,0.04);border-radius:6px;border-left:2px solid #ff9800">
           <div style="font-size:12px;color:var(--text)"><strong style="color:#ff9800">IF</strong> ${conds}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:2px"><strong style="color:#4caf50">THEN</strong> → ${esc(t.activates_scenario || '?')} → ${esc(t.activates_playbook || '?')}${t.time_to_act ? ` <span style="color:#ff9800">⏱ ${esc(t.time_to_act)}</span>` : ''}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:2px"><strong style="color:#4caf50">THEN</strong> β†’ ${esc(t.activates_scenario || '?')} β†’ ${esc(t.activates_playbook || '?')}${t.time_to_act ? ` <span style="color:#ff9800">β± ${esc(t.time_to_act)}</span>` : ''}</div>
         </div>`;
     }
 
@@ -4310,7 +956,7 @@ function buildFinalCard(data) {
         <div style="margin-bottom:10px;padding:10px;background:rgba(255,215,64,0.04);border-radius:6px;border-left:2px solid #ffd740">
           <div style="font-size:13px;color:var(--text-primary);font-weight:600;line-height:1.4;margin-bottom:4px">${esc(stmt)}</div>
           <div style="display:flex;gap:12px;font-size:11px;color:var(--text-dim)">
-            <span style="color:#ffd740">⏱ ${esc(deadline)}</span>
+            <span style="color:#ffd740">β± ${esc(deadline)}</span>
             <span>Confidence: ${conf}</span>
             <span style="color:${noveltyColor}">${esc(novelty)}</span>
           </div>
@@ -4321,10 +967,10 @@ function buildFinalCard(data) {
       triggersAndBetsHtml = `
         <div style="margin-top:14px;padding:16px;background:rgba(255,152,0,0.05);border:1px solid rgba(255,152,0,0.2);border-radius:8px">
           ${trigItems ? `
-            <div style="font-size:14px;font-weight:700;color:#ff9800;margin-bottom:12px">⚡ Decision Triggers — ${triggers.length} rules</div>
+            <div style="font-size:14px;font-weight:700;color:#ff9800;margin-bottom:12px">β΅ Decision Triggers β€” ${triggers.length} rules</div>
             ${trigItems}` : ''}
           ${betItems ? `
-            <div style="font-size:14px;font-weight:700;color:#ffd740;margin-bottom:12px;${trigItems ? 'margin-top:16px;' : ''}">🔮 Prophetic Bets — ${bets.length} predictions</div>
+            <div style="font-size:14px;font-weight:700;color:#ffd740;margin-bottom:12px;${trigItems ? 'margin-top:16px;' : ''}">π”® Prophetic Bets β€” ${bets.length} predictions</div>
             ${betItems}` : ''}
           ${dt.meta_prediction ? `<div style="margin-top:10px;padding:10px;background:rgba(255,215,64,0.08);border-radius:6px"><strong style="color:#ffd740;font-size:12px">META-PREDICTION:</strong> <span style="font-size:13px;color:var(--text-primary)">${esc(dt.meta_prediction)}</span></div>` : ''}
         </div>`;
@@ -4334,7 +980,7 @@ function buildFinalCard(data) {
   return `
   <div class="phase-card final">
     <div class="phase-card-header" style="border-bottom-color:var(--gold)">
-      <div class="phase-card-title"><span class="icon" style="color:var(--gold)">◈</span><h3>Final Output</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:var(--gold)">β—</span><h3>Final Output</h3></div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span class="layer-badge ${layerCls}">${esc(data.layer)}</span>
         <span class="phase-card-time">${data.total_elapsed}s total</span>
@@ -4356,17 +1002,17 @@ function buildFinalCard(data) {
         <span>Views: ${(data.views_used||[]).length}</span>
         <span>|</span>
         <span>Memories: ${data.memory_count}</span>
-        ${data.concept_count ? `<span>|</span><span style="color:#00e676">🧠 Concepts: ${data.concept_count}</span>` : ''}
-        ${data.expansion_triggered ? `<span>|</span><span style="color:#b388ff">⟳ Expansion: ${esc(data.expansion_layer)}</span>` : ''}
+        ${data.concept_count ? `<span>|</span><span style="color:#00e676">π§  Concepts: ${data.concept_count}</span>` : ''}
+        ${data.expansion_triggered ? `<span>|</span><span style="color:#b388ff">β³ Expansion: ${esc(data.expansion_layer)}</span>` : ''}
         <span style="flex:1"></span>
-        <button onclick="generatePDFReport()" style="padding:6px 16px;background:linear-gradient(135deg,#d4a843,#a07830);color:#0a0a0f;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:0.5px">📄 Executive Brief</button>
-        <button onclick="generateDossierPDF()" style="padding:6px 16px;background:linear-gradient(135deg,#7b1fa2,#4a148c);color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:0.5px">📋 Full Dossier</button>
+        <button onclick="generatePDFReport()" style="padding:6px 16px;background:linear-gradient(135deg,#d4a843,#a07830);color:#0a0a0f;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:0.5px">π“„ Executive Brief</button>
+        <button onclick="generateDossierPDF()" style="padding:6px 16px;background:linear-gradient(135deg,#7b1fa2,#4a148c);color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:0.5px">π“‹ Full Dossier</button>
       </div>
     </div>
   </div>`;
 }
 
-// ── Executive Brief Card (Phase 3.95) ──
+// β”€β”€ Executive Brief Card (Phase 3.95) β”€β”€
 function buildExecutiveBriefCard(data, elapsed) {
   let judgmentsHtml = '';
   for (const j of (data.key_judgments || []).slice(0, 6)) {
@@ -4379,7 +1025,7 @@ function buildExecutiveBriefCard(data, elapsed) {
   return `
   <div class="phase-card" style="border-left:3px solid #ffd740;background:rgba(255,215,64,0.03)">
     <div class="phase-card-header" style="border-bottom-color:rgba(255,215,64,0.3)">
-      <div class="phase-card-title"><span class="icon" style="color:#ffd740">📋</span><h3>Executive Intelligence Brief</h3></div>
+      <div class="phase-card-title"><span class="icon" style="color:#ffd740">π“‹</span><h3>Executive Intelligence Brief</h3></div>
       <span class="phase-card-time">${elapsed}s</span>
     </div>
     <div class="phase-card-body">
@@ -4421,7 +1067,7 @@ function esc(s) {
   return div.innerHTML;
 }
 
-// ── PDF Report Generator ──
+// β”€β”€ PDF Report Generator β”€β”€
 function generatePDFReport() {
   const d = _lastAnalysisData;
   if (!d) { alert('No analysis data available.'); return; }
@@ -4435,14 +1081,14 @@ function generatePDFReport() {
 
   const now = new Date().toLocaleString('en-GB', { dateStyle: 'long', timeStyle: 'short' });
 
-  // ── Strategic Foresight ──
+  // β”€β”€ Strategic Foresight β”€β”€
   let strategicSection = '';
   const sf = d.strategic_foresight;
   if (sf && sf.strategic_assessment) {
     let dpHtml = '';
     for (const dp of (sf.decision_points || []).slice(0, 8)) {
       const txt = typeof dp === 'object' ? (dp.decision || dp.description || JSON.stringify(dp)) : String(dp);
-      const dl = typeof dp === 'object' && dp.deadline_description ? ` — <em>${escPdf(dp.deadline_description)}</em>` : '';
+      const dl = typeof dp === 'object' && dp.deadline_description ? ` β€” <em>${escPdf(dp.deadline_description)}</em>` : '';
       dpHtml += `<li>${escPdf(txt)}${dl}</li>`;
     }
     let iaHtml = '';
@@ -4462,11 +1108,11 @@ function generatePDFReport() {
     let rmHtml = '';
     for (const r of risks.slice(0, 6)) {
       const label = typeof r === 'object' ? (r.item || r.risk || JSON.stringify(r)) : String(r);
-      rmHtml += `<li style="color:#c0392b">⚠ ${escPdf(label)}</li>`;
+      rmHtml += `<li style="color:#c0392b">β  ${escPdf(label)}</li>`;
     }
     for (const o of opps.slice(0, 4)) {
       const label = typeof o === 'object' ? (o.item || o.opportunity || JSON.stringify(o)) : String(o);
-      rmHtml += `<li style="color:#27ae60">✦ ${escPdf(label)}</li>`;
+      rmHtml += `<li style="color:#27ae60">β¦ ${escPdf(label)}</li>`;
     }
     const confCal = (sf.confidence_calibration && typeof sf.confidence_calibration === 'object') ? sf.confidence_calibration : {};
     const confPct = typeof confCal.overall_confidence === 'number' ? (confCal.overall_confidence * 100).toFixed(0) + '%' : '';
@@ -4479,17 +1125,17 @@ function generatePDFReport() {
         ${csHtml ? `<h3>Contingency Summaries</h3><ul>${csHtml}</ul>` : ''}
         ${dpHtml ? `<h3>Key Decision Points</h3><ul>${dpHtml}</ul>` : ''}
         ${rmHtml ? `<h3>Risk / Opportunity Matrix</h3><ul>${rmHtml}</ul>` : ''}
-        ${sf.historical_warning ? `<div class="warning-box"><strong>⚠ Historical Warning:</strong> ${escPdf(sf.historical_warning)}</div>` : ''}
+        ${sf.historical_warning ? `<div class="warning-box"><strong>β  Historical Warning:</strong> ${escPdf(sf.historical_warning)}</div>` : ''}
       </div>`;
   }
 
-  // ── Action Playbooks ──
+  // β”€β”€ Action Playbooks β”€β”€
   let actionsSection = '';
   const sa = d.scenario_actions;
   if (sa) {
     let robustHtml = '';
     for (const rm of (sa.robust_moves || []).slice(0, 6)) {
-      robustHtml += `<li><strong>${escPdf(rm.action)}</strong> <em>(${escPdf(rm.urgency || '')})</em>${rm.reasoning ? ` — ${escPdf(rm.reasoning)}` : ''}</li>`;
+      robustHtml += `<li><strong>${escPdf(rm.action)}</strong> <em>(${escPdf(rm.urgency || '')})</em>${rm.reasoning ? ` β€” ${escPdf(rm.reasoning)}` : ''}</li>`;
     }
     let pbHtml = '';
     for (const pb of (sa.scenario_playbooks || []).slice(0, 6)) {
@@ -4498,7 +1144,7 @@ function generatePDFReport() {
         aHtml += `<li>${escPdf(a.action)}${a.deadline ? ` <em>(${escPdf(a.deadline)})</em>` : ''}</li>`;
       }
       const prob = typeof pb.scenario_probability === 'number' ? (pb.scenario_probability * 100).toFixed(0) + '%' : '';
-      pbHtml += `<div class="playbook"><h4>${escPdf(pb.scenario_name)}${prob ? ` — ${prob}` : ''}</h4><ol>${aHtml}</ol></div>`;
+      pbHtml += `<div class="playbook"><h4>${escPdf(pb.scenario_name)}${prob ? ` β€” ${prob}` : ''}</h4><ol>${aHtml}</ol></div>`;
     }
     actionsSection = `
       <div class="section">
@@ -4508,20 +1154,20 @@ function generatePDFReport() {
       </div>`;
   }
 
-  // ── Historical Resonance ──
+  // β”€β”€ Historical Resonance β”€β”€
   let historicalSection = '';
   const hr = d.historical_resonance;
   if (hr && hr.parallels_found) {
     const v = (typeof hr.verdict === 'object' && hr.verdict) ? hr.verdict : {};
     historicalSection = `
       <div class="section">
-        <h2>Historical Resonance — ${hr.parallels_found} parallels${v.strongest_parallel ? ` (strongest: ${escPdf(v.strongest_parallel)})` : ''}</h2>
+        <h2>Historical Resonance β€” ${hr.parallels_found} parallels${v.strongest_parallel ? ` (strongest: ${escPdf(v.strongest_parallel)})` : ''}</h2>
         ${v.historical_consensus ? `<p>${escPdf(v.historical_consensus)}</p>` : ''}
-        ${v.historical_warning ? `<div class="warning-box"><strong>⚠ Warning:</strong> ${escPdf(v.historical_warning)}</div>` : ''}
+        ${v.historical_warning ? `<div class="warning-box"><strong>β  Warning:</strong> ${escPdf(v.historical_warning)}</div>` : ''}
       </div>`;
   }
 
-  // ── Decision Triggers + Bets ──
+  // β”€β”€ Decision Triggers + Bets β”€β”€
   let triggersSection = '';
   const dt = d.decision_triggers;
   if (dt) {
@@ -4540,20 +1186,20 @@ function generatePDFReport() {
     triggersSection = `
       <div class="section">
         <h2>Decision Triggers & Prophetic Bets</h2>
-        ${trigHtml ? `<h3>Decision Triggers — ${triggers.length} rules</h3>
+        ${trigHtml ? `<h3>Decision Triggers β€” ${triggers.length} rules</h3>
           <table><thead><tr><th>Condition</th><th>Scenario</th><th>Playbook</th><th>Time to Act</th></tr></thead><tbody>${trigHtml}</tbody></table>` : ''}
-        ${betHtml ? `<h3>Prophetic Bets — ${bets.length} predictions</h3>
+        ${betHtml ? `<h3>Prophetic Bets β€” ${bets.length} predictions</h3>
           <table><thead><tr><th>Prediction</th><th>Deadline</th><th>Confidence</th><th>Novelty</th></tr></thead><tbody>${betHtml}</tbody></table>` : ''}
         ${dt.meta_prediction ? `<div class="meta-prediction"><strong>META-PREDICTION:</strong> ${escPdf(dt.meta_prediction)}</div>` : ''}
       </div>`;
   }
 
-  // ── Build full HTML document ──
+  // β”€β”€ Build full HTML document β”€β”€
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XDART-Φ Intelligence Briefing</title>
+<title>XDART-Ξ¦ Intelligence Briefing</title>
 <style>
   @page { margin: 20mm 18mm; size: A4; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -4590,9 +1236,9 @@ function generatePDFReport() {
 </head>
 <body>
   <div class="header">
-    <h1>XDART-Φ × XHEART</h1>
+    <h1>XDART-Ξ¦ Γ— XHEART</h1>
     <div class="subtitle">Strategic Intelligence Briefing</div>
-    <div class="meta">${escPdf(now)} · <span class="layer-tag ${d.layer === 'Layer-3' ? 'l3' : d.layer === 'Layer-2' ? 'l2' : 'l1'}">${escPdf(d.layer)}</span> · ${escPdf(String(d.total_elapsed))}s · ${(d.domains_used||[]).length} domains · ${(d.views_used||[]).length} views · ${d.memory_count} memories</div>
+    <div class="meta">${escPdf(now)} Β· <span class="layer-tag ${d.layer === 'Layer-3' ? 'l3' : d.layer === 'Layer-2' ? 'l2' : 'l1'}">${escPdf(d.layer)}</span> Β· ${escPdf(String(d.total_elapsed))}s Β· ${(d.domains_used||[]).length} domains Β· ${(d.views_used||[]).length} views Β· ${d.memory_count} memories</div>
   </div>
 
   <div class="executive-summary">
@@ -4631,7 +1277,7 @@ function generatePDFReport() {
   ${triggersSection}
 
   <div class="footer">
-    XDART-Φ × XHEART — Autonomous Strategic Intelligence Framework · Generated ${escPdf(now)}
+    XDART-Ξ¦ Γ— XHEART β€” Autonomous Strategic Intelligence Framework Β· Generated ${escPdf(now)}
   </div>
 </body>
 </html>`;
@@ -4645,7 +1291,7 @@ function generatePDFReport() {
   setTimeout(() => win.print(), 400);
 }
 
-// ── FULL INTELLIGENCE DOSSIER (all phases) ──
+// β”€β”€ FULL INTELLIGENCE DOSSIER (all phases) β”€β”€
 function generateDossierPDF() {
   const d = _lastAnalysisData;
   if (!d) { alert('No analysis data available.'); return; }
@@ -4658,7 +1304,7 @@ function generateDossierPDF() {
   };
   const now = new Date().toLocaleString('en-GB', { dateStyle: 'long', timeStyle: 'short' });
 
-  // ── §0: Executive Brief ──
+  // β”€β”€ Β§0: Executive Brief β”€β”€
   let briefSection = '';
   const eb = d.executive_brief;
   if (eb) {
@@ -4672,7 +1318,7 @@ function generateDossierPDF() {
     }
     briefSection = `
       <div class="section executive-brief-box">
-        <h2>§0 — Executive Intelligence Brief</h2>
+        <h2>Β§0 β€” Executive Intelligence Brief</h2>
         <div class="bottom-line"><strong>BOTTOM LINE:</strong> ${escPdf(eb.bottom_line)}</div>
         <h3>Situation</h3><p>${escPdf(eb.situation)}</p>
         ${judgmentsHtml ? `<h3>Key Judgments</h3><ol>${judgmentsHtml}</ol>` : ''}
@@ -4685,13 +1331,13 @@ function generateDossierPDF() {
       <div style="page-break-after: always;"></div>`;
   }
 
-  // ── §1: Problem Reframing ──
+  // β”€β”€ Β§1: Problem Reframing β”€β”€
   let ontologySection = '';
   const ont = d.dossier_ontology;
   if (ont) {
     ontologySection = `
       <div class="section">
-        <h2>§1 — Problem Reframing</h2>
+        <h2>Β§1 β€” Problem Reframing</h2>
         <p><strong>Original Problem:</strong> ${escPdf(ont.original_problem)}</p>
         <p><strong>Reframed:</strong> ${escPdf(ont.reframed_problem)}</p>
         <h3>Ontological Nature</h3><p>${escPdf(ont.ontological_nature)}</p>
@@ -4701,7 +1347,7 @@ function generateDossierPDF() {
       </div>`;
   }
 
-  // ── §2: Analytical Landscape ──
+  // β”€β”€ Β§2: Analytical Landscape β”€β”€
   let landscapeSection = '';
   const cd = d.dossier_cross_domain;
   const vw = d.dossier_views;
@@ -4720,16 +1366,16 @@ function generateDossierPDF() {
     }
     landscapeSection = `
       <div class="section">
-        <h2>§2 — Analytical Landscape</h2>
+        <h2>Β§2 β€” Analytical Landscape</h2>
         ${cd ? `
-        <h3>Cross-Domain Analysis — ${(cd.domains || []).length} domains (${escPdf(cd.layer)})</h3>
+        <h3>Cross-Domain Analysis β€” ${(cd.domains || []).length} domains (${escPdf(cd.layer)})</h3>
         <p><strong>Structural Formula:</strong> ${escPdf(cd.structural_formula)}</p>
-        <p><strong>Strongest Analogy:</strong> <em>${escPdf((cd.strongest_analogy || {}).domain)}</em> — ${escPdf((cd.strongest_analogy || {}).core_mechanism)}</p>
+        <p><strong>Strongest Analogy:</strong> <em>${escPdf((cd.strongest_analogy || {}).domain)}</em> β€” ${escPdf((cd.strongest_analogy || {}).core_mechanism)}</p>
         ${cd.layer_3_hypothesis ? `<p><strong>Layer-3 Hypothesis:</strong> ${escPdf(cd.layer_3_hypothesis)}</p>` : ''}
         ${domainsHtml ? `<table class="domain-table"><thead><tr><th>Domain</th><th>Mechanism</th><th>Transfer Hypothesis</th><th>Strength</th></tr></thead><tbody>${domainsHtml}</tbody></table>` : ''}
         ` : ''}
         ${vw ? `
-        <h3>Multi-View Analysis — ${(vw.views || []).length} analytical lenses</h3>
+        <h3>Multi-View Analysis β€” ${(vw.views || []).length} analytical lenses</h3>
         <p><strong>Dominant Pattern:</strong> ${escPdf(vw.dominant_pattern)}</p>
         ${(vw.convergent_patterns || []).length ? `<h4>Convergent Patterns</h4><ul>${(vw.convergent_patterns || []).map(p => '<li>' + escPdf(p) + '</li>').join('')}</ul>` : ''}
         ${(vw.divergent_insights || []).length ? `<h4>Divergent Signals</h4><ul>${(vw.divergent_insights || []).map(p => '<li>' + escPdf(p) + '</li>').join('')}</ul>` : ''}
@@ -4739,7 +1385,7 @@ function generateDossierPDF() {
       <div style="page-break-after: always;"></div>`;
   }
 
-  // ── §3: Scenario Architecture ──
+  // β”€β”€ Β§3: Scenario Architecture β”€β”€
   let scenarioSection = '';
   const sc = d.dossier_scenarios;
   const sim = d.dossier_simulations;
@@ -4752,7 +1398,7 @@ function generateDossierPDF() {
       for (const v of sorted) {
         const isDominant = v.scenario_name === trib.dominant_scenario;
         scenarioTableHtml += `<tr${isDominant ? ' style="background:#f8f6f0;font-weight:700"' : ''}>
-          <td>${escPdf(v.scenario_name)}${isDominant ? ' ★' : ''}</td>
+          <td>${escPdf(v.scenario_name)}${isDominant ? ' β…' : ''}</td>
           <td>${v.final_score.toFixed(2)}</td>
           <td>${v.evidence_strength.toFixed(2)}</td>
           <td>${v.internal_consistency.toFixed(2)}</td>
@@ -4787,7 +1433,7 @@ function generateDossierPDF() {
                 <p>${escPdf(simData.forward_projection)}</p>
                 ${simData.stress_test_results && simData.stress_test_results.length ? `<h4>Stress Test Results</h4><ul>${simData.stress_test_results.map(st => '<li>' + escPdf(st) + '</li>').join('')}</ul>` : ''}
                 ${bpHtml ? `<h4>Breakpoints</h4><ul>${bpHtml}</ul>` : ''}
-                <p><strong>Robustness:</strong> ${(simData.robustness_score * 100).toFixed(0)}% · <strong>Revised Confidence:</strong> ${(simData.revised_confidence * 100).toFixed(0)}%</p>
+                <p><strong>Robustness:</strong> ${(simData.robustness_score * 100).toFixed(0)}% Β· <strong>Revised Confidence:</strong> ${(simData.revised_confidence * 100).toFixed(0)}%</p>
                 <p><em>${escPdf(simData.simulation_insight)}</em></p>
               </div>` : ''}
           </div>`;
@@ -4796,7 +1442,7 @@ function generateDossierPDF() {
 
     scenarioSection = `
       <div class="section">
-        <h2>§3 — Scenario Architecture</h2>
+        <h2>Β§3 β€” Scenario Architecture</h2>
         ${sc ? `<p><strong>Generation Logic:</strong> ${escPdf(sc.generation_logic)}</p>` : ''}
         ${scenarioTableHtml ? `
           <h3>Tribunal Scoring Matrix</h3>
@@ -4811,14 +1457,14 @@ function generateDossierPDF() {
       <div style="page-break-after: always;"></div>`;
   }
 
-  // ── §4: Strategic Foresight (existing) ──
+  // β”€β”€ Β§4: Strategic Foresight (existing) β”€β”€
   let strategicSection = '';
   const sf = d.strategic_foresight;
   if (sf && sf.strategic_assessment) {
     let dpHtml = '';
     for (const dp of (sf.decision_points || []).slice(0, 8)) {
       const txt = typeof dp === 'object' ? (dp.decision || dp.description || JSON.stringify(dp)) : String(dp);
-      const dl = typeof dp === 'object' && dp.deadline_description ? ` — <em>${escPdf(dp.deadline_description)}</em>` : '';
+      const dl = typeof dp === 'object' && dp.deadline_description ? ` β€” <em>${escPdf(dp.deadline_description)}</em>` : '';
       dpHtml += `<li>${escPdf(txt)}${dl}</li>`;
     }
     let iaHtml = '';
@@ -4838,33 +1484,33 @@ function generateDossierPDF() {
     let rmHtml = '';
     for (const r of risks.slice(0, 6)) {
       const label = typeof r === 'object' ? (r.item || r.risk || JSON.stringify(r)) : String(r);
-      rmHtml += `<li style="color:#c0392b">⚠ ${escPdf(label)}</li>`;
+      rmHtml += `<li style="color:#c0392b">β  ${escPdf(label)}</li>`;
     }
     for (const o of opps.slice(0, 4)) {
       const label = typeof o === 'object' ? (o.item || o.opportunity || JSON.stringify(o)) : String(o);
-      rmHtml += `<li style="color:#27ae60">✦ ${escPdf(label)}</li>`;
+      rmHtml += `<li style="color:#27ae60">β¦ ${escPdf(label)}</li>`;
     }
     const confCal = (sf.confidence_calibration && typeof sf.confidence_calibration === 'object') ? sf.confidence_calibration : {};
     const confPct = typeof confCal.overall_confidence === 'number' ? (confCal.overall_confidence * 100).toFixed(0) + '%' : '';
     strategicSection = `
       <div class="section">
-        <h2>§4 — Strategic Foresight${confPct ? ` <span class="badge">${confPct} confidence</span>` : ''}</h2>
+        <h2>Β§4 β€” Strategic Foresight${confPct ? ` <span class="badge">${confPct} confidence</span>` : ''}</h2>
         <p>${escPdf(sf.strategic_assessment)}</p>
         ${iaHtml ? `<h3>Immediate Actions</h3><ul>${iaHtml}</ul>` : ''}
         ${csHtml ? `<h3>Contingency Summaries</h3><ul>${csHtml}</ul>` : ''}
         ${dpHtml ? `<h3>Key Decision Points</h3><ul>${dpHtml}</ul>` : ''}
         ${rmHtml ? `<h3>Risk / Opportunity Matrix</h3><ul>${rmHtml}</ul>` : ''}
-        ${sf.historical_warning ? `<div class="warning-box"><strong>⚠ Historical Warning:</strong> ${escPdf(sf.historical_warning)}</div>` : ''}
+        ${sf.historical_warning ? `<div class="warning-box"><strong>β  Historical Warning:</strong> ${escPdf(sf.historical_warning)}</div>` : ''}
       </div>`;
   }
 
-  // ── §5: Action Playbook ──
+  // β”€β”€ Β§5: Action Playbook β”€β”€
   let actionsSection = '';
   const sa = d.scenario_actions;
   if (sa) {
     let robustHtml = '';
     for (const rm of (sa.robust_moves || []).slice(0, 6)) {
-      robustHtml += `<li><strong>${escPdf(rm.action)}</strong> <em>(${escPdf(rm.urgency || '')})</em>${rm.reasoning ? ` — ${escPdf(rm.reasoning)}` : ''}</li>`;
+      robustHtml += `<li><strong>${escPdf(rm.action)}</strong> <em>(${escPdf(rm.urgency || '')})</em>${rm.reasoning ? ` β€” ${escPdf(rm.reasoning)}` : ''}</li>`;
     }
     let pbHtml = '';
     for (const pb of (sa.scenario_playbooks || []).slice(0, 6)) {
@@ -4873,17 +1519,17 @@ function generateDossierPDF() {
         aHtml += `<li>${escPdf(a.action)}${a.deadline ? ` <em>(${escPdf(a.deadline)})</em>` : ''}</li>`;
       }
       const prob = typeof pb.scenario_probability === 'number' ? (pb.scenario_probability * 100).toFixed(0) + '%' : '';
-      pbHtml += `<div class="playbook"><h4>${escPdf(pb.scenario_name)}${prob ? ` — ${prob}` : ''}</h4><ol>${aHtml}</ol></div>`;
+      pbHtml += `<div class="playbook"><h4>${escPdf(pb.scenario_name)}${prob ? ` β€” ${prob}` : ''}</h4><ol>${aHtml}</ol></div>`;
     }
     actionsSection = `
       <div class="section">
-        <h2>§5 — Action Playbook${sa.client_role ? ` <span class="badge">for: ${escPdf(sa.client_role)}</span>` : ''}</h2>
+        <h2>Β§5 β€” Action Playbook${sa.client_role ? ` <span class="badge">for: ${escPdf(sa.client_role)}</span>` : ''}</h2>
         ${robustHtml ? `<h3>Do Regardless (Robust Moves)</h3><ul>${robustHtml}</ul>` : ''}
         ${pbHtml ? `<h3>Scenario-Specific Playbooks</h3>${pbHtml}` : ''}
       </div>`;
   }
 
-  // ── §6: Historical Precedent ──
+  // β”€β”€ Β§6: Historical Precedent β”€β”€
   let historicalSection = '';
   const hr = d.historical_resonance;
   if (hr && hr.parallels_found) {
@@ -4899,16 +1545,16 @@ function generateDossierPDF() {
     }
     historicalSection = `
       <div class="section">
-        <h2>§6 — Historical Precedent — ${hr.parallels_found} parallels${v.strongest_parallel ? ` (strongest: ${escPdf(v.strongest_parallel)})` : ''}</h2>
+        <h2>Β§6 β€” Historical Precedent β€” ${hr.parallels_found} parallels${v.strongest_parallel ? ` (strongest: ${escPdf(v.strongest_parallel)})` : ''}</h2>
         ${v.historical_consensus ? `<p>${escPdf(v.historical_consensus)}</p>` : ''}
         ${parallelsHtml}
         ${v.pattern_beneath ? `<p><strong>Pattern Beneath:</strong> ${escPdf(v.pattern_beneath)}</p>` : ''}
-        ${v.historical_warning ? `<div class="warning-box"><strong>⚠ Warning:</strong> ${escPdf(v.historical_warning)}</div>` : ''}
+        ${v.historical_warning ? `<div class="warning-box"><strong>β  Warning:</strong> ${escPdf(v.historical_warning)}</div>` : ''}
         ${(v.early_warning_signals || []).length ? `<h3>Early Warning Signals</h3><ul>${v.early_warning_signals.map(s => '<li>' + escPdf(s) + '</li>').join('')}</ul>` : ''}
       </div>`;
   }
 
-  // ── §7: Intelligence Signals ──
+  // β”€β”€ Β§7: Intelligence Signals β”€β”€
   let triggersSection = '';
   const dt = d.decision_triggers;
   if (dt) {
@@ -4926,21 +1572,21 @@ function generateDossierPDF() {
     }
     triggersSection = `
       <div class="section">
-        <h2>§7 — Intelligence Signals & Predictions</h2>
-        ${trigHtml ? `<h3>Decision Triggers — ${triggers.length} rules</h3>
+        <h2>Β§7 β€” Intelligence Signals & Predictions</h2>
+        ${trigHtml ? `<h3>Decision Triggers β€” ${triggers.length} rules</h3>
           <table><thead><tr><th>Condition</th><th>Scenario</th><th>Playbook</th><th>Time to Act</th></tr></thead><tbody>${trigHtml}</tbody></table>` : ''}
-        ${betHtml ? `<h3>Prophetic Bets — ${bets.length} predictions</h3>
+        ${betHtml ? `<h3>Prophetic Bets β€” ${bets.length} predictions</h3>
           <table><thead><tr><th>Prediction</th><th>Deadline</th><th>Confidence</th><th>Novelty</th></tr></thead><tbody>${betHtml}</tbody></table>` : ''}
         ${dt.meta_prediction ? `<div class="meta-prediction"><strong>META-PREDICTION:</strong> ${escPdf(dt.meta_prediction)}</div>` : ''}
       </div>`;
   }
 
-  // ── §8: Methodology & Confidence ──
+  // β”€β”€ Β§8: Methodology & Confidence β”€β”€
   let methodSection = '';
   const confCalib = sf ? sf.confidence_calibration : null;
   methodSection = `
     <div class="section">
-      <h2>§8 — Methodology & Confidence</h2>
+      <h2>Β§8 β€” Methodology & Confidence</h2>
       <table>
         <tbody>
           <tr><td><strong>Analytical Layer</strong></td><td>${escPdf(d.layer)}</td></tr>
@@ -4965,12 +1611,12 @@ function generateDossierPDF() {
       ` : ''}
     </div>`;
 
-  // ── Build full dossier HTML ──
+  // β”€β”€ Build full dossier HTML β”€β”€
   const dossierHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XDART-Φ Intelligence Dossier</title>
+<title>XDART-Ξ¦ Intelligence Dossier</title>
 <style>
   @page { margin: 18mm 16mm; size: A4; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -5019,10 +1665,10 @@ function generateDossierPDF() {
 </head>
 <body>
   <div class="cover">
-    <h1>XDART-Φ</h1>
+    <h1>XDART-Ξ¦</h1>
     <div class="subtitle">Intelligence Dossier</div>
     <div class="classification"><span class="layer-tag ${d.layer === 'Layer-3' ? 'l3' : d.layer === 'Layer-2' ? 'l2' : 'l1'}">${escPdf(d.layer)}</span></div>
-    <div class="meta">${escPdf(now)} · ${(d.domains_used||[]).length} domains · ${(d.views_used||[]).length} views · ${d.memory_count} memories · ${d.total_elapsed}s pipeline</div>
+    <div class="meta">${escPdf(now)} Β· ${(d.domains_used||[]).length} domains Β· ${(d.views_used||[]).length} views Β· ${d.memory_count} memories Β· ${d.total_elapsed}s pipeline</div>
     <div class="problem-box">
       <h3>SUBJECT</h3>
       <p>${escPdf(d.problem)}</p>
@@ -5034,15 +1680,15 @@ function generateDossierPDF() {
   <div class="toc">
     <h2>Table of Contents</h2>
     <ol>
-      ${eb ? '<li><strong>§0 — Executive Intelligence Brief</strong> (condensed 1-2 pages)</li>' : ''}
-      ${ont ? '<li>§1 — Problem Reframing (ontological analysis)</li>' : ''}
-      ${cd || vw ? '<li>§2 — Analytical Landscape (cross-domain + 18 views)</li>' : ''}
-      ${sc || trib ? '<li>§3 — Scenario Architecture (scenarios + simulations + tribunal)</li>' : ''}
-      ${sf ? '<li>§4 — Strategic Foresight (decisions, risks, actions)</li>' : ''}
-      ${sa ? '<li>§5 — Action Playbook (robust moves + playbooks)</li>' : ''}
-      ${hr ? '<li>§6 — Historical Precedent (parallels + warnings)</li>' : ''}
-      ${dt ? '<li>§7 — Intelligence Signals & Predictions</li>' : ''}
-      <li>§8 — Methodology & Confidence</li>
+      ${eb ? '<li><strong>Β§0 β€” Executive Intelligence Brief</strong> (condensed 1-2 pages)</li>' : ''}
+      ${ont ? '<li>Β§1 β€” Problem Reframing (ontological analysis)</li>' : ''}
+      ${cd || vw ? '<li>Β§2 β€” Analytical Landscape (cross-domain + 18 views)</li>' : ''}
+      ${sc || trib ? '<li>Β§3 β€” Scenario Architecture (scenarios + simulations + tribunal)</li>' : ''}
+      ${sf ? '<li>Β§4 β€” Strategic Foresight (decisions, risks, actions)</li>' : ''}
+      ${sa ? '<li>Β§5 β€” Action Playbook (robust moves + playbooks)</li>' : ''}
+      ${hr ? '<li>Β§6 β€” Historical Precedent (parallels + warnings)</li>' : ''}
+      ${dt ? '<li>Β§7 β€” Intelligence Signals & Predictions</li>' : ''}
+      <li>Β§8 β€” Methodology & Confidence</li>
     </ol>
   </div>
 
@@ -5057,8 +1703,8 @@ function generateDossierPDF() {
   ${methodSection}
 
   <div class="footer">
-    XDART-Φ × XHEART — Autonomous Strategic Intelligence Framework · Intelligence Dossier · ${escPdf(now)}<br>
-    <em>«Βλέπω τους ανέμους πριν φυσήξουν»</em>
+    XDART-Ξ¦ Γ— XHEART β€” Autonomous Strategic Intelligence Framework Β· Intelligence Dossier Β· ${escPdf(now)}<br>
+    <em>Β«Ξ’Ξ»Ξ­Ο€Ο‰ Ο„ΞΏΟ…Ο‚ Ξ±Ξ½Ξ­ΞΌΞΏΟ…Ο‚ Ο€ΟΞΉΞ½ Ο†Ο…ΟƒΞ®ΞΎΞΏΟ…Ξ½Β»</em>
   </div>
 </body>
 </html>`;
@@ -5070,7 +1716,7 @@ function generateDossierPDF() {
   setTimeout(() => win.print(), 500);
 }
 
-// ── Client Profile Helpers ──
+// β”€β”€ Client Profile Helpers β”€β”€
 let presetProfiles = {};
 
 async function loadPresetProfiles() {
@@ -5158,7 +1804,7 @@ function getClientProfile() {
   };
 }
 
-// ── Main analysis function ──
+// β”€β”€ Main analysis function β”€β”€
 async function startAnalysis() {
   const problem = document.getElementById('problemInput').value.trim();
   if (!problem || isRunning) return;
@@ -5222,7 +1868,7 @@ async function startAnalysis() {
           // Concatenate multi-line data (SSE spec: multiple data: lines joined by \n)
           eventData += (eventData ? '\n' : '') + line.slice(5).trim();
         } else if (line.trim() === '' && eventType && eventData) {
-          // Process complete event — wrapped in try/catch so one bad card doesn't kill the stream
+          // Process complete event β€” wrapped in try/catch so one bad card doesn't kill the stream
           try {
             handleSSEEvent(eventType, eventData, resultsDiv);
           } catch (e) {
@@ -5242,7 +1888,7 @@ async function startAnalysis() {
 
   isRunning = false;
   document.getElementById('btnRun').disabled = false;
-  document.getElementById('btnRun').textContent = 'Analyze ◈';
+  document.getElementById('btnRun').textContent = 'Analyze β—';
   document.getElementById('btnChat').disabled = false;
   document.getElementById('problemInput').value = '';
   document.getElementById('problemInput').focus();
@@ -5250,7 +1896,7 @@ async function startAnalysis() {
 }
 
 function handleSSEEvent(type, dataStr, container) {
-  // Ignore keepalive heartbeats — they just prevent stream timeout
+  // Ignore keepalive heartbeats β€” they just prevent stream timeout
   if (type === 'heartbeat') return;
 
   let data;
@@ -5322,12 +1968,12 @@ function handleSSEEvent(type, dataStr, container) {
   }
 }
 
-// ── Chat History & Chat Mode ──
+// β”€β”€ Chat History & Chat Mode β”€β”€
 let chatHistory = [];
 let isChatting = false;
 
-// ── Serialized Chat Queue ──
-// All proactive + user chat requests stream one at a time — no parallel SSE streams.
+// β”€β”€ Serialized Chat Queue β”€β”€
+// All proactive + user chat requests stream one at a time β€” no parallel SSE streams.
 // When 3 proactive alerts fire at once, they queue up and play sequentially.
 const _chatQueue = [];       // {type:'proactive'|'user', ...}
 let _chatQueueBusy = false;
@@ -5354,7 +2000,7 @@ function _drainChatQueue() {
   document.getElementById('btnRun').disabled = true;
 
   if (_chatQueue.length > 0) {
-    console.log(`[ChatQueue] Processing — ${_chatQueue.length} more item(s) waiting`);
+    console.log(`[ChatQueue] Processing β€” ${_chatQueue.length} more item(s) waiting`);
   }
 
   const done = () => {
@@ -5366,7 +2012,7 @@ function _drainChatQueue() {
       if (!isRunning) document.getElementById('btnRun').disabled = false;
       document.getElementById('problemInput').focus();
     } else {
-      // More items waiting — drain after a short pause for readability.
+      // More items waiting β€” drain after a short pause for readability.
       // Re-enable chat button between items so user can always type.
       document.getElementById('btnChat').disabled = false;
       document.getElementById('btnChat').textContent = 'Chat';
@@ -5381,48 +2027,48 @@ function _drainChatQueue() {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  VOICE ENGINE — ElevenLabs TTS (WebSocket) + STT (Scribe v2)
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+//  VOICE ENGINE β€” ElevenLabs TTS (WebSocket) + STT (Scribe v2)
 //
 //  Architecture:
-//    TTS (primary): Browser WS → Server proxy WS → ElevenLabs REST streaming (eleven_v3 + pcm_24000)
+//    TTS (primary): Browser WS β†’ Server proxy WS β†’ ElevenLabs REST streaming (eleven_v3 + pcm_24000)
 //         Server buffers text, detects sentence boundaries, streams PCM audio back.
 //         Best voice quality via v3 model. Sentence-level progressive audio.
-//    TTS (fallback): Browser WS → ElevenLabs WS directly (eleven_multilingual_v2 + pcm_24000)
+//    TTS (fallback): Browser WS β†’ ElevenLabs WS directly (eleven_multilingual_v2 + pcm_24000)
 //         Word-level streaming, lower quality than v3.
-//    TTS (last resort): Browser → /xdart/voice/tts → MP3 blob → Audio element.
+//    TTS (last resort): Browser β†’ /xdart/voice/tts β†’ MP3 blob β†’ Audio element.
 //
-//    STT: Browser MediaRecorder → POST /xdart/voice/stt → ElevenLabs Scribe v2
+//    STT: Browser MediaRecorder β†’ POST /xdart/voice/stt β†’ ElevenLabs Scribe v2
 //         Recording is sent as webm/opus for transcription.
 //
 //  The API key is fetched from the backend at startup (not hardcoded).
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
-let _voiceAutoPlay = false;     // Auto-play TTS on Αίολος responses
+let _voiceAutoPlay = false;     // Auto-play TTS on Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ responses
 let _voiceRecording = false;    // Currently recording mic
 let _mediaRecorder = null;      // MediaRecorder instance
 let _audioChunks = [];          // Recorded audio chunks
 
-// ── Voice Config (fetched from backend) ──
+// β”€β”€ Voice Config (fetched from backend) β”€β”€
 let _voiceCfg = null;           // {api_key, voice_id, model_tts, model_stt, tts_settings}
 let _voiceEnabled = false;      // True once config is loaded and valid
 
-// ── TTS Streaming State ──
+// β”€β”€ TTS Streaming State β”€β”€
 let _ttsWs = null;              // Current WebSocket connection (ONE per message)
 let _ttsAudioCtx = null;        // AudioContext for playback
-let _ttsGainNode = null;        // Master gain node — all sources route through this
+let _ttsGainNode = null;        // Master gain node β€” all sources route through this
 let _ttsSources = [];           // ALL scheduled AudioBufferSourceNodes (for clean stop)
 let _ttsSpeaking = false;       // True while TTS is active (WebSocket open or audio playing)
 let _ttsNextPlayTime = 0;       // AudioContext time when last scheduled chunk finishes
 let _ttsFirstChunk = false;     // Whether first audio chunk has been scheduled
-let _ttsGen = 0;                // Generation counter — bumped on each new message/stop
+let _ttsGen = 0;                // Generation counter β€” bumped on each new message/stop
 let _ttsDoneResolve = null;     // Resolve function for end-of-stream waiting
 let _ttsTotalBytes = 0;         // Total audio bytes received in current stream
 let _ttsPendingText = '';       // Text buffered while WebSocket is still connecting
 let _ttsEosPending = false;     // Whether endStreamingTTS was called before WS opened
 const _ttsPlaybackRate = 1.0;   // Client-side playback rate (1.0 = no distortion; speed handled by ElevenLabs API)
 
-// ── Initialize Voice System ──
+// β”€β”€ Initialize Voice System β”€β”€
 async function _initVoice() {
   try {
     const res = await fetch(`${API_BASE}/xdart/voice/config`);
@@ -5439,15 +2085,15 @@ async function _initVoice() {
     document.getElementById('btnMic').style.display = '';
     document.getElementById('btnVoiceToggle').style.display = '';
 
-    console.log('[Voice] Initialized — model:', cfg.model_tts, 'voice:', cfg.voice_id);
+    console.log('[Voice] Initialized β€” model:', cfg.model_tts, 'voice:', cfg.voice_id);
   } catch (e) {
     console.warn('[Voice] Config fetch failed:', e);
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// TTS: WebSocket Streaming (browser → ElevenLabs → AudioContext)
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+// TTS: WebSocket Streaming (browser β†’ ElevenLabs β†’ AudioContext)
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 function _ensureAudioContext() {
   if (!_ttsAudioCtx || _ttsAudioCtx.state === 'closed') {
@@ -5456,7 +2102,7 @@ function _ensureAudioContext() {
   }
   if (_ttsAudioCtx.state === 'suspended') {
     _ttsAudioCtx.resume().then(() => {
-      console.log('[Voice/TTS] AudioContext resumed → state:', _ttsAudioCtx.state);
+      console.log('[Voice/TTS] AudioContext resumed β†’ state:', _ttsAudioCtx.state);
     }).catch(e => {
       console.warn('[Voice/TTS] AudioContext resume failed (need user gesture?):', e);
     });
@@ -5517,36 +2163,36 @@ function _stripInternalTags(text) {
   text = text.replace(/<SHELL_ACTION\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<spawn_agent\b[^>]*>[\s\S]*$/gi, '');
   text = text.replace(/<SPAWN_AGENT\b[^>]*>[\s\S]*$/gi, '');
-  // Bracket-style hallucinated tags: [TAG: ...] — LLM uses wrong syntax, never executed
+  // Bracket-style hallucinated tags: [TAG: ...] β€” LLM uses wrong syntax, never executed
   text = text.replace(/\[(?:VISUAL_ACTION|MEMORY_STORE|SHELL_ACTION|SPAWN_AGENT|MONGO_ACTION|BAYESIAN_FUZZY_ENGINE)[:\s][^\]]*\]/gi, '');
   // Clean up multiple blank lines
   text = text.replace(/\n{3,}/g, '\n\n');
   return text.trim();
 }
 
-// ── Streaming TTS: ONE WebSocket per message ─────────────────
+// β”€β”€ Streaming TTS: ONE WebSocket per message β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€
 //
 //  Flow:
-//   1. startStreamingTTS() — opens WebSocket (server proxy or direct), sends BOS
-//   2. feedStreamingTTS(chunk) — sends cleaned text chunks as they arrive
-//   3. endStreamingTTS() — sends EOS, waits for all audio to finish
-//   4. stopSpeaking() — kills everything immediately
+//   1. startStreamingTTS() β€” opens WebSocket (server proxy or direct), sends BOS
+//   2. feedStreamingTTS(chunk) β€” sends cleaned text chunks as they arrive
+//   3. endStreamingTTS() β€” sends EOS, waits for all audio to finish
+//   4. stopSpeaking() β€” kills everything immediately
 //
 //  Primary path (tts_proxy_ws=true):
-//    Browser WS → Our Server WS → ElevenLabs REST streaming (eleven_v3)
+//    Browser WS β†’ Our Server WS β†’ ElevenLabs REST streaming (eleven_v3)
 //    Server detects sentence boundaries, streams PCM chunks back.
 //    Best quality (v3), progressive audio, slight sentence-level latency.
 //
 //  Fallback path (tts_proxy_ws=false):
-//    Browser WS → ElevenLabs WS directly (eleven_multilingual_v2)
+//    Browser WS β†’ ElevenLabs WS directly (eleven_multilingual_v2)
 //    Word-level streaming, lower quality than v3.
 //
 //  Audio playback uses AudioContext with precise scheduling for gapless output.
 //  All audio flows through a master GainNode for instant mute/stop.
-// ─────────────────────────────────────────────────────────────
+// β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€β”€
 
 /**
- * Open a WebSocket for streaming TTS (server proxy → v3, or direct ElevenLabs).
+ * Open a WebSocket for streaming TTS (server proxy β†’ v3, or direct ElevenLabs).
  * Returns the generation number for this stream.
  * Call feedStreamingTTS(chunk) to send text, endStreamingTTS() when done.
  */
@@ -5577,11 +2223,11 @@ function startStreamingTTS() {
   _ttsGainNode = ctx.createGain();
   _ttsGainNode.connect(ctx.destination);
 
-  // ── Choose WebSocket target: server proxy (v3 quality) or direct ElevenLabs ──
+  // β”€β”€ Choose WebSocket target: server proxy (v3 quality) or direct ElevenLabs β”€β”€
   let wsUrl;
   const useProxy = !!_voiceCfg.tts_proxy_ws;
   if (useProxy) {
-    // Server-side proxy: /xdart/voice/tts-stream → ElevenLabs REST streaming (eleven_v3)
+    // Server-side proxy: /xdart/voice/tts-stream β†’ ElevenLabs REST streaming (eleven_v3)
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     wsUrl = `${proto}//${location.host}/xdart/voice/tts-stream`;
   } else {
@@ -5607,7 +2253,7 @@ function startStreamingTTS() {
         chunk_length_schedule: [120, 160, 250, 290],
       },
     }));
-    console.log(`[Voice/TTS] WebSocket opened for streaming (${useProxy ? 'server proxy → v3' : 'direct ElevenLabs'})`);
+    console.log(`[Voice/TTS] WebSocket opened for streaming (${useProxy ? 'server proxy β†’ v3' : 'direct ElevenLabs'})`);
 
     // Flush any text that arrived while WebSocket was connecting
     if (_ttsPendingText) {
@@ -5631,14 +2277,14 @@ function startStreamingTTS() {
 
   ws.onmessage = (event) => {
     if (gen !== _ttsGen) {
-      console.warn('[Voice/TTS] Dropping message — gen mismatch: stream=%d, current=%d', gen, _ttsGen);
+      console.warn('[Voice/TTS] Dropping message β€” gen mismatch: stream=%d, current=%d', gen, _ttsGen);
       return;
     }
     try {
       const msg = JSON.parse(event.data);
 
       if (msg.audio) {
-        // Decode base64 PCM 24kHz 16-bit mono → Float32
+        // Decode base64 PCM 24kHz 16-bit mono β†’ Float32
         const binaryStr = atob(msg.audio);
         const bytes = new Uint8Array(binaryStr.length);
         for (let i = 0; i < binaryStr.length; i++) {
@@ -5657,7 +2303,7 @@ function startStreamingTTS() {
 
         // Ensure AudioContext is running (may have been suspended by browser policy)
         if (ctx.state === 'suspended') {
-          console.warn('[Voice/TTS] AudioContext suspended — attempting resume');
+          console.warn('[Voice/TTS] AudioContext suspended β€” attempting resume');
           ctx.resume().then(() => {
             console.log('[Voice/TTS] AudioContext resumed successfully, state:', ctx.state);
           }).catch(e => {
@@ -5690,9 +2336,9 @@ function startStreamingTTS() {
       }
 
       if (msg.isFinal) {
-        // All audio chunks received — wait for playback to finish
+        // All audio chunks received β€” wait for playback to finish
         const remainingMs = Math.max(0, (_ttsNextPlayTime - ctx.currentTime) * 1000) + 150;
-        console.log('[Voice/TTS] isFinal received — totalBytes=%d, chunks=%d, ctx.state=%s, waitMs=%.0f',
+        console.log('[Voice/TTS] isFinal received β€” totalBytes=%d, chunks=%d, ctx.state=%s, waitMs=%.0f',
                      _ttsTotalBytes, _ttsSources.length, ctx.state, remainingMs);
         setTimeout(() => {
           if (gen === _ttsGen) {
@@ -5712,12 +2358,12 @@ function startStreamingTTS() {
   };
 
   ws.onerror = (e) => {
-    console.warn('[Voice/TTS] WebSocket error — readyState:', ws.readyState, 'url:', wsUrl.replace(/xi_api_key=[^&]+/, 'xi_api_key=***'));
+    console.warn('[Voice/TTS] WebSocket error β€” readyState:', ws.readyState, 'url:', wsUrl.replace(/xi_api_key=[^&]+/, 'xi_api_key=***'));
   };
 
   ws.onclose = (e) => {
     if (e.code !== 1000) {
-      console.warn('[Voice/TTS] WebSocket closed abnormally — code:', e.code, 'reason:', e.reason || '(none)');
+      console.warn('[Voice/TTS] WebSocket closed abnormally β€” code:', e.code, 'reason:', e.reason || '(none)');
     }
     if (_ttsWs === ws) _ttsWs = null;
     // If we got audio but never got isFinal, still wait for playback
@@ -5740,7 +2386,7 @@ function startStreamingTTS() {
   // Safety timeout: 60s max per stream
   setTimeout(() => {
     if (gen === _ttsGen && _ttsWs === ws && ws.readyState === WebSocket.OPEN) {
-      console.warn('[Voice/TTS] Safety timeout — closing WebSocket');
+      console.warn('[Voice/TTS] Safety timeout β€” closing WebSocket');
       try { ws.send(JSON.stringify({ text: '' })); } catch(e) {}
       setTimeout(() => { try { ws.close(); } catch(e) {} }, 2000);
     }
@@ -5761,22 +2407,22 @@ function feedStreamingTTS(text, gen) {
   if (!clean) return;
 
   if (_ttsWs.readyState === WebSocket.OPEN) {
-    // WebSocket is open — send immediately
+    // WebSocket is open β€” send immediately
     try {
       _ttsWs.send(JSON.stringify({ text: clean + ' ' }));
     } catch (e) {
       console.warn('[Voice/TTS] Send failed:', e);
     }
   } else if (_ttsWs.readyState === WebSocket.CONNECTING) {
-    // WebSocket still connecting — buffer text for flush on open
+    // WebSocket still connecting β€” buffer text for flush on open
     _ttsPendingText += clean + ' ';
   } else {
-    console.warn('[Voice/TTS] Cannot send — WS state:', _ttsWs.readyState);
+    console.warn('[Voice/TTS] Cannot send β€” WS state:', _ttsWs.readyState);
   }
 }
 
 /**
- * Signal end of text stream — sends EOS to WebSocket.
+ * Signal end of text stream β€” sends EOS to WebSocket.
  * Returns a Promise that resolves when all audio has finished playing.
  */
 function endStreamingTTS(gen) {
@@ -5790,7 +2436,7 @@ function endStreamingTTS(gen) {
       console.warn('[Voice/TTS] EOS send failed:', e);
     }
   } else if (_ttsWs && _ttsWs.readyState === WebSocket.CONNECTING) {
-    // WS still connecting — mark EOS as pending, will flush on open
+    // WS still connecting β€” mark EOS as pending, will flush on open
     _ttsEosPending = true;
   }
 
@@ -5882,7 +2528,7 @@ async function _speakViaServerProxy(text) {
 }
 
 /**
- * Kill the current TTS stream — WebSocket + audio + state.
+ * Kill the current TTS stream β€” WebSocket + audio + state.
  */
 function _killTTSStream() {
   if (_ttsWs) {
@@ -5903,7 +2549,7 @@ function _killTTSStream() {
 }
 
 /**
- * Stop ALL TTS — kills the stream and resets state.
+ * Stop ALL TTS β€” kills the stream and resets state.
  * Used when a new message starts or user explicitly stops.
  */
 function stopSpeaking() {
@@ -5920,21 +2566,21 @@ function _updateSpeakingIndicator(speaking) {
   const btn = document.getElementById('btnVoiceToggle');
   if (!btn) return;
   if (speaking) {
-    btn.textContent = '🔊';
+    btn.textContent = 'π”';
     btn.style.animation = 'pulse 1s infinite';
   } else if (_voiceAutoPlay) {
-    btn.textContent = '🔊';
+    btn.textContent = 'π”';
     btn.style.animation = '';
   } else {
-    btn.textContent = '🔇';
+    btn.textContent = 'π”‡';
     btn.style.animation = '';
   }
 }
 
 
-// ══════════════════════════════════════════════════════════════
-// STT: Speech to Text (Mic → ElevenLabs Scribe v2)
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+// STT: Speech to Text (Mic β†’ ElevenLabs Scribe v2)
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 async function toggleVoiceRecording() {
   if (_voiceRecording) {
@@ -5975,14 +2621,14 @@ async function startVoiceRecording() {
 
       if (blob.size < 100) {
         console.warn('[Voice/STT] Recording too short');
-        btn.textContent = '🎙';
+        btn.textContent = 'π™';
         btn.disabled = false;
         _voiceRecording = false;
         btn.style.background = 'linear-gradient(135deg,#1b5e20,#2e7d32)';
         return;
       }
 
-      btn.textContent = '⏳';
+      btn.textContent = 'β³';
       btn.disabled = true;
 
       try {
@@ -6015,7 +2661,7 @@ async function startVoiceRecording() {
       } catch (err) {
         console.warn('[Voice/STT] Transcription failed:', err);
       } finally {
-        btn.textContent = '🎙';
+        btn.textContent = 'π™';
         btn.disabled = false;
         _voiceRecording = false;
         btn.style.background = 'linear-gradient(135deg,#1b5e20,#2e7d32)';
@@ -6024,13 +2670,13 @@ async function startVoiceRecording() {
 
     _mediaRecorder.start(250); // collect data every 250ms for faster availability
     _voiceRecording = true;
-    btn.textContent = '⏹';
+    btn.textContent = 'βΉ';
     btn.style.background = 'linear-gradient(135deg,#b71c1c,#d32f2f)';
     btn.title = 'Recording... click to stop';
     console.log('[Voice/STT] Recording started');
   } catch (err) {
     console.warn('[Voice/STT] Mic access denied:', err);
-    btn.textContent = '🎙';
+    btn.textContent = 'π™';
     alert('Microphone access denied. Please allow microphone access in your browser settings.');
   }
 }
@@ -6043,31 +2689,31 @@ function stopVoiceRecording() {
 }
 
 
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 // Voice Controls
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 function toggleAutoVoice() {
   _voiceAutoPlay = !_voiceAutoPlay;
   const btn = document.getElementById('btnVoiceToggle');
   if (_voiceAutoPlay) {
-    btn.textContent = '🔊';
+    btn.textContent = 'π”';
     btn.style.opacity = '1';
-    btn.title = 'Voice ON — Αίολος will speak (click to mute)';
+    btn.title = 'Voice ON β€” Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ will speak (click to mute)';
     // Resume AudioContext (required after user gesture)
     _ensureAudioContext();
     console.log('[Voice] Auto-voice enabled');
   } else {
-    btn.textContent = '🔇';
+    btn.textContent = 'π”‡';
     btn.style.opacity = '0.5';
-    btn.title = 'Voice OFF — click to enable Αίολος voice';
+    btn.title = 'Voice OFF β€” click to enable Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ voice';
     stopSpeaking();
     console.log('[Voice] Auto-voice disabled');
   }
 }
 
 /**
- * Auto-speak helper — called after each Αίολος response.
+ * Auto-speak helper β€” called after each Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ response.
  * Only speaks if auto-voice is enabled.
  */
 function autoSpeak(text) {
@@ -6078,11 +2724,11 @@ function autoSpeak(text) {
   }
 }
 
-// ── Public entry point: enqueue user message ──
+// β”€β”€ Public entry point: enqueue user message β”€β”€
 function sendChat() {
   const message = document.getElementById('problemInput').value.trim();
   if (!message || isRunning) return;
-  // Allow enqueue even if proactive chats are processing —
+  // Allow enqueue even if proactive chats are processing β€”
   // the queue serializes execution, user doesn't need to wait.
   document.getElementById('problemInput').value = '';
 
@@ -6090,7 +2736,7 @@ function sendChat() {
   const empty = document.getElementById('emptyState');
   if (empty) empty.remove();
 
-  // Show user message bubble IMMEDIATELY — don't wait for queue to drain.
+  // Show user message bubble IMMEDIATELY β€” don't wait for queue to drain.
   // This way the user sees their message even if a proactive analysis is still running.
   const conversation = document.getElementById('conversation');
   conversation.insertAdjacentHTML('beforeend', `
@@ -6104,7 +2750,7 @@ function sendChat() {
 }
 
 async function _runSendChat(message) {
-  // User message bubble is already shown by sendChat() — no need to add it again.
+  // User message bubble is already shown by sendChat() β€” no need to add it again.
   const conversation = document.getElementById('conversation');
 
   // Add thinking indicator
@@ -6121,7 +2767,7 @@ async function _runSendChat(message) {
   let responseTextEl = null;
   let streamedText = '';
 
-  // ── Stop any previous TTS and start streaming TTS for this message ──
+  // β”€β”€ Stop any previous TTS and start streaming TTS for this message β”€β”€
   stopSpeaking();
   let myGen = 0;
   if (_voiceAutoPlay && _voiceEnabled) {
@@ -6129,7 +2775,7 @@ async function _runSendChat(message) {
   }
 
   try {
-    // ═══ SSE Streaming Chat ═══
+    // β•β•β• SSE Streaming Chat β•β•β•
     const res = await fetch(`${API_BASE}/xdart/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -6169,13 +2815,13 @@ async function _runSendChat(message) {
           let data;
           try { data = JSON.parse(dataStr); } catch { continue; }
 
-          // ── Handle SSE events ──
+          // β”€β”€ Handle SSE events β”€β”€
           if (currentEvent === 'routing') {
-            // Router decided — update thinking indicator
+            // Router decided β€” update thinking indicator
             const thinkEl = document.getElementById(thinkingId);
             if (thinkEl) {
               if (data.action === 'web_respond') {
-                thinkEl.querySelector('div').textContent = '🌐 Searching web...';
+                thinkEl.querySelector('div').textContent = 'π Searching web...';
               } else {
                 thinkEl.querySelector('div').textContent = 'Generating...';
               }
@@ -6192,19 +2838,19 @@ async function _runSendChat(message) {
 
             conversation.insertAdjacentHTML('beforeend', `
               <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.06);border-radius:10px;border-left:3px solid #ffd740;max-width:85%;margin-left:auto">
-                <div style="font-size:11px;color:#ffd740;margin-bottom:4px">🔮 Prophet Mode Activated</div>
+                <div style="font-size:11px;color:#ffd740;margin-bottom:4px">π”® Prophet Mode Activated</div>
                 <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(data.reasoning || '')}</div>
               </div>`);
             conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-            // Pipeline redirect — release queue so it can drain, then start pipeline
+            // Pipeline redirect β€” release queue so it can drain, then start pipeline
             document.getElementById('problemInput').value = data.problem || message;
             startAnalysis();
             return;
           }
 
           else if (currentEvent === 'chunk') {
-            // ── Streaming text chunk ──
+            // β”€β”€ Streaming text chunk β”€β”€
             const chunkText = data.text || '';
             streamedText += chunkText;
 
@@ -6215,7 +2861,7 @@ async function _runSendChat(message) {
 
               conversation.insertAdjacentHTML('beforeend', `
                 <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
-                  <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
+                  <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚</div>
                   <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
                 </div>`);
               responseDiv = document.getElementById(responseId);
@@ -6252,25 +2898,12 @@ async function _runSendChat(message) {
 
           else if (currentEvent === 'error') {
             console.error('[Chat/Stream] Server error:', data.message);
-            // Remove thinking indicator and show error in chat
-            const thinkElErr = document.getElementById(thinkingId);
-            if (thinkElErr) thinkElErr.remove();
-            if (!responseDiv) {
-              const errMsg = data.message || 'Κάτι πήγε στραβά. Δοκίμασε ξανά.';
-              conversation.insertAdjacentHTML('beforeend', `
-                <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(239,83,80,0.06);border-radius:10px;border-left:3px solid var(--red);max-width:85%;margin-left:auto">
-                  <div style="font-size:11px;color:var(--red);margin-bottom:4px">Σφάλμα</div>
-                  <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(errMsg)}</div>
-                </div>`);
-              conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            }
-            gotDone = true;
           }
 
           currentEvent = 'message';  // Reset for next event
         }
       }
-      // Exit as soon as done event is processed — don't wait for TCP close
+      // Exit as soon as done event is processed β€” don't wait for TCP close
       if (gotDone) break;
     }
 
@@ -6304,7 +2937,7 @@ async function _runSendChat(message) {
 
       conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
-          <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος</div>
+          <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚</div>
           <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(fallbackResponse)}</div>
         </div>`);
 
@@ -6319,7 +2952,7 @@ async function _runSendChat(message) {
 
 }
 
-// ── Keyboard shortcut ──
+// β”€β”€ Keyboard shortcut β”€β”€
 document.getElementById('problemInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -6331,7 +2964,7 @@ document.getElementById('problemInput').addEventListener('keydown', (e) => {
   }
 });
 
-// ── Public entry point: enqueue proactive notification ──
+// β”€β”€ Public entry point: enqueue proactive notification β”€β”€
 function initiateProactiveChat(notif) {
   _enqueueChatItem({ type: 'proactive', notif });
 }
@@ -6345,13 +2978,13 @@ async function _runInitiateProactiveChat(notif) {
   if (empty) empty.remove();
 
   const urgTag = notif.urgency === 'critical'
-    ? '⚠ CRITICAL'
-    : '⚡ IMPORTANT';
+    ? 'β  CRITICAL'
+    : 'β΅ IMPORTANT';
 
   // Show what was detected (system context bubble)
   conversation.insertAdjacentHTML('beforeend', `
     <div class="chat-message" style="margin:8px 0;padding:10px 16px;background:rgba(255,215,64,0.04);border-radius:10px;border-left:3px solid rgba(255,215,64,0.4);max-width:90%">
-      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">📡 Pattern Detected · ${esc(urgTag)} · ${new Date().toLocaleTimeString()}</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">π“΅ Pattern Detected Β· ${esc(urgTag)} Β· ${new Date().toLocaleTimeString()}</div>
       <div style="font-size:13px;color:var(--text-secondary);line-height:1.4">${esc(notif.headline || 'Emergent pattern detected')}</div>
       ${notif.reason ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;font-style:italic">${esc(notif.reason)}</div>` : ''}
     </div>`);
@@ -6360,20 +2993,20 @@ async function _runInitiateProactiveChat(notif) {
   const thinkingId = 'proactive-thinking-' + Date.now();
   conversation.insertAdjacentHTML('beforeend', `
     <div id="${thinkingId}" class="chat-message chat-thinking" style="margin:8px 0;padding:10px 16px;max-width:85%;margin-left:auto">
-      <div style="font-size:12px;color:#64b5f6;font-style:italic">Αίολος is analyzing the pattern...</div>
+      <div style="font-size:12px;color:#64b5f6;font-style:italic">Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ is analyzing the pattern...</div>
     </div>`);
   conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-  // Build a message for Αίολος with all the pattern data
+  // Build a message for Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ with all the pattern data
   const isVisualArrival = notif.raw_data?.trigger === 'visual_perception_arrival'
-    || notif.source === 'conversation_request' && (notif.headline || '').includes('έφτασε');
+    || notif.source === 'conversation_request' && (notif.headline || '').includes('Ξ­Ο†Ο„Ξ±ΟƒΞµ');
 
   const instruction = isVisualArrival
-    ? 'Χαιρέτησε φυσιολογικά ανάλογα την ώρα (καλημέρα/καλησπέρα/γεια). Μίλα στα ελληνικά. Αν στο reason αναφέρεται κάτι που ανέλυσες πρόσφατα, πες του φυσικά: «βρήκα κάτι ενδιαφέρον» ή «σκέφτηκα κάτι που μπορεί να σε ενδιαφέρει». Μην κάνεις formal analysis — μίλα σαν να του λες κάτι σε κουβέντα.'
-    : 'Analyze this finding. Explain what you see, what it means strategically,\nand what Πάνος should watch for. Be direct and analytical.';
+    ? 'Ξ§Ξ±ΞΉΟΞ­Ο„Ξ·ΟƒΞµ Ο†Ο…ΟƒΞΉΞΏΞ»ΞΏΞ³ΞΉΞΊΞ¬ Ξ±Ξ½Ξ¬Ξ»ΞΏΞ³Ξ± Ο„Ξ·Ξ½ ΟΟΞ± (ΞΊΞ±Ξ»Ξ·ΞΌΞ­ΟΞ±/ΞΊΞ±Ξ»Ξ·ΟƒΟ€Ξ­ΟΞ±/Ξ³ΞµΞΉΞ±). ΞΞ―Ξ»Ξ± ΟƒΟ„Ξ± ΞµΞ»Ξ»Ξ·Ξ½ΞΉΞΊΞ¬. Ξ‘Ξ½ ΟƒΟ„ΞΏ reason Ξ±Ξ½Ξ±Ο†Ξ­ΟΞµΟ„Ξ±ΞΉ ΞΊΞ¬Ο„ΞΉ Ο€ΞΏΟ… Ξ±Ξ½Ξ­Ξ»Ο…ΟƒΞµΟ‚ Ο€ΟΟΟƒΟ†Ξ±Ο„Ξ±, Ο€ΞµΟ‚ Ο„ΞΏΟ… Ο†Ο…ΟƒΞΉΞΊΞ¬: Β«Ξ²ΟΞ®ΞΊΞ± ΞΊΞ¬Ο„ΞΉ ΞµΞ½Ξ΄ΞΉΞ±Ο†Ξ­ΟΞΏΞ½Β» Ξ® Β«ΟƒΞΊΞ­Ο†Ο„Ξ·ΞΊΞ± ΞΊΞ¬Ο„ΞΉ Ο€ΞΏΟ… ΞΌΟ€ΞΏΟΞµΞ― Ξ½Ξ± ΟƒΞµ ΞµΞ½Ξ΄ΞΉΞ±Ο†Ξ­ΟΞµΞΉΒ». ΞΞ·Ξ½ ΞΊΞ¬Ξ½ΞµΞΉΟ‚ formal analysis β€” ΞΌΞ―Ξ»Ξ± ΟƒΞ±Ξ½ Ξ½Ξ± Ο„ΞΏΟ… Ξ»ΞµΟ‚ ΞΊΞ¬Ο„ΞΉ ΟƒΞµ ΞΊΞΏΟ…Ξ²Ξ­Ξ½Ο„Ξ±.'
+    : 'Analyze this finding. Explain what you see, what it means strategically,\nand what Ξ Ξ¬Ξ½ΞΏΟ‚ should watch for. Be direct and analytical.';
 
   const proactiveMsg = [
-    `[PROACTIVE ALERT — ${notif.urgency?.toUpperCase()}]`,
+    `[PROACTIVE ALERT β€” ${notif.urgency?.toUpperCase()}]`,
     `Headline: ${notif.headline || 'Unknown'}`,
     notif.summary ? `Summary: ${notif.summary}` : '',
     notif.reason ? `Reason: ${notif.reason}` : '',
@@ -6384,7 +3017,7 @@ async function _runInitiateProactiveChat(notif) {
 
   chatHistory.push({ role: 'user', content: proactiveMsg });
 
-  // ── Stop any previous TTS and start streaming TTS for proactive message ──
+  // β”€β”€ Stop any previous TTS and start streaming TTS for proactive message β”€β”€
   stopSpeaking();
   let myGen = 0;
   if (_voiceAutoPlay && _voiceEnabled) {
@@ -6398,7 +3031,7 @@ async function _runInitiateProactiveChat(notif) {
   let streamedText = '';
 
   try {
-    // ═══ SSE Streaming (same as sendChat) — voice starts as text arrives ═══
+    // β•β•β• SSE Streaming (same as sendChat) β€” voice starts as text arrives β•β•β•
     const res = await fetch(`${API_BASE}/xdart/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -6446,7 +3079,7 @@ async function _runInitiateProactiveChat(notif) {
 
             conversation.insertAdjacentHTML('beforeend', `
               <div id="${responseId}" class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
-                <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
+                <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ Β· Proactive Analysis</div>
                 <div id="${responseId}-text" style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap"></div>
               </div>`);
             responseDiv = document.getElementById(responseId);
@@ -6473,12 +3106,12 @@ async function _runInitiateProactiveChat(notif) {
         }
 
         else if (currentEvent === 'pipeline') {
-          // Proactive messages sometimes trigger pipeline — ignore for now
+          // Proactive messages sometimes trigger pipeline β€” ignore for now
         }
 
         currentEvent = 'message';
       }
-      // Exit as soon as done event is processed — don't wait for TCP close
+      // Exit as soon as done event is processed β€” don't wait for TCP close
       if (gotDone) break;
     }
 
@@ -6519,7 +3152,7 @@ async function _runInitiateProactiveChat(notif) {
 
       conversation.insertAdjacentHTML('beforeend', `
         <div class="chat-message chat-assistant" style="margin:8px 0;padding:12px 16px;background:rgba(100,181,246,0.06);border-radius:10px;border-left:3px solid #64b5f6;max-width:85%;margin-left:auto">
-          <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Αίολος · Proactive Analysis</div>
+          <div style="font-size:11px;color:#64b5f6;margin-bottom:4px">Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ Β· Proactive Analysis</div>
           <div style="font-size:14px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap">${esc(response)}</div>
         </div>`);
       conversation.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -6537,7 +3170,7 @@ async function _runInitiateProactiveChat(notif) {
   }
 }
 
-// ── Self-Prompt Watcher ──
+// β”€β”€ Self-Prompt Watcher β”€β”€
 let lastKnownSelfPrompt = '';
 
 async function checkSelfPromptUpdate(conversation) {
@@ -6578,7 +3211,7 @@ async function checkSelfPromptUpdate(conversation) {
   } catch (e) { /* ignore */ }
 })();
 
-// ── Self-Awareness Dashboard (αυτογνωσία / αυτοεξέλιξη / σοφία) ──
+// β”€β”€ Self-Awareness Dashboard (Ξ±Ο…Ο„ΞΏΞ³Ξ½Ο‰ΟƒΞ―Ξ± / Ξ±Ο…Ο„ΞΏΞµΞΎΞ­Ξ»ΞΉΞΎΞ· / ΟƒΞΏΟ†Ξ―Ξ±) β”€β”€
 let saOpen = false;
 let activeSaTab = 'introspection';
 let saData = { introspection: null, evolution: null, wisdom: null };
@@ -6616,7 +3249,7 @@ function updateSaBadge() {
     badge.textContent = `${(wi * 100).toFixed(0)}%`;
   } else {
     const n = saData.introspection?.total_reports || 0;
-    badge.textContent = n > 0 ? n : '—';
+    badge.textContent = n > 0 ? n : 'β€”';
   }
 }
 
@@ -6655,7 +3288,7 @@ function renderIntrospectionTab(c) {
     </div>`;
 
   if (d.failure_patterns.length > 0) {
-    html += `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:#e57373;margin-bottom:6px">⚠ Failure Patterns Detected</div>`;
+    html += `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:#e57373;margin-bottom:6px">β  Failure Patterns Detected</div>`;
     d.failure_patterns.forEach(fp => {
       html += `<div style="font-size:11px;color:var(--text-dim);padding:4px 8px;background:rgba(229,115,115,0.05);border-radius:4px;margin-bottom:4px;border-left:2px solid #e57373">${esc(fp)}</div>`;
     });
@@ -6674,12 +3307,12 @@ function renderIntrospectionTab(c) {
     const obs = r.self_observations || {};
     html += `<div style="padding:10px 12px;background:rgba(255,255,255,0.02);border-radius:6px;margin-bottom:8px;border-left:3px solid ${integColor}">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:11px;color:var(--text-dim)">${meta.type || '?'} — ${(meta.timestamp || '').substring(0,16)}</span>
+        <span style="font-size:11px;color:var(--text-dim)">${meta.type || '?'} β€” ${(meta.timestamp || '').substring(0,16)}</span>
         <span style="font-size:13px;font-weight:600;color:${integColor}">${typeof integ === 'number' ? integ.toFixed(2) : integ}</span>
       </div>
-      ${obs.what_went_well ? `<div style="font-size:11px;color:var(--text-dim)">✓ ${esc(obs.what_went_well)}</div>` : ''}
-      ${obs.what_could_improve ? `<div style="font-size:11px;color:#ffb74d">↑ ${esc(obs.what_could_improve)}</div>` : ''}
-      ${obs.failure_mode_detected && obs.failure_mode_detected !== 'null' ? `<div style="font-size:11px;color:#e57373">⚠ ${esc(obs.failure_mode_detected)}</div>` : ''}
+      ${obs.what_went_well ? `<div style="font-size:11px;color:var(--text-dim)">β“ ${esc(obs.what_went_well)}</div>` : ''}
+      ${obs.what_could_improve ? `<div style="font-size:11px;color:#ffb74d">β†‘ ${esc(obs.what_could_improve)}</div>` : ''}
+      ${obs.failure_mode_detected && obs.failure_mode_detected !== 'null' ? `<div style="font-size:11px;color:#e57373">β  ${esc(obs.failure_mode_detected)}</div>` : ''}
     </div>`;
   });
   html += '</div>';
@@ -6738,24 +3371,24 @@ function renderWisdomTab(c) {
 
   let html = `<div style="padding:16px">
     <div style="text-align:center;margin-bottom:20px">
-      <div style="font-size:36px;font-weight:700;color:${wisdomColor}">${wisdomVal != null ? (wisdomVal * 100).toFixed(1) + '%' : '—'}</div>
+      <div style="font-size:36px;font-weight:700;color:${wisdomColor}">${wisdomVal != null ? (wisdomVal * 100).toFixed(1) + '%' : 'β€”'}</div>
       <div style="font-size:13px;color:var(--text-dim)">Composite Wisdom Index</div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
       <div style="background:rgba(128,203,196,0.06);border-radius:6px;padding:10px;text-align:center">
-        <div style="font-size:16px;color:#80cbc4">${wi.avg_integrity != null ? wi.avg_integrity.toFixed(3) : '—'}</div>
+        <div style="font-size:16px;color:#80cbc4">${wi.avg_integrity != null ? wi.avg_integrity.toFixed(3) : 'β€”'}</div>
         <div style="font-size:10px;color:var(--text-dim)">Avg Integrity</div>
       </div>
       <div style="background:rgba(128,203,196,0.06);border-radius:6px;padding:10px;text-align:center">
-        <div style="font-size:16px;color:#80cbc4">${wi.calibration_error != null ? wi.calibration_error.toFixed(3) : '—'}</div>
+        <div style="font-size:16px;color:#80cbc4">${wi.calibration_error != null ? wi.calibration_error.toFixed(3) : 'β€”'}</div>
         <div style="font-size:10px;color:var(--text-dim)">Calibration Error</div>
       </div>
       <div style="background:rgba(128,203,196,0.06);border-radius:6px;padding:10px;text-align:center">
-        <div style="font-size:16px;color:#80cbc4">${wi.avg_brier != null ? wi.avg_brier.toFixed(3) : '—'}</div>
+        <div style="font-size:16px;color:#80cbc4">${wi.avg_brier != null ? wi.avg_brier.toFixed(3) : 'β€”'}</div>
         <div style="font-size:10px;color:var(--text-dim)">Avg Brier Score</div>
       </div>
       <div style="background:rgba(128,203,196,0.06);border-radius:6px;padding:10px;text-align:center">
-        <div style="font-size:16px;color:#80cbc4">${wi.humility_ratio != null ? (wi.humility_ratio * 100).toFixed(0) + '%' : '—'}</div>
+        <div style="font-size:16px;color:#80cbc4">${wi.humility_ratio != null ? (wi.humility_ratio * 100).toFixed(0) + '%' : 'β€”'}</div>
         <div style="font-size:10px;color:var(--text-dim)">Humility Ratio</div>
       </div>
     </div>
@@ -6790,7 +3423,7 @@ function renderWisdomTab(c) {
   } catch (e) { /* ignore */ }
 })();
 
-// ── Knowledge Dashboard ──
+// β”€β”€ Knowledge Dashboard β”€β”€
 let kbData = null;
 let kbOpen = false;
 let activeKbTab = 'overview';
@@ -6875,7 +3508,7 @@ function renderOverview() {
     </div>`;
 
   if (!p.enabled) {
-    html += `<div class="kb-empty" style="padding:16px">⚠ Perception layer is disabled</div>`;
+    html += `<div class="kb-empty" style="padding:16px">β  Perception layer is disabled</div>`;
   }
 
   // Recent runs
@@ -6890,7 +3523,7 @@ function renderOverview() {
     });
   }
 
-  html += `<div style="text-align:center;margin-top:20px"><button class="kb-toggle" onclick="loadKnowledge()" style="font-size:11px;padding:4px 12px">↻ Refresh</button></div>`;
+  html += `<div style="text-align:center;margin-top:20px"><button class="kb-toggle" onclick="loadKnowledge()" style="font-size:11px;padding:4px 12px">β†» Refresh</button></div>`;
   return html;
 }
 
@@ -6901,7 +3534,7 @@ function renderPerception() {
   const events = p.events || [];
   if (!events.length) return '<div class="kb-empty">No world events collected yet.<br>Events appear after the collector runs.</div>';
 
-  let html = `<div class="kb-section-title">🌍 World Events — last 72h (${events.length} shown / ${p.total_events} total)</div>`;
+  let html = `<div class="kb-section-title">π World Events β€” last 72h (${events.length} shown / ${p.total_events} total)</div>`;
   events.forEach(e => {
     html += `<div class="kb-event ${esc(e.domain)}">
       <div class="ev-headline">${esc(e.headline)}</div>
@@ -6923,19 +3556,19 @@ function renderIndicators() {
   const indicators = p.indicators || [];
   if (!indicators.length) return '<div class="kb-empty">No economic indicators collected yet.</div>';
 
-  let html = `<div class="kb-section-title">📊 Economic Indicators (${indicators.length})</div>`;
+  let html = `<div class="kb-section-title">π“ Economic Indicators (${indicators.length})</div>`;
   indicators.forEach(ind => {
-    const val = ind.value != null ? Number(ind.value).toFixed(4) : '—';
+    const val = ind.value != null ? Number(ind.value).toFixed(4) : 'β€”';
     let changeHtml = '';
     if (ind.change_pct != null) {
       const cls = ind.change_pct > 0 ? 'up' : 'down';
-      const arrow = ind.change_pct > 0 ? '↑' : '↓';
+      const arrow = ind.change_pct > 0 ? 'β†‘' : 'β†“';
       changeHtml = `<span class="ind-change ${cls}">${arrow}${Math.abs(ind.change_pct).toFixed(2)}%</span>`;
     }
     html += `<div class="kb-indicator">
       <div>
         <div class="ind-name">${esc(ind.indicator)}</div>
-        <div class="ind-source">${esc(ind.source)} · ${esc(ind.period)}</div>
+        <div class="ind-source">${esc(ind.source)} Β· ${esc(ind.period)}</div>
       </div>
       <div>
         <span class="ind-value">${val} ${esc(ind.unit || '')}</span>
@@ -6950,12 +3583,12 @@ function renderConcepts() {
   const concepts = kbData.concepts?.entries || [];
   if (!concepts.length) return '<div class="kb-empty">No concepts in registry yet.<br>Concepts are born during reasoning runs.</div>';
 
-  let html = `<div class="kb-section-title">🧠 Concept Registry (${concepts.length})</div>`;
+  let html = `<div class="kb-section-title">π§  Concept Registry (${concepts.length})</div>`;
   concepts.forEach(c => {
     html += `<div class="kb-concept">
       <div><span class="c-name">${esc(c.name)}</span><span class="c-type">${esc(c.type)}</span></div>
       <div class="c-insight">${esc(c.key_insight)}</div>
-      <div class="c-meta">Uses: ${c.usage_count || 0} · Born: ${esc((c.born_at || '').slice(0, 10))}</div>
+      <div class="c-meta">Uses: ${c.usage_count || 0} Β· Born: ${esc((c.born_at || '').slice(0, 10))}</div>
     </div>`;
   });
   return html;
@@ -6965,7 +3598,7 @@ function renderMemories() {
   const memories = kbData.memories?.entries || [];
   if (!memories.length) return '<div class="kb-empty">No episodic memories stored yet.<br>Memories are created after each reasoning run.</div>';
 
-  let html = `<div class="kb-section-title">∞ Episodic Memories (${memories.length})</div>`;
+  let html = `<div class="kb-section-title">β Episodic Memories (${memories.length})</div>`;
   memories.forEach(m => {
     const domains = (m.domains || []).join(', ');
     html += `<div class="kb-memory">
@@ -6973,7 +3606,7 @@ function renderMemories() {
       <div class="m-distillate">${esc((m.distillate || '').slice(0, 300))}</div>
       <div class="m-meta">
         <span>Layer: ${(m.layer_score || 0).toFixed(1)}</span>
-        <span>Domains: ${esc(domains) || '—'}</span>
+        <span>Domains: ${esc(domains) || 'β€”'}</span>
         <span>${esc((m.stored_at || '').slice(0, 10))}</span>
       </div>
     </div>`;
@@ -6987,7 +3620,7 @@ function renderIdentity() {
   const conceptsOwned = ch.concepts_owned || [];
   const tensions = ch.tensions || [];
 
-  let html = `<div class="kb-section-title">◉ Character State (v${ch.version || 0})</div>`;
+  let html = `<div class="kb-section-title">β—‰ Character State (v${ch.version || 0})</div>`;
 
   // Epistemic stance
   html += `<div class="kb-stance">${esc(ch.epistemic_stance || 'No epistemic stance recorded.')}</div>`;
@@ -7006,7 +3639,7 @@ function renderIdentity() {
   if (tensions.length) {
     html += `<div class="kb-section-title" style="margin-top:16px">Active Tensions (${tensions.length})</div>`;
     tensions.forEach(t => {
-      const between = (t.between || []).join(' ↔ ');
+      const between = (t.between || []).join(' β†” ');
       html += `<div class="kb-tension">
         <div class="t-between">${esc(between)}</div>
         <div class="t-desc">${esc(t.description || '')}</div>
@@ -7028,13 +3661,13 @@ async function updateKbBadge() {
     const res = await fetch(`${API_BASE}/xdart/health`);
     const h = await res.json();
     const total = (h.memories || 0) + (h.concepts || 0);
-    document.getElementById('kbCountBadge').textContent = total || '—';
+    document.getElementById('kbCountBadge').textContent = total || 'β€”';
   } catch {}
 }
 updateKbBadge();
 setInterval(updateKbBadge, 30000);
 
-// ── Intelligence Panel ──
+// β”€β”€ Intelligence Panel β”€β”€
 let intelOpen = false;
 let intelData = null;
 let intelRefreshTimer = null;
@@ -7053,7 +3686,7 @@ function toggleIntel() {
 
 async function loadIntelligence() {
   const body = document.getElementById('intelBody');
-  if (!intelData) body.innerHTML = '<div class="intel-empty">Loading intelligence…</div>';
+  if (!intelData) body.innerHTML = '<div class="intel-empty">Loading intelligenceβ€¦</div>';
   try {
     const res = await fetch(`${API_BASE}/xdart/intelligence`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -7091,8 +3724,8 @@ function renderIntelligence() {
   html += `<div class="risk-gauge">
     <div class="rg-score" style="color:${rc}">${riskScore.toFixed(1)}</div>
     <div class="rg-label">Strategic Risk Composite</div>
-    <div class="rg-sources">${d.perception_sources || 0} sources · ${d.total_events_24h || 0} events (24h)</div>
-    <button onclick="downloadBriefing()" class="briefing-btn">📋 DAILY BRIEFING</button>
+    <div class="rg-sources">${d.perception_sources || 0} sources Β· ${d.total_events_24h || 0} events (24h)</div>
+    <button onclick="downloadBriefing()" class="briefing-btn">π“‹ DAILY BRIEFING</button>
   </div>`;
 
   // CII Country Risk
@@ -7148,9 +3781,9 @@ function renderIntelligence() {
     spikes.forEach(sp => {
       const ago = sp.detected_at ? timeSince(new Date(sp.detected_at * 1000)) : '';
       html += `<div class="spike-alert">
-        <span class="sp-icon">⚡</span>
+        <span class="sp-icon">β΅</span>
         <span class="sp-term">${esc(sp.term)}</span>
-        <span class="sp-meta">${sp.count}× · ${sp.sources} src · ${sp.surge_ratio.toFixed(1)}× surge${ago ? ' · ' + ago : ''}</span>
+        <span class="sp-meta">${sp.count}Γ— Β· ${sp.sources} src Β· ${sp.surge_ratio.toFixed(1)}Γ— surge${ago ? ' Β· ' + ago : ''}</span>
       </div>`;
     });
   }
@@ -7163,7 +3796,7 @@ function renderIntelligence() {
       html += `<div class="corr-alert" style="border-left:3px solid ${sevColor}">
         <div class="corr-sev" style="color:${sevColor}">${esc(a.severity.toUpperCase())}</div>
         <div class="corr-summary">${esc(a.summary)}</div>
-        <div class="corr-types">${a.signal_types.join(' · ')}</div>
+        <div class="corr-types">${a.signal_types.join(' Β· ')}</div>
       </div>`;
     });
   }
@@ -7260,16 +3893,16 @@ async function refreshIntelBadge() {
 refreshIntelBadge();
 setInterval(refreshIntelBadge, 120000);
 
-// ══════════════════════════════════════════════════════════════════════════
-//  PROACTIVE NOTIFICATION SYSTEM — Αίολος initiates contact
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+//  PROACTIVE NOTIFICATION SYSTEM β€” Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ initiates contact
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 let _notifSSE = null;
 let _notifData = [];
 let _notifUnreadCount = 0;
 let _notifToastTimeout = null;
 
-// ── SSE Connection: persistent listener for real-time notifications ──
+// β”€β”€ SSE Connection: persistent listener for real-time notifications β”€β”€
 function connectNotificationSSE() {
   if (_notifSSE) { _notifSSE.close(); _notifSSE = null; }
 
@@ -7297,10 +3930,10 @@ function connectNotificationSSE() {
       if (document.getElementById('notifPanel').classList.contains('visible')) {
         renderNotifPanel();
       }
-      // Proactive conversation: send data to Αίολος and let him respond
-      // BUT NOT while the pipeline is running — defer until pipeline completes
+      // Proactive conversation: send data to Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ and let him respond
+      // BUT NOT while the pipeline is running β€” defer until pipeline completes
       if (notif.conversation_start) {
-        // Always enqueue — queue drains sequentially, even if pipeline is running
+        // Always enqueue β€” queue drains sequentially, even if pipeline is running
         initiateProactiveChat(notif);
         console.log('[Proactive] Enqueued:', notif.headline, `(queue size: ${_chatQueue.length})`);
       }
@@ -7325,7 +3958,7 @@ function connectNotificationSSE() {
   };
 }
 
-// ── Badge Update ──
+// β”€β”€ Badge Update β”€β”€
 function updateNotifBadge() {
   const badge = document.getElementById('notifBadge');
   const btn = document.getElementById('notifToggle');
@@ -7339,7 +3972,7 @@ function updateNotifBadge() {
   }
 }
 
-// ── Panel Toggle ──
+// β”€β”€ Panel Toggle β”€β”€
 function toggleNotifications() {
   const panel = document.getElementById('notifPanel');
   const overlay = document.getElementById('notifOverlay');
@@ -7355,7 +3988,7 @@ function toggleNotifications() {
   }
 }
 
-// ── Fetch & Render ──
+// β”€β”€ Fetch & Render β”€β”€
 async function fetchAndRenderNotifs() {
   try {
     const res = await fetch('/xdart/notifications?limit=50');
@@ -7374,7 +4007,7 @@ async function fetchAndRenderNotifs() {
 function renderNotifPanel() {
   const body = document.getElementById('notifBody');
   if (!_notifData.length) {
-    body.innerHTML = '<div class="notif-empty">No notifications yet. Αίολος will reach out when he finds something important.</div>';
+    body.innerHTML = '<div class="notif-empty">No notifications yet. Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ will reach out when he finds something important.</div>';
     return;
   }
 
@@ -7386,9 +4019,9 @@ function renderNotifPanel() {
       <div class="notif-headline">${escH(n.headline)}</div>
       <div class="notif-summary">${escH(n.summary)}</div>
       <div class="notif-meta">
-        <span>📡 ${escH(n.source)}</span>
-        <span>🕐 ${time}</span>
-        ${n.delivered_telegram ? '<span>✈️ Telegram</span>' : ''}
+        <span>π“΅ ${escH(n.source)}</span>
+        <span>π• ${time}</span>
+        ${n.delivered_telegram ? '<span>βοΈ Telegram</span>' : ''}
       </div>
     </div>`;
   }).join('');
@@ -7396,7 +4029,7 @@ function renderNotifPanel() {
 
 function escH(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ── Mark Read ──
+// β”€β”€ Mark Read β”€β”€
 async function markNotifRead(id, el) {
   try {
     await fetch('/xdart/notifications/read', {
@@ -7429,9 +4062,9 @@ async function markAllNotificationsRead() {
   } catch {}
 }
 
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 //  PATTERN ACCUMULATOR UI
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 function switchNotifTab(tab) {
   document.querySelectorAll('.notif-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
@@ -7496,16 +4129,16 @@ async function fetchAndRenderPatterns() {
         <div class="pattern-header">
           <span class="pattern-score ${tier}">${pct}%</span>
           <div class="pattern-meta">
-            <span>🔗 ${p.signal_count} signals</span>
-            <span>📍 ${escH(regions)}</span>
-            ${p.fired ? '<span>✅ Fired</span>' : ''}
+            <span>π”— ${p.signal_count} signals</span>
+            <span>π“ ${escH(regions)}</span>
+            ${p.fired ? '<span>β… Fired</span>' : ''}
           </div>
         </div>
         <div class="pattern-topics">
           ${topics.map(t => `<span class="pattern-topic">${escH(t)}</span>`).join('')}
         </div>
         ${headlines.length ? `<div class="pattern-headlines">
-          ${headlines.map(h => `<div class="pattern-headline-item">• ${escH(h)}</div>`).join('')}
+          ${headlines.map(h => `<div class="pattern-headline-item">β€Ά ${escH(h)}</div>`).join('')}
         </div>` : ''}
       </div>`;
     }
@@ -7517,7 +4150,7 @@ async function fetchAndRenderPatterns() {
   }
 }
 
-// ── Toast (popup on new notification) ──
+// β”€β”€ Toast (popup on new notification) β”€β”€
 function showNotifToast(notif) {
   // Remove existing toast
   const existing = document.querySelector('.notif-toast');
@@ -7526,8 +4159,8 @@ function showNotifToast(notif) {
   const toast = document.createElement('div');
   toast.className = `notif-toast ${notif.urgency === 'critical' ? 'critical' : ''}`;
   toast.innerHTML = `
-    <button class="notif-toast-dismiss" onclick="this.parentElement.remove()">✕</button>
-    <div class="notif-toast-headline">🔔 ${escH(notif.headline)}</div>
+    <button class="notif-toast-dismiss" onclick="this.parentElement.remove()">β•</button>
+    <div class="notif-toast-headline">π”” ${escH(notif.headline)}</div>
     <div class="notif-toast-summary">${escH(notif.summary)}</div>
   `;
   toast.onclick = (e) => {
@@ -7542,7 +4175,7 @@ function showNotifToast(notif) {
   setTimeout(() => { if (toast.parentElement) toast.remove(); }, duration);
 }
 
-// ── Sound Notification ──
+// β”€β”€ Sound Notification β”€β”€
 function playNotifSound(urgency) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -7571,7 +4204,7 @@ function playNotifSound(urgency) {
   } catch {}
 }
 
-// ── Browser Notification (when tab is in background) ──
+// β”€β”€ Browser Notification (when tab is in background) β”€β”€
 function requestBrowserNotification(notif) {
   if (!('Notification' in window)) return;
 
@@ -7581,7 +4214,7 @@ function requestBrowserNotification(notif) {
   }
 
   if (Notification.permission === 'granted' && document.hidden) {
-    new Notification(`Αίολος: ${notif.headline}`, {
+    new Notification(`Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚: ${notif.headline}`, {
       body: notif.summary?.substring(0, 200),
       icon: '/favicon.ico',
       tag: notif.id,
@@ -7589,7 +4222,7 @@ function requestBrowserNotification(notif) {
   }
 }
 
-// ── Initialize on page load ──
+// β”€β”€ Initialize on page load β”€β”€
 (function initNotifications() {
   // Request browser notification permission early
   if ('Notification' in window && Notification.permission === 'default') {
@@ -7608,9 +4241,9 @@ function requestBrowserNotification(notif) {
   }).catch(() => {});
 })();
 
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 //  PROPHECY COMMAND CENTER
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 let prophecyOpen = false;
 let prophecyData = null;
@@ -7627,7 +4260,7 @@ function toggleProphecy() {
 
 async function loadProphecyData() {
   const body = document.getElementById('prophecyBody');
-  if (!prophecyData) body.innerHTML = '<div class="prop-empty">Loading prophecies…</div>';
+  if (!prophecyData) body.innerHTML = '<div class="prop-empty">Loading propheciesβ€¦</div>';
   try {
     const [propRes, autoRes, accRes] = await Promise.all([
       fetch(`${API_BASE}/xdart/prophecies?limit=100`),
@@ -7648,7 +4281,7 @@ function updateProphecyBadge() {
   const badge = document.getElementById('propCountBadge');
   const total = (prophecyData?.total || 0);
   const pending = (autonomousData?.count || 0);
-  badge.textContent = pending > 0 ? `${pending}!` : (total || '—');
+  badge.textContent = pending > 0 ? `${pending}!` : (total || 'β€”');
   if (pending > 0) badge.style.background = '#ffd740';
 
   const ptabActive = document.getElementById('ptabActive');
@@ -7716,8 +4349,8 @@ function renderProphecyCard(p) {
       <span>Confidence: <span class="prop-confidence ${confClass}">${(conf * 100).toFixed(0)}%</span></span>
       <span>Tribunal: #${p.tribunal_rank || '?'} (${(p.tribunal_score || 0).toFixed(2)})</span>
       ${sim.robustness_score ? `<span>Robustness: ${(sim.robustness_score * 100).toFixed(0)}%</span>` : ''}
-      ${sc.timeframe ? `<span>⏱ ${esc(sc.timeframe)}</span>` : ''}
-      <span>📅 ${ts}</span>
+      ${sc.timeframe ? `<span>β± ${esc(sc.timeframe)}</span>` : ''}
+      <span>π“… ${ts}</span>
     </div>`;
 
   if (markers.length) {
@@ -7738,7 +4371,7 @@ function renderProphecyCard(p) {
 
 function renderAutonomousProphecies() {
   const pending = autonomousData?.pending || [];
-  if (!pending.length) return '<div class="prop-empty">No autonomous prophecies pending approval.<br>Αίολος generates these from detected patterns.</div>';
+  if (!pending.length) return '<div class="prop-empty">No autonomous prophecies pending approval.<br>Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ generates these from detected patterns.</div>';
 
   return pending.map(p => {
     const sc = p.scenario || {};
@@ -7754,14 +4387,14 @@ function renderAutonomousProphecies() {
       <div class="prop-narrative">${esc(sc.narrative || sc.predicted_outcome || p.trigger_summary || '')}</div>
       <div class="prop-meta-row">
         <span>Confidence: <span class="prop-confidence ${confClass}">${(conf * 100).toFixed(0)}%</span></span>
-        ${sc.timeframe ? `<span>⏱ ${esc(sc.timeframe)}</span>` : ''}
-        <span>📅 ${ts}</span>
+        ${sc.timeframe ? `<span>β± ${esc(sc.timeframe)}</span>` : ''}
+        <span>π“… ${ts}</span>
         ${p.source ? `<span>Source: ${esc(p.source)}</span>` : ''}
       </div>
       ${(sc.falsifiable_markers || []).length ? `<div class="prop-markers">${sc.falsifiable_markers.slice(0, 5).map(m => `<span class="prop-marker">${esc(typeof m === 'string' ? m : m.marker || '')}</span>`).join('')}</div>` : ''}
       <div class="prop-actions">
-        <button class="prop-action-btn approve" onclick="approveAutonomousProphecy('${esc(p.id)}')">✓ Approve</button>
-        <button class="prop-action-btn reject" onclick="rejectAutonomousProphecy('${esc(p.id)}')">✕ Reject</button>
+        <button class="prop-action-btn approve" onclick="approveAutonomousProphecy('${esc(p.id)}')">β“ Approve</button>
+        <button class="prop-action-btn reject" onclick="rejectAutonomousProphecy('${esc(p.id)}')">β• Reject</button>
       </div>
     </div>`;
   }).join('');
@@ -7801,7 +4434,7 @@ function renderAccuracyTab() {
   const ratingColor = rating === 'excellent' ? '#4caf50' : rating === 'good' ? '#8bc34a' : rating === 'fair' ? '#ff9800' : '#f44336';
 
   let html = `<div class="accuracy-gauge">
-    <div class="ag-score" style="color:${brierColor}">${brier != null ? brier.toFixed(3) : '—'}</div>
+    <div class="ag-score" style="color:${brierColor}">${brier != null ? brier.toFixed(3) : 'β€”'}</div>
     <div class="ag-label">Average Brier Score (lower = better)</div>
     <div class="ag-rating" style="color:${ratingColor}">${rating.toUpperCase()}</div>
   </div>`;
@@ -7829,14 +4462,14 @@ function renderAccuracyTab() {
       const sb = s.brier_score ?? s.score;
       const sc = sb != null ? (sb < 0.1 ? '#4caf50' : sb < 0.25 ? '#ff9800' : '#f44336') : 'var(--text-dim)';
       html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;margin-bottom:4px;background:rgba(255,255,255,0.02)">
-        <span style="font-family:var(--mono);font-size:13px;font-weight:700;color:${sc};min-width:50px">${sb != null ? sb.toFixed(3) : '—'}</span>
+        <span style="font-family:var(--mono);font-size:13px;font-weight:700;color:${sc};min-width:50px">${sb != null ? sb.toFixed(3) : 'β€”'}</span>
         <span style="font-size:12px;color:var(--text);flex:1">${esc(s.name || s.problem || 'Unknown')}</span>
         <span style="font-size:10px;color:var(--text-dim)">${esc(s.status || '')}</span>
       </div>`;
     });
   }
 
-  html += `<div style="text-align:center;margin-top:16px"><button class="prophecy-close" style="font-size:11px;padding:4px 14px" onclick="loadProphecyData()">↻ Refresh</button></div>`;
+  html += `<div style="text-align:center;margin-top:16px"><button class="prophecy-close" style="font-size:11px;padding:4px 14px" onclick="loadProphecyData()">β†» Refresh</button></div>`;
   return html;
 }
 
@@ -7852,7 +4485,7 @@ async function refreshProphecyBadge() {
       const badge = document.getElementById('propCountBadge');
       const autoD = autoRes.ok ? await autoRes.json() : { count: 0 };
       const pending = autoD.count || 0;
-      badge.textContent = pending > 0 ? `${pending}!` : (d.total || '—');
+      badge.textContent = pending > 0 ? `${pending}!` : (d.total || 'β€”');
       if (pending > 0) badge.style.background = '#ffd740';
       else badge.style.background = '#7c4dff';
     }
@@ -7861,9 +4494,9 @@ async function refreshProphecyBadge() {
 refreshProphecyBadge();
 setInterval(refreshProphecyBadge, 60000);
 
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 //  GOVERNANCE HUB
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 let govOpen = false;
 let govPrinciples = null;
@@ -7883,7 +4516,7 @@ function toggleGovernance() {
 
 async function loadGovernanceData() {
   const body = document.getElementById('govBody');
-  if (!govPrinciples) body.innerHTML = '<div class="gov-empty">Loading governance data…</div>';
+  if (!govPrinciples) body.innerHTML = '<div class="gov-empty">Loading governance dataβ€¦</div>';
   try {
     const [princRes, pendRes, philRes, sbRes, sbpRes, stratRes] = await Promise.all([
       fetch(`${API_BASE}/xdart/principles`),
@@ -7912,7 +4545,7 @@ function updateGovernanceBadge() {
   const pendingSandbox = allSbProposals.filter(p => p.status === 'pending' || p.status === 'tested').length;
   const total = pendingPrinc + pendingSandbox;
   const badge = document.getElementById('govCountBadge');
-  badge.textContent = total > 0 ? `${total}!` : '—';
+  badge.textContent = total > 0 ? `${total}!` : 'β€”';
   if (total > 0) badge.style.background = '#ffd740';
   else badge.style.background = '#ff9800';
 }
@@ -7941,17 +4574,17 @@ function renderPrinciplesTab() {
   html += `<div class="gov-section-title">Philosophy Mode</div>
   <div class="philosophy-switcher">
     <div class="philosophy-mode ${currentMode === 'balanced' ? 'active-mode' : ''}" onclick="switchPhilosophy('balanced')">
-      <span class="pm-icon">⚖</span>
+      <span class="pm-icon">β–</span>
       <div class="pm-name">Balanced</div>
       <div class="pm-desc">Default equilibrium</div>
     </div>
     <div class="philosophy-mode ${currentMode === 'conservative' ? 'active-mode' : ''}" onclick="switchPhilosophy('conservative')">
-      <span class="pm-icon">🛡</span>
+      <span class="pm-icon">π›΅</span>
       <div class="pm-name">Conservative</div>
       <div class="pm-desc">Strict validation</div>
     </div>
     <div class="philosophy-mode ${currentMode === 'exploratory' ? 'active-mode' : ''}" onclick="switchPhilosophy('exploratory')">
-      <span class="pm-icon">🔬</span>
+      <span class="pm-icon">π”¬</span>
       <div class="pm-name">Exploratory</div>
       <div class="pm-desc">Open discovery</div>
     </div>
@@ -7970,8 +4603,8 @@ function renderPrinciplesTab() {
           ${p.source ? `<span>Source: ${esc(p.source)}</span>` : ''}
         </div>
         <div class="prop-actions" style="margin-top:8px">
-          <button class="prop-action-btn approve" onclick="approvePrinciple('${esc(p.id)}')">✓ Approve</button>
-          <button class="prop-action-btn reject" onclick="rejectPrinciple('${esc(p.id)}')">✕ Reject</button>
+          <button class="prop-action-btn approve" onclick="approvePrinciple('${esc(p.id)}')">β“ Approve</button>
+          <button class="prop-action-btn reject" onclick="rejectPrinciple('${esc(p.id)}')">β• Reject</button>
         </div>
       </div>`;
     });
@@ -7996,7 +4629,7 @@ function renderPrinciplesTab() {
     });
   }
 
-  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">β†» Refresh</button></div>`;
   return html;
 }
 
@@ -8032,7 +4665,7 @@ async function rejectPrinciple(id) {
 function renderSandboxTab() {
   let html = '';
 
-  // Pending proposals — only show actionable ones (pending/tested)
+  // Pending proposals β€” only show actionable ones (pending/tested)
   const allProposals = govSandboxProposals?.proposals || [];
   const pendingProposals = allProposals.filter(p => p.status === 'pending' || p.status === 'tested');
   const completedProposals = allProposals.filter(p => p.status === 'applied' || p.status === 'rejected' || p.status === 'approved');
@@ -8048,8 +4681,8 @@ function renderSandboxTab() {
           ${p.pattern ? `<span>Pattern: ${esc(p.pattern)}</span>` : ''}
         </div>
         <div class="prop-actions" style="margin-top:8px">
-          <button class="prop-action-btn approve" onclick="approveSandboxProposal('${esc(p.id)}')">✓ Approve</button>
-          <button class="prop-action-btn reject" onclick="rejectSandboxProposal('${esc(p.id)}')">✕ Reject</button>
+          <button class="prop-action-btn approve" onclick="approveSandboxProposal('${esc(p.id)}')">β“ Approve</button>
+          <button class="prop-action-btn reject" onclick="rejectSandboxProposal('${esc(p.id)}')">β• Reject</button>
         </div>
       </div>`;
     });
@@ -8080,15 +4713,15 @@ function renderSandboxTab() {
       html += `<div class="sandbox-func" ${modified ? 'style="border-color:rgba(255,152,0,0.3)"' : ''}>
         <div class="sandbox-func-header">
           <span class="sandbox-func-name">${esc(name)}</span>
-          <span class="sandbox-func-version">v${f.version || 1}${modified ? ' ⚡' : ''}</span>
+          <span class="sandbox-func-version">v${f.version || 1}${modified ? ' β΅' : ''}</span>
         </div>
         <div class="sandbox-func-desc">${esc(f.description || '')}</div>
-        ${modified ? `<div style="margin-top:6px"><button class="prop-action-btn reject" style="font-size:10px;padding:3px 10px" onclick="rollbackSandboxFunc('${esc(name)}')">↶ Rollback</button></div>` : ''}
+        ${modified ? `<div style="margin-top:6px"><button class="prop-action-btn reject" style="font-size:10px;padding:3px 10px" onclick="rollbackSandboxFunc('${esc(name)}')">β†¶ Rollback</button></div>` : ''}
       </div>`;
     });
   }
 
-  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">β†» Refresh</button></div>`;
   return html;
 }
 
@@ -8158,7 +4791,7 @@ function renderStrategiesTab() {
     });
   }
 
-  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">↻ Refresh</button></div>`;
+  html += `<div style="text-align:center;margin-top:16px"><button class="gov-close" style="font-size:11px;padding:4px 14px" onclick="loadGovernanceData()">β†» Refresh</button></div>`;
   return html;
 }
 
@@ -8181,7 +4814,7 @@ async function refreshGovBadge() {
     if (pendRes.ok) { const d = await pendRes.json(); total += (d.pending?.length || 0); }
     if (sbpRes.ok) { const d = await sbpRes.json(); total += (d.proposals?.length || 0); }
     const badge = document.getElementById('govCountBadge');
-    badge.textContent = total > 0 ? `${total}!` : '—';
+    badge.textContent = total > 0 ? `${total}!` : 'β€”';
     if (total > 0) badge.style.background = '#ffd740';
     else badge.style.background = '#ff9800';
   } catch {}
@@ -8189,9 +4822,9 @@ async function refreshGovBadge() {
 refreshGovBadge();
 setInterval(refreshGovBadge, 90000);
 
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 //  KNOWLEDGE INJECTOR
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 let injectOpen = false;
 let injectKnowledgeData = null;
@@ -8239,7 +4872,7 @@ function renderInjectedKnowledge() {
   entries.forEach(e => {
     html += `<div class="inject-entry">
       <div class="inject-entry-source">${esc(e.source || 'unknown')}</div>
-      <div class="inject-entry-content">${esc((e.content || '').substring(0, 300))}${(e.content || '').length > 300 ? '…' : ''}</div>
+      <div class="inject-entry-content">${esc((e.content || '').substring(0, 300))}${(e.content || '').length > 300 ? 'β€¦' : ''}</div>
       ${e.injected_at ? `<div class="inject-entry-time">${esc(e.injected_at)}</div>` : ''}
     </div>`;
   });
@@ -8257,7 +4890,7 @@ async function submitKnowledgeInjection() {
 
   const btn = document.getElementById('injectSubmitBtn');
   btn.disabled = true;
-  btn.textContent = 'Injecting…';
+  btn.textContent = 'Injectingβ€¦';
 
   try {
     const res = await fetch(`${API_BASE}/xdart/knowledge/inject`, {
@@ -8289,9 +4922,9 @@ async function clearAllKnowledge() {
   } catch (err) { alert('Error: ' + err.message); }
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  LEFT DRAWER — DASHBOARD (Φ JARVIS)
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+//  LEFT DRAWER β€” DASHBOARD (Ξ¦ JARVIS)
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
 let dashOpen = false;
 let dashData = null;
@@ -8352,7 +4985,7 @@ function renderDashDrawer() {
   const d = dashData;
   let html = '';
 
-  // ── KPI Strip ──
+  // β”€β”€ KPI Strip β”€β”€
   const wc = d.world_context || {};
   const events = wc.events || [];
   const proph = d.prophecies || {};
@@ -8363,16 +4996,16 @@ function renderDashDrawer() {
 
   html += '<div class="dash-kpi-strip">';
   html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:#4A90D9">' + events.length + '</div><div class="dash-kpi-label">Events</div><div class="dash-kpi-sub">' + events.filter(e => (e.salience || 0) >= 0.6).length + ' high-salience</div></div>';
-  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--gold)">' + (proph.total || 0) + '</div><div class="dash-kpi-label">Prophecies</div><div class="dash-kpi-sub">' + (proph.active || 0) + ' active · ' + (proph.confirmed || 0) + ' confirmed</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--gold)">' + (proph.total || 0) + '</div><div class="dash-kpi-label">Prophecies</div><div class="dash-kpi-sub">' + (proph.active || 0) + ' active Β· ' + (proph.confirmed || 0) + ' confirmed</div></div>';
   const brier = acc.brier_score;
-  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:' + (brier !== undefined && brier <= 0.25 ? 'var(--green)' : 'var(--gold)') + '">' + (brier !== undefined ? brier.toFixed(3) : '—') + '</div><div class="dash-kpi-label">Brier Score</div><div class="dash-kpi-sub">' + (acc.rating || '') + '</div></div>';
-  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:#80cbc4">' + (health.memories || '—') + '</div><div class="dash-kpi-label">Memories</div><div class="dash-kpi-sub">' + (health.concepts || 0) + ' concepts</div></div>';
-  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--text)">' + (char.version || '—') + '</div><div class="dash-kpi-label">Version</div><div class="dash-kpi-sub">' + esc(char.name || '') + '</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:' + (brier !== undefined && brier <= 0.25 ? 'var(--green)' : 'var(--gold)') + '">' + (brier !== undefined ? brier.toFixed(3) : 'β€”') + '</div><div class="dash-kpi-label">Brier Score</div><div class="dash-kpi-sub">' + (acc.rating || '') + '</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:#80cbc4">' + (health.memories || 'β€”') + '</div><div class="dash-kpi-label">Memories</div><div class="dash-kpi-sub">' + (health.concepts || 0) + ' concepts</div></div>';
+  html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:var(--text)">' + (char.version || 'β€”') + '</div><div class="dash-kpi-label">Version</div><div class="dash-kpi-sub">' + esc(char.name || '') + '</div></div>';
   html += '<div class="dash-kpi"><div class="dash-kpi-val" style="color:' + _dashRiskColor((wis.wisdom_index || 0) * 100) + '">' + ((wis.wisdom_index || 0) * 100).toFixed(1) + '</div><div class="dash-kpi-label">Wisdom</div><div class="dash-kpi-sub">' + (wis.calibration_report || '') + '</div></div>';
   html += '</div>';
 
-  // ── World Feed ──
-  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">📡 Live World Feed (' + events.length + ')<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+  // β”€β”€ World Feed β”€β”€
+  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">π“΅ Live World Feed (' + events.length + ')<span class="toggle-icon">β–Ό</span></div><div class="dash-section-body">';
   if (events.length === 0) {
     html += '<div style="color:var(--text-dim);padding:12px;text-align:center">No events loaded</div>';
   } else {
@@ -8382,32 +5015,32 @@ function renderDashDrawer() {
       html += '<div class="dash-feed-item">';
       html += '<div class="dash-domain-dot" style="background:' + _dashDomainColor(domain) + '" title="' + esc(domain) + '"></div>';
       html += '<div class="dash-feed-headline">' + esc(ev.headline || ev.title || '') + '</div>';
-      html += '<div class="dash-feed-meta">' + (sal * 100).toFixed(0) + '% · ' + _dashTimeAgo(ev.collected_at || ev.timestamp) + '</div>';
+      html += '<div class="dash-feed-meta">' + (sal * 100).toFixed(0) + '% Β· ' + _dashTimeAgo(ev.collected_at || ev.timestamp) + '</div>';
       html += '</div>';
     });
   }
   html += '</div></div>';
 
-  // ── Prophecies ──
+  // β”€β”€ Prophecies β”€β”€
   const prophList = (d.prophecies?.items || d.prophecies?.prophecies || []).slice(0, 15);
   if (prophList.length > 0) {
-    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">🔮 Active Prophecies (' + prophList.length + ')<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">π”® Active Prophecies (' + prophList.length + ')<span class="toggle-icon">β–Ό</span></div><div class="dash-section-body">';
     prophList.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
     prophList.forEach(p => {
       const conf = p.confidence || 0;
       html += '<div class="dash-prophecy">';
       html += '<div class="dash-prophecy-name">' + esc(p.name || p.scenario_name || '') + '</div>';
-      html += '<div class="dash-prophecy-meta"><span>⏱ ' + esc(p.timeframe || '') + '</span><span style="color:' + _dashConfColor(conf) + '">' + (conf * 100).toFixed(0) + '% conf</span><span>' + esc(p.tracking_status || '') + '</span></div>';
+      html += '<div class="dash-prophecy-meta"><span>β± ' + esc(p.timeframe || '') + '</span><span style="color:' + _dashConfColor(conf) + '">' + (conf * 100).toFixed(0) + '% conf</span><span>' + esc(p.tracking_status || '') + '</span></div>';
       html += '<div class="dash-conf-bar"><div class="dash-conf-fill" style="width:' + (conf * 100) + '%;background:' + _dashConfColor(conf) + '"></div></div>';
       html += '</div>';
     });
     html += '</div></div>';
   }
 
-  // ── Intelligence ──
+  // β”€β”€ Intelligence β”€β”€
   const intro = d.introspection || {};
   const evoChanges = (d.core_changes?.recent || []).slice(0, 10);
-  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">📊 System Intelligence<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+  html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">π“ System Intelligence<span class="toggle-icon">β–Ό</span></div><div class="dash-section-body">';
 
   const metrics = [
     { label: 'Wisdom Index', val: (wis.wisdom_index || 0), color: _dashRiskColor((wis.wisdom_index || 0) * 100) },
@@ -8423,14 +5056,14 @@ function renderDashDrawer() {
   if (failures.length > 0) {
     html += '<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Failure patterns:</div>';
     failures.slice(0, 5).forEach(f => {
-      html += '<div style="font-size:11px;color:var(--red);padding:2px 0">• ' + esc(typeof f === 'string' ? f : f.pattern || JSON.stringify(f)) + '</div>';
+      html += '<div style="font-size:11px;color:var(--red);padding:2px 0">β€Ά ' + esc(typeof f === 'string' ? f : f.pattern || JSON.stringify(f)) + '</div>';
     });
   }
   html += '</div></div>';
 
-  // ── Evolution Timeline ──
+  // β”€β”€ Evolution Timeline β”€β”€
   if (evoChanges.length > 0) {
-    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">🧬 Evolution Timeline<span class="toggle-icon">▼</span></div><div class="dash-section-body">';
+    html += '<div class="dash-section"><div class="dash-section-title" onclick="this.querySelector(\'.toggle-icon\').classList.toggle(\'collapsed\');this.nextElementSibling.classList.toggle(\'collapsed\')">π§¬ Evolution Timeline<span class="toggle-icon">β–Ό</span></div><div class="dash-section-body">';
     evoChanges.reverse().forEach(c => {
       const typeColor = c.change_type === 'principle' ? '#9B59B6' : c.change_type === 'belief' ? '#4A90D9' : 'var(--gold)';
       html += '<div class="dash-evo-item">';
@@ -8445,13 +5078,13 @@ function renderDashDrawer() {
   document.getElementById('dashBody').innerHTML = html;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  LEFT DRAWER — ENTITY KNOWLEDGE GRAPH
-// ══════════════════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+//  LEFT DRAWER β€” ENTITY KNOWLEDGE GRAPH
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 
-// ══════════════════════════════════════════════════════════════
-// ENTITY GRAPH — D3.js Force-Directed Network
-// ══════════════════════════════════════════════════════════════
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+// ENTITY GRAPH β€” D3.js Force-Directed Network
+// β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
 let egraphOpen = false;
 let _d3Loaded = false;
 let _egSim = null;
@@ -8502,7 +5135,7 @@ async function _initEgraphD3() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     _egData = await res.json();
     if (!_egData.nodes || _egData.nodes.length === 0) {
-      emptyEl.innerHTML = '<span style="font-size:28px">🕸</span><p>No entity data yet</p>';
+      emptyEl.innerHTML = '<span style="font-size:28px">π•Έ</span><p>No entity data yet</p>';
       return;
     }
     emptyEl.style.display = 'none';
@@ -8514,7 +5147,7 @@ async function _initEgraphD3() {
       _applyEgraphFilters();
     });
   } catch (e) {
-    emptyEl.innerHTML = '<span style="font-size:28px">⚠️</span><p>Error: ' + esc(e.message) + '</p>';
+    emptyEl.innerHTML = '<span style="font-size:28px">β οΈ</span><p>Error: ' + esc(e.message) + '</p>';
   }
 }
 
@@ -8527,7 +5160,7 @@ function _renderEgraphD3(data) {
   const meta = data.meta || {};
   // Stats overlay
   document.getElementById('egraphStatsOverlay').innerHTML =
-    (meta.total_nodes?.toLocaleString() || '?') + ' total nodes · ' +
+    (meta.total_nodes?.toLocaleString() || '?') + ' total nodes Β· ' +
     (meta.headlines_ingested?.toLocaleString() || '?') + ' headlines';
 
   // Legend
@@ -8641,7 +5274,7 @@ function _renderEgraphD3(data) {
       tooltip.innerHTML =
         '<div class="tt-name">' + esc(d.label) + '</div>' +
         '<div class="tt-type" style="color:' + d.color + '">' + d.type + '</div>' +
-        '<div class="tt-stat">Mentions: ' + d.mentions + ' · Activity: ' + d.activity_score + '</div>' +
+        '<div class="tt-stat">Mentions: ' + d.mentions + ' Β· Activity: ' + d.activity_score + '</div>' +
         '<div class="tt-stat">Last seen: ' + (d.last_seen_iso ? new Date(d.last_seen_iso).toLocaleString() : 'N/A') + '</div>' +
         (headlines.length ? '<div class="tt-headline">' + headlines.map(h => esc(h)).join('<br>') + '</div>' : '');
       tooltip.style.display = 'block';
@@ -8744,11 +5377,11 @@ function _applyEgraphFilters() {
   } catch {}
 })();
 
-/* ══════════════════════════════════════════════════════════════
-   VISION — Browser COCO-SSD (80 objects) + Server FaceNet (face ID)
-   ══════════════════════════════════════════════════════════════ */
+/* β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•
+   VISION β€” Browser COCO-SSD (80 objects) + Server FaceNet (face ID)
+   β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β•β• */
 
-// Dynamic URLs — use same origin as the page for XDART API,
+// Dynamic URLs β€” use same origin as the page for XDART API,
 // and derive FaceNet URL from current hostname (port 8100).
 const VISION_BASE = window.location.protocol + '//' + window.location.hostname + ':8100';
 const XDART_API = API_BASE;   // reuse the dynamic API_BASE already defined above
@@ -8948,11 +5581,11 @@ async function _reportScene(predictions) {
       _visionSceneFailCount++;
       console.warn('[Vision] Scene report failed:', res.status, await res.text());
     } else if (_visionSceneSentCount <= 3 || _visionSceneSentCount % 20 === 0) {
-      console.log('[Vision] Scene #' + _visionSceneSentCount + ' sent → [' + objNames + ']');
+      console.log('[Vision] Scene #' + _visionSceneSentCount + ' sent β†’ [' + objNames + ']');
     }
   } catch (e) {
     _visionSceneFailCount++;
-    console.warn('[Vision] Scene report error:', e.message, '— URL:', XDART_API + '/xdart/vision/scene');
+    console.warn('[Vision] Scene report error:', e.message, 'β€” URL:', XDART_API + '/xdart/vision/scene');
   }
   _updateVisionDataFlow();
 }
@@ -8963,7 +5596,7 @@ let _faceCropCanvas = null;
 async function _sendFaceCrops(video, personDetections) {
   if (!personDetections.length) return;
 
-  // Send the FULL video frame — MTCNN is designed to find faces in full images.
+  // Send the FULL video frame β€” MTCNN is designed to find faces in full images.
   // Cropping person bboxes loses resolution and context, making MTCNN fail.
   if (!_faceCropCanvas) _faceCropCanvas = document.createElement('canvas');
   const tc = _faceCropCanvas;
@@ -8987,7 +5620,7 @@ async function _sendFaceCrops(video, personDetections) {
         // Show all detected faces (identified + unknown)
         _visionKnownIdentities = [
           ...identified.map(f => ({ name: f.identity, confidence: f.recognition_confidence })),
-          ...unknown.map(f => ({ name: 'Άγνωστο πρόσωπο', confidence: f.detection_confidence })),
+          ...unknown.map(f => ({ name: 'Ξ†Ξ³Ξ½Ο‰ΟƒΟ„ΞΏ Ο€ΟΟΟƒΟ‰Ο€ΞΏ', confidence: f.detection_confidence })),
         ];
         _updateIdentityList();
 
@@ -9003,7 +5636,7 @@ async function _sendFaceCrops(video, personDetections) {
           }),
         }).catch(err => console.warn('[Vision] human_detected event failed:', err.message));
       } else {
-        // No faces found in this frame — clear identity list
+        // No faces found in this frame β€” clear identity list
         _visionKnownIdentities = [];
         _updateIdentityList();
       }
@@ -9012,7 +5645,7 @@ async function _sendFaceCrops(video, personDetections) {
     }
   } catch (e) {
     if (_visionFaceSentCount <= 3 || _visionFaceSentCount % 30 === 0)
-      console.warn('[Vision] FaceNet request failed (#' + _visionFaceSentCount + '):', e.message, '— URL:', VISION_BASE + '/detect');
+      console.warn('[Vision] FaceNet request failed (#' + _visionFaceSentCount + '):', e.message, 'β€” URL:', VISION_BASE + '/detect');
   }
 }
 
@@ -9051,7 +5684,7 @@ async function _pollBackendVisionState() {
     if (!el) return;
     const sceneKeys = Object.keys(d.current_scene || {});
     const smoothedKeys = Object.keys(d.smoothed_scene || {});
-    el.innerHTML = '\u{1F9E0} Αίολος sees: <b>' +
+    el.innerHTML = '\u{1F9E0} Ξ‘Ξ―ΞΏΞ»ΞΏΟ‚ sees: <b>' +
       (sceneKeys.length > 0 ? sceneKeys.join(', ') : 'nothing yet') +
       '</b> (smoothed: ' + smoothedKeys.join(', ') +
       ') | updates: ' + (d.scene_updates || 0);
@@ -9069,196 +5702,4 @@ function visionSnapshot() {
   c.toBlob(blob => { window.open(URL.createObjectURL(blob), '_blank'); }, 'image/jpeg', 0.92);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  LEFT DRAWER — LIVE EVENTS MAP (Leaflet.js)
-// ══════════════════════════════════════════════════════════════════════════
 
-let _mapDrawerOpen = false;
-let _mapDrawerMap = null;
-let _mapDrawerMarkers = [];
-let _mapDrawerGeoData = [];
-let _mapDrawerActiveDomain = 'ALL';
-let _mapDrawerRefreshTimer = null;
-
-const _MAP_DRAWER_DOMAIN_COLORS = {
-  GEOPOLITICAL: '#ff4444',
-  CONFLICT: '#ff4444',
-  ECONOMIC: '#00ff88',
-  MARKET: '#4A90D9',
-  SECURITY: '#ff9800',
-  MILITARY: '#ff9800',
-  TECHNOLOGY: '#c080ff',
-  ENERGY: '#d4a843',
-  CLIMATE: '#00bcd4',
-  SOCIAL: '#e91e63',
-};
-
-const _MAP_DRAWER_DOMAIN_LABELS = [
-  ['GEOPOLITICAL', '#ff4444', 'Geopolitical / Conflict'],
-  ['ECONOMIC', '#00ff88', 'Economic'],
-  ['MARKET', '#4A90D9', 'Market / Financial'],
-  ['SECURITY', '#ff9800', 'Security / Military'],
-  ['TECHNOLOGY', '#c080ff', 'Technology'],
-];
-
-function _mapDrawerDomainColor(domain) {
-  if (!domain) return '#808090';
-  return _MAP_DRAWER_DOMAIN_COLORS[domain.toUpperCase()] || '#808090';
-}
-
-function _mapDrawerCreateIcon(color, salience, precise) {
-  const size = precise ? Math.max(6, Math.min(16, salience * 18)) : 5;
-  const opacity = precise ? Math.max(0.5, salience) : 0.35;
-  const glow = precise && salience >= 0.7 ? 'box-shadow:0 0 ' + size + 'px ' + color + '60;' : '';
-  return L.divIcon({
-    className: '',
-    html: '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color +
-      ';opacity:' + opacity + ';border:1px solid rgba(255,255,255,' + (precise ? 0.25 : 0.1) + ');' + glow + '"></div>',
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
-
-function _mapDrawerPopupClass(domain) {
-  const d = (domain || '').toUpperCase();
-  if (d.includes('GEO') || d.includes('CONFLICT')) return 'geo';
-  if (d.includes('ECON') || d.includes('MARKET')) return 'econ';
-  if (d.includes('SEC') || d.includes('MILIT')) return 'sec';
-  if (d.includes('TECH')) return 'tech';
-  if (d.includes('MKT') || d.includes('FINANC')) return 'mkt';
-  return 'other';
-}
-
-function _mapDrawerTimeAgo(dateStr) {
-  if (!dateStr) return '';
-  const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-  return Math.floor(s / 86400) + 'd ago';
-}
-
-function toggleMapDrawer() {
-  _mapDrawerOpen = !_mapDrawerOpen;
-  document.getElementById('mapDrawer').classList.toggle('open', _mapDrawerOpen);
-  document.getElementById('mapOverlay').classList.toggle('visible', _mapDrawerOpen);
-  if (_mapDrawerOpen) {
-    if (!_mapDrawerMap) {
-      setTimeout(_initMapDrawer, 100);
-    } else {
-      setTimeout(function() { _mapDrawerMap.invalidateSize(); }, 200);
-      _refreshMapDrawerData();
-    }
-    _mapDrawerRefreshTimer = setInterval(_refreshMapDrawerData, 120000);
-  } else {
-    if (_mapDrawerRefreshTimer) { clearInterval(_mapDrawerRefreshTimer); _mapDrawerRefreshTimer = null; }
-  }
-}
-
-function _initMapDrawer() {
-  var container = document.getElementById('mapDrawerContainer');
-  if (!container || !window.L) return;
-
-  _mapDrawerMap = L.map(container, {
-    center: [25, 20],
-    zoom: 2,
-    minZoom: 2,
-    maxZoom: 12,
-    zoomControl: true,
-    attributionControl: true,
-    preferCanvas: true,
-  });
-
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://carto.com/">CARTO</a> · <a href="https://www.openstreetmap.org/copyright">OSM</a>',
-    subdomains: 'abcd',
-    maxZoom: 19,
-  }).addTo(_mapDrawerMap);
-
-  // Build legend
-  var legend = document.getElementById('mapDrawerLegend');
-  legend.innerHTML = _MAP_DRAWER_DOMAIN_LABELS.map(function(item) {
-    return '<div class="map-drawer-legend-item"><div class="map-drawer-legend-dot" style="background:' + item[1] + '"></div>' + item[2] + '</div>';
-  }).join('') + '<div class="map-drawer-legend-item"><div class="map-drawer-legend-dot" style="background:#808090;opacity:0.4;"></div>Approx. location</div>';
-
-  // Fix Leaflet rendering in flex container
-  setTimeout(function() { _mapDrawerMap.invalidateSize(); }, 300);
-  var ro = new ResizeObserver(function() { if (_mapDrawerMap) _mapDrawerMap.invalidateSize(); });
-  ro.observe(container);
-
-  _refreshMapDrawerData();
-}
-
-async function _fetchMapDrawerData() {
-  try {
-    var resp = await fetch(API_BASE + '/xdart/events/geo?hours_back=48&max_events=500&min_salience=0.3', { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch (e) {
-    console.warn('[MapDrawer] Fetch failed:', e.message);
-    return null;
-  }
-}
-
-function _renderMapDrawerMarkers(features) {
-  if (!_mapDrawerMap) return;
-
-  _mapDrawerMarkers.forEach(function(m) { _mapDrawerMap.removeLayer(m); });
-  _mapDrawerMarkers = [];
-
-  var visibleCount = 0;
-  features.forEach(function(f) {
-    if (_mapDrawerActiveDomain !== 'ALL') {
-      var fd = (f.domain || '').toUpperCase();
-      if (!fd.includes(_mapDrawerActiveDomain) && fd !== _mapDrawerActiveDomain) return;
-    }
-
-    var color = _mapDrawerDomainColor(f.domain);
-    var icon = _mapDrawerCreateIcon(color, f.salience, f.precise);
-
-    var marker = L.marker([f.lat, f.lon], { icon: icon }).addTo(_mapDrawerMap);
-
-    var domClass = _mapDrawerPopupClass(f.domain);
-    var headline = (f.headline || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    var source = (f.source || '').replace(/</g, '&lt;');
-    var sal = ((f.salience || 0) * 100).toFixed(0);
-    var time = f.collected_at ? _mapDrawerTimeAgo(f.collected_at) : '';
-
-    marker.bindPopup(
-      '<div class="mp-headline">' + headline + '</div>' +
-      '<div class="mp-meta">' +
-        '<span class="mp-domain ' + domClass + '">' + (f.domain || 'MULTI') + '</span>' +
-        '<span>\u25C9 ' + sal + '%</span>' +
-        '<span>' + source + '</span>' +
-        (time ? '<span>\u00b7 ' + time + '</span>' : '') +
-        (!f.precise ? '<span style="opacity:0.5">\u2248 approx</span>' : '') +
-      '</div>',
-      { className: 'map-drawer-popup', maxWidth: 320 }
-    );
-
-    _mapDrawerMarkers.push(marker);
-    visibleCount++;
-  });
-
-  var precise = features.filter(function(f) { return f.precise; }).length;
-  document.getElementById('mapDrawerStats').textContent = visibleCount + ' events \u00b7 ' + precise + ' precise';
-  document.getElementById('mapDrawerBadge').textContent = features.length + ' events';
-}
-
-async function _refreshMapDrawerData() {
-  var data = await _fetchMapDrawerData();
-  if (!data || !data.features) return;
-  _mapDrawerGeoData = data.features;
-  _renderMapDrawerMarkers(_mapDrawerGeoData);
-}
-
-function mapDrawerFilter(btn) {
-  document.querySelectorAll('.map-drawer-filter-btn').forEach(function(b) { b.classList.remove('active'); });
-  btn.classList.add('active');
-  _mapDrawerActiveDomain = btn.dataset.domain;
-  _renderMapDrawerMarkers(_mapDrawerGeoData);
-}
-
-</script>
-</body>
-</html>

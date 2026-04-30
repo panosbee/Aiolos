@@ -740,6 +740,49 @@ class MongoStore:
     #  DIRECTIVE EXECUTION — unified handler for <MONGO_ACTION> tags
     # ══════════════════════════════════════════════════════════════
 
+    # ── Action aliases — LLMs hallucinate action names ──
+    _ACTION_ALIASES: dict[str, str] = {
+        "create_goal": "save_goal",
+        "update_goal": "save_goal",
+        "add_goal": "save_goal",
+        "set_goal": "save_goal",
+        "new_goal": "save_goal",
+        "create_note": "save_note",
+        "add_note": "save_note",
+        "update_note": "save_note",
+        "store_note": "save_note",
+        "update": "upsert",
+        "insert": "upsert",
+        "save": "upsert",
+        "store": "upsert",
+        "store_model": "upsert",
+        "save_model": "upsert",
+        "create_model": "upsert",
+        "add_model": "upsert",
+        "store_entity": "upsert",
+        "save_entity": "upsert",
+        "create_entity": "upsert",
+        "add_entity": "upsert",
+        "store_record": "upsert",
+        "save_record": "upsert",
+        "store_data": "upsert",
+        "save_data": "upsert",
+        "persist": "upsert",
+        "persist_model": "upsert",
+        "write": "upsert",
+        "write_model": "upsert",
+        # Generic MongoDB verbs the LLM commonly hallucinates
+        "find": "find",          # handled by _action_find below
+        "query": "find",
+        "search": "find",
+        "lookup": "find",
+        "get": "find",
+        "read": "find",
+        "fetch": "find",
+        "list": "find",
+        "retrieve": "find",
+    }
+
     def execute_action(self, action: str, params: dict[str, str]) -> dict:
         """Execute a MongoDB action from an LLM directive.
 
@@ -748,14 +791,19 @@ class MongoStore:
         if not self._available:
             return {"success": False, "description": "MongoDB unavailable"}
 
+        # Resolve aliases for hallucinated action names
+        resolved = self._ACTION_ALIASES.get(action, action)
+        if resolved != action:
+            logger.info("[MongoDB] Action alias: %s → %s", action, resolved)
+
         try:
-            handler = getattr(self, f"_action_{action}", None)
+            handler = getattr(self, f"_action_{resolved}", None)
             if not handler:
-                return {"success": False, "description": f"Unknown action: {action}"}
+                return {"success": False, "description": f"Unknown action: {action} (tried alias: {resolved})"}
             return handler(params)
         except Exception as exc:
-            logger.warning("[MongoDB] Action %s failed: %s", action, exc)
-            return {"success": False, "description": f"Action {action} failed: {exc}"}
+            logger.warning("[MongoDB] Action %s failed: %s", resolved, exc)
+            return {"success": False, "description": f"Action {resolved} failed: {exc}"}
 
     # ── Write actions ──
 
@@ -790,7 +838,156 @@ class MongoStore:
         except Exception as exc:
             return {"success": False, "description": f"Delete failed: {exc}"}
 
+    # ── Goal & Upsert actions ──
+
+    def _action_save_goal(self, p: dict) -> dict:
+        """Save or update a self-evolution goal in the entities collection."""
+        # Robust field extraction: LLM may use alternative key names
+        goal_id = str(p.get("goal_id") or p.get("id") or p.get("goal") or "").strip()
+        title = str(p.get("title") or p.get("name") or p.get("goal_title") or "").strip()
+
+        # Auto-generate goal_id from title if missing
+        if not goal_id and title:
+            goal_id = "goal_" + title.lower().replace(" ", "_")[:40]
+        # Derive title from description if still missing
+        if not title:
+            desc = str(p.get("description") or p.get("content") or p.get("text") or "").strip()
+            if desc:
+                title = desc[:80]
+            else:
+                return {"success": False, "description": "save_goal requires at least a title or description"}
+        # Final fallback for goal_id
+        if not goal_id:
+            goal_id = f"goal_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+
+        now = datetime.now(timezone.utc).isoformat()
+        tools = p.get("tools", [])
+        if isinstance(tools, str):
+            tools = [t.strip() for t in tools.split(",") if t.strip()]
+
+        doc = {
+            "type": "self_evolution_goals",
+            "goal_id": goal_id,
+            "title": title,
+            "description": str(p.get("description", "")),
+            "status": str(p.get("status", "active")),
+            "target": str(p.get("target", "")),
+            "tools": tools,
+            "updated_at": now,
+        }
+        for key in ("next_checkpoint", "progress", "evidence", "created_at"):
+            if key in p:
+                doc[key] = p[key]
+
+        try:
+            result = self._db.entities.update_one(
+                {"type": "self_evolution_goals", "goal_id": goal_id},
+                {"$set": doc, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            )
+            upserted = result.upserted_id is not None
+            logger.info("[MongoDB] save_goal: %s '%s' [%s]",
+                        "created" if upserted else "updated", title, goal_id)
+            return {
+                "success": True,
+                "description": f"Goal '{title}' {'created' if upserted else 'updated'} [id: {goal_id}]",
+            }
+        except Exception as exc:
+            return {"success": False, "description": f"save_goal failed: {exc}"}
+
+    def _action_upsert(self, p: dict) -> dict:
+        """General upsert into an allowed collection."""
+        ALLOWED = {"entities", "notes"}
+        collection = str(p.get("collection", "entities")).strip()
+
+        # Transparently redirect goal upserts to save_goal — LLM sometimes generates
+        # {"action": "insert/upsert", "collection": "goals", "data": {...}} instead of save_goal.
+        if collection == "goals":
+            data = p.get("data", {}) or {}
+            if isinstance(data, str):
+                try:
+                    import json as _j
+                    data = _j.loads(data)
+                except Exception:
+                    data = {}
+            # Merge data sub-dict with any top-level goal fields the LLM may have included
+            merged = {**data, **{k: v for k, v in p.items()
+                                 if k not in ("action", "collection", "filter", "data")}}
+            logger.info("[MongoDB] Redirecting upsert(goals) → save_goal")
+            return self._action_save_goal(merged)
+
+        if collection not in ALLOWED:
+            return {"success": False,
+                    "description": f"upsert not allowed on '{collection}'. Allowed: {sorted(ALLOWED)}"}
+
+        filter_doc = p.get("filter")
+        if isinstance(filter_doc, str):
+            try:
+                import json as _j
+                filter_doc = _j.loads(filter_doc)
+            except Exception:
+                filter_doc = None
+
+        data = p.get("data", {})
+        if isinstance(data, str):
+            try:
+                import json as _j
+                data = _j.loads(data)
+            except Exception:
+                data = {}
+
+        if not filter_doc or not isinstance(filter_doc, dict):
+            # Try to infer filter from common unique keys in data
+            for key in ("goal_id", "name", "title", "pattern_id"):
+                if key in data:
+                    filter_doc = {key: data[key]}
+                    break
+        if not filter_doc:
+            return {"success": False,
+                    "description": "upsert requires 'filter' dict or a unique key in 'data' (goal_id, name, title)"}
+
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            data["updated_at"] = now
+            result = self._db[collection].update_one(
+                filter_doc,
+                {"$set": data, "$setOnInsert": {"created_at": now}},
+                upsert=True,
+            )
+            upserted = result.upserted_id is not None
+            desc = f"{'Inserted' if upserted else 'Updated'} in {collection} (filter: {filter_doc})"
+            logger.info("[MongoDB] upsert: %s", desc)
+            return {"success": True, "description": desc}
+        except Exception as exc:
+            return {"success": False, "description": f"Upsert failed: {exc}"}
+
     # ── Read actions ──
+
+    def _action_find(self, p: dict) -> dict:
+        """Generic find/query router — handles hallucinated MongoDB-style calls.
+
+        Routes to the right backend based on params:
+          collection / type → query_entities
+          q / query / text / tags → search_notes
+          journal / event → query_journal
+          fallback → search_notes
+        """
+        collection = p.get("collection", "").strip().lower()
+        has_note_keys = any(k in p for k in ("q", "query", "text", "tags", "title"))
+        has_entity_keys = any(k in p for k in ("type", "entity_type", "name"))
+        has_journal_keys = any(k in p for k in ("journal", "event", "event_type"))
+
+        if has_journal_keys or collection in ("journal", "events"):
+            return self._action_query_journal(p)
+        if has_entity_keys or collection in ("entities", "entity"):
+            return self._action_query_entities(p)
+        # Default: search notes (most common find intent)
+        # Normalise alternative key names
+        if "query" in p and "q" not in p:
+            p["q"] = p.pop("query")
+        if "text" in p and "q" not in p:
+            p["q"] = p.pop("text")
+        return self._action_search_notes(p)
 
     def _action_search_notes(self, p: dict) -> dict:
         q = p.get("q", "").strip()

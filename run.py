@@ -42,6 +42,14 @@ if sys.platform == "win32":
                 ),
             )
 
+    # ── Fix asyncio.exceptions.InvalidStateError on Windows (Python issue #83413) ──
+    # The default Windows IocpProactor event loop calls set_result() on futures that
+    # have already been cancelled (e.g. during graceful shutdown or run_in_executor
+    # races), raising InvalidStateError and crashing the server.
+    # SelectorEventLoop does not have this bug and works correctly on Windows.
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -245,12 +253,34 @@ def interactive_mode(verbose: bool = False) -> None:
         run_problem(problem, verbose=verbose)
 
 
-def start_server(host: str = "0.0.0.0", port: int = 8000) -> None:
+def start_server(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:
     """Start FastAPI server."""
     import uvicorn
     print_banner()
-    console.print(f"[bold]Starting API server on {host}:{port}[/]\n")
-    uvicorn.run("xdart.api:app", host=host, port=port, reload=False)
+    mode = "[bold yellow]DEV MODE (auto-reload on file changes)[/]" if reload else ""
+    console.print(f"[bold]Starting API server on {host}:{port}[/] {mode}\n")
+    console.print(
+        "[dim]⏳  Server startup takes 60-120 seconds (loading Qdrant + embeddings + all engines).\n"
+        "    You will receive a Telegram notification when the system is fully ready.[/]\n"
+    )
+    uvicorn.run(
+        "xdart.api:app",
+        host=host,
+        port=port,
+        reload=reload,
+        reload_dirs=["xdart"] if reload else None,
+        reload_includes=["*.py"] if reload else None,
+        timeout_graceful_shutdown=3 if reload else 30,
+        # ── Performance tuning ──────────────────────────────────────────────────
+        # Keep HTTP connections alive longer to avoid TCP reconnect overhead.
+        timeout_keep_alive=75,
+        # Increase backlog so fast-polling clients (SSE) don't get dropped
+        # while the event loop is briefly busy with a background task.
+        backlog=256,
+        # Disable access log — it writes to stderr on every request,
+        # adding contention under high-frequency background polling.
+        access_log=False,
+    )
 
 
 def main() -> None:
@@ -260,6 +290,7 @@ def main() -> None:
     parser.add_argument("problem", nargs="?", help="Problem to analyze")
     parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
     parser.add_argument("--server", "-s", action="store_true", help="Start API server")
+    parser.add_argument("--reload", "--dev", action="store_true", help="Enable auto-reload on code changes (dev mode)")
     parser.add_argument("--port", "-p", type=int, default=8000, help="Server port")
     parser.add_argument("--host", default="0.0.0.0", help="Server host")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
@@ -269,7 +300,7 @@ def main() -> None:
     setup_logging(args.verbose)
 
     if args.server:
-        start_server(args.host, args.port)
+        start_server(args.host, args.port, reload=args.reload)
     elif args.interactive:
         interactive_mode(args.verbose)
     elif args.problem:

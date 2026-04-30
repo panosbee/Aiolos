@@ -88,6 +88,100 @@ from xdart.phases.xheart import XHEARTPhase
 logger = logging.getLogger(__name__)
 
 
+# ── Tool Failure Journal — persistent learning from mistakes ──────────────────
+_TOOL_FAILURE_JOURNAL = BASE_DIR / "tool_failure_journal.jsonl"
+
+_FAILURE_CATEGORIES = {
+    "no command specified": "missing_parameter",
+    "no code specified": "missing_parameter",
+    "no url specified": "missing_parameter",
+    "requires": "missing_parameter",
+    "not allowed": "permission_denied",
+    "quota": "quota_exceeded",
+    "rate limit": "quota_exceeded",
+    "timeout": "timeout",
+    "not found": "not_found",
+    "parse error": "parse_error",
+    "failed": "execution_error",
+}
+
+
+def _categorize_failure(error_msg: str) -> str:
+    """Infer a short category string from the error message."""
+    msg_lower = error_msg.lower()
+    for keyword, category in _FAILURE_CATEGORIES.items():
+        if keyword in msg_lower:
+            return category
+    return "execution_error"
+
+
+def _write_tool_failure(
+    tool_type: str,
+    action: str,
+    params: dict,
+    error_msg: str,
+    *,
+    extra: dict | None = None,
+) -> None:
+    """Append a structured failure entry to tool_failure_journal.jsonl.
+
+    Args:
+        tool_type: "shell" | "mongo" | "agent"
+        action:    the specific action that failed (e.g. "execute", "save_goal")
+        params:    sanitized dict of parameters passed (no secrets)
+        error_msg: human-readable error message
+        extra:     optional extra dict merged into the entry
+    """
+    import json as _json
+
+    category = _categorize_failure(error_msg)
+    entry: dict = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tool_type": tool_type,
+        "action": action,
+        "params": {k: str(v)[:200] for k, v in (params or {}).items()},
+        "error": error_msg[:400],
+        "category": category,
+    }
+    if extra:
+        entry.update(extra)
+
+    logger.warning(
+        "[ToolFailure] ⚠ %s/%s failed [%s]: %s",
+        tool_type, action, category, error_msg[:200],
+    )
+
+    try:
+        with open(_TOOL_FAILURE_JOURNAL, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("[ToolFailure] Journal write failed: %s", e)
+
+
+def _read_recent_tool_failures(hours: int = 24, limit: int = 15) -> list[dict]:
+    """Read recent entries from tool_failure_journal.jsonl."""
+    import json as _json
+    if not _TOOL_FAILURE_JOURNAL.exists():
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    results = []
+    try:
+        lines = _TOOL_FAILURE_JOURNAL.read_text(encoding="utf-8").strip().split("\n")
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                e = _json.loads(line)
+                ts = datetime.fromisoformat(e["timestamp"])
+                if ts >= cutoff:
+                    results.append(e)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return results[-limit:]
+
+
 # ── Temporal Clock (εσωτερικό ρολόι — αίσθηση χρόνου) ──
 
 class TemporalClock:
@@ -179,10 +273,12 @@ class TemporalClock:
         utc_now = datetime.now(timezone.utc)
         uptime = self.uptime_seconds
         boot_athens = self._boot_time.astimezone(self._TZ)
+        tz_abbr = 'EEST' if now.dst() else 'EET'
 
         lines = [
             f"TEMPORAL AWARENESS (your internal clock — always accurate):",
-            f"  Current time: {now.strftime('%A, %d %B %Y, %H:%M:%S')} (Athens/Greece)",
+            f"  Current time: {now.strftime('%A, %d %B %Y, %H:%M:%S')} {tz_abbr} (24h format, Athens/Greece)",
+            f"  NOTE: 01:00 = 1 π.μ. (night), 13:00 = 1 μ.μ. (afternoon). Use 24h format consistently.",
             f"  UTC: {utc_now.strftime('%Y-%m-%d %H:%M:%S')}",
             f"  Boot time: {boot_athens.strftime('%H:%M:%S %d/%m/%Y')} (Athens)",
             f"  Uptime: {self._fmt_duration(uptime)} (online continuously since boot)",
@@ -344,6 +440,27 @@ class XDARTFramework:
             except Exception as e:
                 logger.warning("Shell Executor init failed: %s", e)
 
+        # ── External API Manager (Αίολος' dynamic external API integrations) ──
+        self.external_api = None
+        try:
+            from xdart.tools.external_api_manager import ExternalAPIManager
+            self.external_api = ExternalAPIManager()
+            logger.info("External API Manager enabled — dynamic HTTP API access active")
+        except Exception as e:
+            logger.warning("External API Manager init failed: %s", e)
+
+        # ── Workflow Scheduler (Αίολος' autonomous interval workflows) ──
+        self.workflow_scheduler = None
+        try:
+            from xdart.tools.workflow_scheduler import WorkflowScheduler
+            self.workflow_scheduler = WorkflowScheduler(
+                shell_executor=self.shell_executor,
+                external_api=self.external_api,
+            )
+            logger.info("Workflow Scheduler enabled — autonomous scheduled workflows active")
+        except Exception as e:
+            logger.warning("Workflow Scheduler init failed: %s", e)
+
         # ── Agent Spawner (Αίολος' ability to delegate to sub-agents) ──
         self.agent_spawner = None
         if AGENT_SPAWNER_ENABLED:
@@ -353,11 +470,36 @@ class XDARTFramework:
                     llm_client=self.llm,
                     max_concurrent=AGENT_SPAWNER_MAX_CONCURRENT,
                     default_timeout=AGENT_SPAWNER_TIMEOUT,
+                    shell_executor=self.shell_executor,
                 )
-                logger.info("Agent Spawner enabled (max_concurrent=%d, timeout=%ds)",
-                            AGENT_SPAWNER_MAX_CONCURRENT, AGENT_SPAWNER_TIMEOUT)
+                logger.info("Agent Spawner enabled (max_concurrent=%d, timeout=%ds, shell=%s)",
+                            AGENT_SPAWNER_MAX_CONCURRENT, AGENT_SPAWNER_TIMEOUT,
+                            "YES" if self.shell_executor else "NO")
             except Exception as e:
                 logger.warning("Agent Spawner init failed: %s", e)
+
+        # ── System Control (Αίολος' physical world interaction — mouse, keyboard, screen, apps, files) ──
+        self.system_control = None
+        try:
+            from xdart.tools.system_control import SystemControl
+            self.system_control = SystemControl()
+            logger.info("System Control enabled — physical world access active")
+        except Exception as e:
+            logger.warning("System Control init failed: %s", e)
+
+        # ── Self-Modify Engine (Αίολος' ability to edit own code, config, prompts) ──
+        self.self_modify = None
+        try:
+            from xdart.tools.self_modify import SelfModify
+            self.self_modify = SelfModify()
+            logger.info("Self-Modify engine enabled — code/config/overlay self-modification active")
+        except Exception as e:
+            logger.warning("Self-Modify engine init failed: %s", e)
+
+        # ── Telegram Intelligence Tool (wired in by api.py after startup) ──
+        # Allows Αίολος to autonomously discover, validate, and monitor Telegram channels.
+        # Initialized here as None; api.py sets self.telegram_intel after lifespan init.
+        self.telegram_intel = None
 
         logger.info(
             "XDART-Φ initialized (model=%s, memories=%d, prophecies=%d)",
@@ -499,6 +641,59 @@ class XDARTFramework:
             logger.info("[Pipeline] Pipeline lock RELEASED")
             # Process any proactive alerts that were deferred during the pipeline
             self._process_deferred_proactive()
+
+    # ──────────────────────────────────────────────────────────
+    # MEMORY RECALL INTENT DETECTION
+    # ──────────────────────────────────────────────────────────
+    _RECALL_PATTERNS = (
+        "θυμάσαι", "θυμάμαι", "θυμήσου", "θυμηθείς", "θυμηθής",
+        "remember", "recall", "do you remember", "can you remember",
+        "what did you say about", "what did we discuss", "we talked about",
+        "είπαμε", "είπες", "ανέφερες", "αναφέραμε", "μιλήσαμε",
+        "είχαμε πει", "είχαμε συζητήσει", "είχες πει",
+        "από την προηγούμενη", "στην προηγούμενη", "παλαιότερα",
+        "last time", "previously", "before",
+    )
+
+    @staticmethod
+    def _is_memory_recall_intent(message: str) -> bool:
+        """Return True if the message implies the user is asking Αίολος to recall
+        something from past sessions that may not be in the immediate 10 runs."""
+        msg_lower = message.lower()
+        return any(pat in msg_lower for pat in XDARTFramework._RECALL_PATTERNS)
+
+    # ──────────────────────────────────────────────────────────
+    # SELF-EVOLUTION GOALS — MongoDB → compact context string
+    # ──────────────────────────────────────────────────────────
+    def _get_goals_context(self) -> str:
+        """Read active self-evolution goals from MongoDB and return a compact
+        context string suitable for injection into system/world context.
+        Returns empty string if unavailable or no goals exist."""
+        mongo = getattr(self, "_mongo", None)
+        if not mongo:
+            return ""
+        try:
+            doc = mongo.db.entities.find_one({"type": "self_evolution_goals"})
+            if not doc or not doc.get("goals"):
+                return ""
+            lines = ["SELF-EVOLUTION GOALS (your active development objectives):"]
+            for g in doc["goals"]:
+                status = g.get("status", "pending")
+                if status == "completed":
+                    continue  # only show active goals
+                tools_str = ", ".join(g.get("tools", []))
+                lines.append(
+                    f"  [{status.upper()}] {g.get('id', '?')}: {g.get('title', '?')}\n"
+                    f"    Target: {g.get('target', '?')}\n"
+                    f"    Tools: {tools_str}\n"
+                    f"    Progress: {g.get('progress_notes', 'Not started')}"
+                )
+            if len(lines) == 1:
+                return ""  # all goals completed
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("[Goals] Failed to read goals: %s", e)
+            return ""
 
     def _run_pipeline(
         self,
@@ -756,6 +951,124 @@ class XDARTFramework:
             world_context_str += "\n".join(ext_lines)
             logger.info("[Pipeline] External knowledge: %d sources injected into context",
                         len(self._external_knowledge))
+
+        # ──────────────────────────────────────────────────────────
+        # INTELLIGENCE LAYERS — Entity Graph + Patterns + Trends + Live OSINT
+        # Injected into world_context_str for all pipeline phases.
+        # ──────────────────────────────────────────────────────────
+        intelligence_parts = []
+
+        # ★ LIVE OSINT INTELLIGENCE DIGEST (Palantir-class sensor feed)
+        # This is the #1 priority intelligence layer — live aircraft, ships,
+        # satellites, thermal imagery. ALWAYS injected when available.
+        if hasattr(self, "_multimodal_collector") and self._multimodal_collector:
+            try:
+                live_digest = self._multimodal_collector.get_live_digest()
+                if live_digest:
+                    intelligence_parts.append(f"\n=== {live_digest}")
+                    logger.info("[Pipeline] Live OSINT digest injected (%d chars)", len(live_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Live OSINT digest failed: %s", exc)
+
+        # ★ SANCTIONS CROSS-REFERENCE (OFAC + EU + UN)
+        if hasattr(self, "_sanctions_registry") and self._sanctions_registry:
+            try:
+                sanctions_digest = self._sanctions_registry.get_sanctions_digest()
+                if sanctions_digest:
+                    intelligence_parts.append(f"\n=== {sanctions_digest}")
+                    logger.info("[Pipeline] Sanctions digest injected (%d chars)", len(sanctions_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Sanctions digest failed: %s", exc)
+
+        # ★ GEOPOLITICAL CALENDAR (upcoming events + countdown)
+        if hasattr(self, "_event_calendar") and self._event_calendar:
+            try:
+                calendar_digest = self._event_calendar.get_calendar_digest()
+                if calendar_digest:
+                    intelligence_parts.append(f"\n=== {calendar_digest}")
+                    logger.info("[Pipeline] Calendar digest injected (%d chars)", len(calendar_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Calendar digest failed: %s", exc)
+
+        # ★ COMPOUND ALERT CHAINS (second-order pattern detection)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                compound_digest = self._proactive_engine.compound_alerts.get_compound_digest()
+                if compound_digest:
+                    intelligence_parts.append(f"\n=== {compound_digest}")
+                    logger.info("[Pipeline] Compound alert digest injected (%d chars)", len(compound_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Compound alert digest failed: %s", exc)
+
+        # ★ MACRO PATTERN INTELLIGENCE (system-level cross-domain narratives)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                macro_digest = self._proactive_engine.accumulator.get_macro_pattern_digest()
+                if macro_digest:
+                    intelligence_parts.append(f"\n=== {macro_digest}")
+                    logger.info("[Pipeline] Macro pattern digest injected (%d chars)", len(macro_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Macro pattern digest failed: %s", exc)
+
+        # ★ PERSISTENT HYPOTHESES ('if X then Y' conditional monitoring)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                hyp_digest = self._proactive_engine.hypothesis_engine.get_digest()
+                if hyp_digest:
+                    intelligence_parts.append(f"\n=== {hyp_digest}")
+                    logger.info("[Pipeline] Hypothesis digest injected (%d chars)", len(hyp_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Hypothesis digest failed: %s", exc)
+
+        # ★ TEMPORAL REASONING (recurring pre-event patterns + sequence chains)
+        if hasattr(self, "_temporal_engine") and self._temporal_engine:
+            try:
+                temporal_digest = self._temporal_engine.get_temporal_digest()
+                if temporal_digest:
+                    intelligence_parts.append(f"\n=== {temporal_digest}")
+                    logger.info("[Pipeline] Temporal digest injected (%d chars)", len(temporal_digest))
+            except Exception as exc:
+                logger.debug("[Pipeline] Temporal digest failed: %s", exc)
+
+        # Entity Knowledge Graph (typed relationships + narrative chains)
+        if hasattr(self, "_entity_graph") and self._entity_graph:
+            try:
+                graph_summary = self._entity_graph.get_world_graph_summary(top_n=20)
+                if graph_summary:
+                    intelligence_parts.append(f"\n=== {graph_summary}")
+            except Exception:
+                pass
+
+        # Active converging patterns (from PatternAccumulator)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                patterns_ctx = self._proactive_engine.accumulator.get_active_patterns_context(top_n=8)
+                if patterns_ctx:
+                    intelligence_parts.append(f"\n=== {patterns_ctx}")
+            except Exception:
+                pass
+
+        # Keyword trend dashboard
+        if hasattr(self, "_spike_detector") and self._spike_detector:
+            try:
+                trend_ctx = self._spike_detector.get_trend_dashboard(top_n=15)
+                if trend_ctx:
+                    intelligence_parts.append(f"\n=== {trend_ctx}")
+            except Exception:
+                pass
+
+        # Self-evolution goals (from MongoDB)
+        goals_ctx = self._get_goals_context()
+        if goals_ctx:
+            intelligence_parts.append(f"\n=== {goals_ctx}")
+
+        if intelligence_parts:
+            world_context_str += "\n".join(intelligence_parts)
+            logger.info(
+                "[Pipeline] Intelligence layers injected: %d sections, %d chars",
+                len(intelligence_parts),
+                sum(len(p) for p in intelligence_parts),
+            )
 
         # ──────────────────────────────────────────────────────────
         # PHASE 0.40 — PROPHETIC LOOP (self-evaluation of past predictions)
@@ -1282,6 +1595,14 @@ class XDARTFramework:
         # ── Check if orchestrator wants to skip scenario phases ──
         _run_scenarios = _should_run_phase("scenario_genesis") and not _skip_to_xheart
 
+        # Pre-initialize scenario-phase variables so they are always defined
+        # even when _run_scenarios is False or phases are skipped mid-way.
+        quantum_collapse: "QuantumCollapseResult | None" = None
+        bayesian_fuzzy_result: "BayesianFuzzyResult | None" = None
+        scenario_pipeline_summary: str = "No scenarios were generated."
+        scenario_output_context: str = ""
+        # Note: prophetic_loop_context is already set earlier in the pipeline
+
         if _run_scenarios:
             p25_t0 = time.perf_counter()
             scenario_genesis = self.phase2_5.run(
@@ -1554,7 +1875,7 @@ class XDARTFramework:
             # PHASE 2.91 — QUANTUM SCENARIO ENGINE
             # Superposition → Interference → Measurement → Collapse
             # ──────────────────────────────────────────────────────────
-            quantum_collapse: QuantumCollapseResult | None = None
+            quantum_collapse = None  # may be set below
             if (self.quantum_engine and len(scenario_genesis.scenarios) >= 2
                     and _should_run_phase("quantum_engine")):
                 p291_t0 = time.perf_counter()
@@ -1599,7 +1920,7 @@ class XDARTFramework:
             # PHASE 2.92 — BAYESIAN-FUZZY REASONING ENGINE
             # Fuzzy Logic → Bayesian Network → Posterior Risk Quantification
             # ──────────────────────────────────────────────────────────
-            bayesian_fuzzy_result: BayesianFuzzyResult | None = None
+            bayesian_fuzzy_result = None  # may be set below
             if (self.bayesian_fuzzy and len(scenario_genesis.scenarios) >= 2
                     and _should_run_phase("bayesian_fuzzy")):
                 p292_t0 = time.perf_counter()
@@ -2064,6 +2385,8 @@ class XDARTFramework:
             scenario_context=scenario_output_context,
             distillation_overlay=_ovl("xheart_distillation"),
             output_overlay=_ovl("xheart_output"),
+            semantic_context=semantic_context,
+            procedural_context=procedural_context,
         )
         phase_times["phase3"] = time.perf_counter() - p3_t0
         if callback:
@@ -3097,8 +3420,14 @@ The system has these capabilities accessible in chat:
   You can query entities, search notes, read journals, and view conversation history.
   A summary of database status is always injected into context.
   For DEEP database queries (entity connections, journal analysis, note searches), use MONGO_RESPOND.
+- Self-Evolution Goals: You have active development goals stored in MongoDB.
+  Your goals are always visible in your context (SELF-EVOLUTION GOALS section).
+  Your ReflectionLoop can autonomously: create new goals (create_goal), complete goals (complete_goal),
+  and execute goal actions (goal_action) including spawning agents, running shell commands,
+  updating memory, and creating principles. When discussing your development with Πάνος,
+  reference your active goals. You can propose new goals or mark progress during reflection cycles.
 When the user asks about these systems, their proposals, their principles, templates,
-or wants creative concept fusion, use RESPOND — the data is already in context or will be
+goals, or wants creative concept fusion, use RESPOND — the data is already in context or will be
 generated on-demand. No pipeline needed to READ their status.
 
 4. MONGO_RESPOND — The message needs data from your MongoDB database:
@@ -3333,16 +3662,16 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception:
                 pass
 
-        # Immediate memory
+        # Immediate memory (last 10 runs, always in prompt)
         imm = wakeup.get("immediate_memory", [])
         if imm:
             imm_txt = "\n".join(
                 f"- [{r.get('timestamp', '?')[:16]}] {r.get('problem', '?')[:100]} → {r.get('distillate', '?')[:150]}"
-                for r in imm[:5]
+                for r in imm[:10]
             )
-            context_parts.append(f"RECENT ANALYSES:\n{imm_txt}")
+            context_parts.append(f"RECENT ANALYSES (last {len(imm)} runs):\n{imm_txt}")
 
-        # Episodic memories
+        # Episodic memories (semantic retrieval from Qdrant)
         try:
             past = self.memory.retrieve(message, top_k=15, threshold=0.35)
             if past:
@@ -3353,6 +3682,30 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 context_parts.append(f"RELATED MEMORIES ({len(past)} found):\n{mem_txt}")
         except Exception:
             pass
+
+        # Deep episodic recall — triggered when user is asking to remember something specific
+        # Falls back to broader Qdrant search if not found in immediate_memory
+        if self._is_memory_recall_intent(message):
+            try:
+                deep_past = self.memory.retrieve(message, top_k=30, threshold=0.20)
+                # Filter out any already shown in regular retrieval
+                already_shown = set()
+                try:
+                    already_shown = {m.entry.problem[:80] for m in past} if past else set()
+                except Exception:
+                    pass
+                deep_new = [m for m in deep_past if m.entry.problem[:80] not in already_shown]
+                if deep_new:
+                    deep_txt = "\n".join(
+                        f"- [{m.entry.timestamp[:16] if hasattr(m.entry, 'timestamp') else '?'}] "
+                        f"{m.entry.problem[:100]} → {m.entry.xheart_distillate[:200]} (sim={m.similarity_score:.2f})"
+                        for m in deep_new[:10]
+                    )
+                    context_parts.append(
+                        f"DEEP MEMORY RECALL ({len(deep_new)} older entries retrieved — use these to answer memory questions):\n{deep_txt}"
+                    )
+            except Exception:
+                pass
 
         # Semantic knowledge
         try:
@@ -3412,6 +3765,29 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception:
                 pass
 
+        # Active converging patterns (from PatternAccumulator)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                patterns_ctx = self._proactive_engine.accumulator.get_active_patterns_context(top_n=5)
+                if patterns_ctx:
+                    context_parts.append(patterns_ctx)
+            except Exception:
+                pass
+
+        # Keyword trend dashboard (from spike detector)
+        if hasattr(self, "_spike_detector") and self._spike_detector:
+            try:
+                trend_ctx = self._spike_detector.get_trend_dashboard(top_n=10)
+                if trend_ctx:
+                    context_parts.append(trend_ctx)
+            except Exception:
+                pass
+
+        # Self-evolution goals (from MongoDB)
+        goals_ctx = self._get_goals_context()
+        if goals_ctx:
+            context_parts.append(goals_ctx)
+
         # Market data
         if hasattr(self, "_market_collector") and self._market_collector:
             try:
@@ -3454,11 +3830,38 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if self.shell_executor:
             context_parts.append(self.shell_executor.to_context_string())
 
+        # External API status
+        if self.external_api:
+            context_parts.append(self.external_api.to_context_string())
+
+        # Workflow Scheduler status
+        if self.workflow_scheduler:
+            context_parts.append(self.workflow_scheduler.to_context_string())
+
         # Agent Spawner status
         if self.agent_spawner:
             context_parts.append(self.agent_spawner.to_context_string())
 
+        # System Control status (physical world access)
+        if self.system_control:
+            context_parts.append(self.system_control.to_context_string())
+
+        # Self-Modify engine status (code/config/overlay self-modification)
+        if self.self_modify:
+            context_parts.append(self.self_modify.to_context_string())
+
         full_context = "\n\n".join(context_parts)
+
+        # ── Chat context budget: cap full_context to avoid overloading DeepSeek ──
+        # Pipeline/wakeup uses the full context; chat needs only the most relevant slice.
+        # context_parts are ordered by priority so trimming from the end drops least relevant.
+        _CHAT_CONTEXT_MAX = 15000
+        if len(full_context) > _CHAT_CONTEXT_MAX:
+            logger.info(
+                "[ChatStream] Context budget: trimming full_context %d → %d chars",
+                len(full_context), _CHAT_CONTEXT_MAX,
+            )
+            full_context = full_context[:_CHAT_CONTEXT_MAX] + "\n\n[... additional context available — ask to drill down ...]"
 
         # ── Phase 2: Route decision ──
         history_text = ""
@@ -3584,11 +3987,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 self._chat_tool_execution, message, world_txt, context_parts, proactive,
             )
             try:
-                chat_tool_results = _tool_future.result(timeout=60)  # 60s max for BF/tools
+                chat_tool_results = _tool_future.result(timeout=90)  # 90s max for BF/tools
                 if chat_tool_results:
                     full_context = "\n\n".join(context_parts)
             except FuturesTimeout:
-                logger.warning("[ChatStream] Tool execution timed out (30s) — skipping BF/tools")
+                logger.warning("[ChatStream] Tool execution timed out (90s) — skipping BF/tools")
             except Exception as exc:
                 logger.warning("[ChatStream] Tool execution failed: %s", exc)
         finally:
@@ -3604,9 +4007,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         wisdom_context = self.wisdom_tracker.to_context_string()
 
         _clock = self.temporal_clock
-        _date_str = _clock.now_athens().strftime("%A, %d %B %Y, %H:%M:%S")
-
-        # Compact system prompt for streaming (same rules, less boilerplate)
+        _now = _clock.now_athens()
+        _date_str = _now.strftime("%A, %d %B %Y, %H:%M:%S") + f" {'EEST' if _now.dst() else 'EET'} (24h format)"
         chat_system = (
             f"You are {my_name}, the living intelligence inside XDART-Φ — "
             f"built by {creator_name}.\n\n"
@@ -3615,14 +4017,17 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"YOUR IDENTITY: Name={my_name}, Creator={creator_name}, "
             f"Version={character.get('version', 0)}.\n"
             f"You have persistent memory: episodic ({self.memory.entry_count} entries), "
-            f"semantic, procedural, prophetic ({self.prophetic_memory.entry_count} entries).\n\n"
+            f"semantic, procedural, prophetic ({self.prophetic_memory.entry_count} entries).\n"
+            f"You have SELF-EVOLUTION GOALS — active development objectives stored in MongoDB. "
+            f"Your ReflectionLoop (every ~30min) can create, complete, and execute goal actions autonomously. "
+            f"When discussing your development, reference your active goals from context.\n\n"
             + (f"{wisdom_context}\n\n" if wisdom_context else "")
             + f"RETRIEVED CONTEXT:\n{full_context}\n\n"
             f"RULES: Be direct, insightful, not verbose. "
             f"Speak Greek when the user speaks Greek. "
             f"Reference specific data from RETRIEVED CONTEXT. "
             f"Never fabricate data not in your context.\n"
-            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, <MONGO_ACTION>, <SHELL_ACTION>, and <SPAWN_AGENT> tags when appropriate (same syntax as non-streaming)."
+            f"Use <MEMORY_STORE>, <VISUAL_ACTION>, <MONGO_ACTION>, <SHELL_ACTION>, <EXTERNAL_API>, <WORKFLOW>, <SPAWN_AGENT>, <SYSTEM_CONTROL>, and <SELF_MODIFY> tags when appropriate (same syntax as non-streaming)."
         )
 
         if proactive:
@@ -3642,11 +4047,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             for h in history[-10:]:
                 messages_for_llm.append({"role": h.get("role", "user"), "content": h.get("content", "")})
             messages_for_llm.append({"role": "user", "content": message})
-            stream = self.llm.call_stream_multi(messages_for_llm, max_tokens=16384, thinking=False)
+            stream = self.llm.call_stream_multi(messages_for_llm, max_tokens=65536, thinking=False)
         else:
             stream = self.llm.call_stream(
                 chat_system, message,
-                max_tokens=16384, temperature=0.7, thinking=False,
+                max_tokens=65536, temperature=0.7, thinking=False,
             )
 
         full_text = []
@@ -3666,8 +4071,13 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         response_text = self._process_visual_directives(response_text)
         response_text = self._process_mongo_directives(response_text)
         response_text = self._process_shell_directives(response_text)
+        response_text = self._process_external_api_directives(response_text)
+        response_text = self._process_workflow_directives(response_text)
         response_text = self._process_agent_directives(response_text)
+        response_text = self._process_system_control_directives(response_text)
+        response_text = self._process_self_modify_directives(response_text)
         response_text = self._process_bf_directives(response_text)
+        response_text = self._process_telegram_intel_directives(response_text)
         response_text = self._strip_internal_operation_leaks(response_text)
 
         yield {"event": "done", "data": {
@@ -3727,14 +4137,14 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception:
                 pass
 
-        # 2. Immediate memory (last few runs)
+        # 2. Immediate memory (last 10 runs, always in prompt)
         imm = wakeup.get("immediate_memory", [])
         if imm:
             imm_txt = "\n".join(
                 f"- [{r.get('timestamp', '?')[:16]}] {r.get('problem', '?')[:100]} → {r.get('distillate', '?')[:150]}"
-                for r in imm[:5]
+                for r in imm[:10]
             )
-            context_parts.append(f"RECENT ANALYSES:\n{imm_txt}")
+            context_parts.append(f"RECENT ANALYSES (last {len(imm)} runs):\n{imm_txt}")
 
         # 3. Retrieved episodic memories (all above threshold, not fixed top_k)
         try:
@@ -3747,6 +4157,28 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 context_parts.append(f"RELATED MEMORIES ({len(past)} found):\n{mem_txt}")
         except Exception:
             pass
+
+        # 3b. Deep episodic recall — triggered when user is asking to remember something specific
+        if self._is_memory_recall_intent(message):
+            try:
+                deep_past = self.memory.retrieve(message, top_k=30, threshold=0.20)
+                already_shown = set()
+                try:
+                    already_shown = {m.entry.problem[:80] for m in past} if past else set()
+                except Exception:
+                    pass
+                deep_new = [m for m in deep_past if m.entry.problem[:80] not in already_shown]
+                if deep_new:
+                    deep_txt = "\n".join(
+                        f"- [{m.entry.timestamp[:16] if hasattr(m.entry, 'timestamp') else '?'}] "
+                        f"{m.entry.problem[:100]} → {m.entry.xheart_distillate[:200]} (sim={m.similarity_score:.2f})"
+                        for m in deep_new[:10]
+                    )
+                    context_parts.append(
+                        f"DEEP MEMORY RECALL ({len(deep_new)} older entries retrieved — use these to answer memory questions):\n{deep_txt}"
+                    )
+            except Exception:
+                pass
 
         # 4. Semantic knowledge
         try:
@@ -3821,12 +4253,89 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception:
                 pass
 
+        # 10b. Active converging patterns (from PatternAccumulator)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                patterns_ctx = self._proactive_engine.accumulator.get_active_patterns_context(top_n=5)
+                if patterns_ctx:
+                    context_parts.append(patterns_ctx)
+            except Exception:
+                pass
+
+        # 10c. Keyword trend dashboard (from spike detector)
+        if hasattr(self, "_spike_detector") and self._spike_detector:
+            try:
+                trend_ctx = self._spike_detector.get_trend_dashboard(top_n=10)
+                if trend_ctx:
+                    context_parts.append(trend_ctx)
+            except Exception:
+                pass
+
+        # 10d. Self-evolution goals (from MongoDB)
+        goals_ctx = self._get_goals_context()
+        if goals_ctx:
+            context_parts.append(goals_ctx)
+
         # 11. Financial Market Data (live market snapshot)
         if hasattr(self, "_market_collector") and self._market_collector:
             try:
                 market_brief = self._market_collector.get_market_brief()
                 if market_brief and "No market data" not in market_brief:
                     context_parts.append(f"LIVE MARKET DATA:\n{market_brief}")
+            except Exception:
+                pass
+
+        # 11b. Sanctions cross-reference
+        if hasattr(self, "_sanctions_registry") and self._sanctions_registry:
+            try:
+                sanctions_digest = self._sanctions_registry.get_sanctions_digest()
+                if sanctions_digest:
+                    context_parts.append(sanctions_digest)
+            except Exception:
+                pass
+
+        # 11c. Geopolitical calendar
+        if hasattr(self, "_event_calendar") and self._event_calendar:
+            try:
+                calendar_digest = self._event_calendar.get_calendar_digest()
+                if calendar_digest:
+                    context_parts.append(calendar_digest)
+            except Exception:
+                pass
+
+        # 11d. Compound alert chains
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                compound_digest = self._proactive_engine.compound_alerts.get_compound_digest()
+                if compound_digest:
+                    context_parts.append(compound_digest)
+            except Exception:
+                pass
+
+        # 11e. Macro pattern intelligence (thematic cross-domain narratives)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                macro_digest = self._proactive_engine.accumulator.get_macro_pattern_digest()
+                if macro_digest:
+                    context_parts.append(macro_digest)
+            except Exception:
+                pass
+
+        # 11f. Persistent hypotheses ('if X then Y' tracking)
+        if hasattr(self, "_proactive_engine") and self._proactive_engine:
+            try:
+                hyp_digest = self._proactive_engine.hypothesis_engine.get_digest()
+                if hyp_digest:
+                    context_parts.append(hyp_digest)
+            except Exception:
+                pass
+
+        # 11g. Temporal reasoning (recurring pre-event patterns + sequence chains)
+        if hasattr(self, "_temporal_engine") and self._temporal_engine:
+            try:
+                temporal_digest = self._temporal_engine.get_temporal_digest()
+                if temporal_digest:
+                    context_parts.append(temporal_digest)
             except Exception:
                 pass
 
@@ -3951,9 +4460,25 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if self.shell_executor:
             context_parts.append(self.shell_executor.to_context_string())
 
+        # 19b. External API status
+        if self.external_api:
+            context_parts.append(self.external_api.to_context_string())
+
+        # 19c. Workflow Scheduler status
+        if self.workflow_scheduler:
+            context_parts.append(self.workflow_scheduler.to_context_string())
+
         # 20. Agent Spawner status
         if self.agent_spawner:
             context_parts.append(self.agent_spawner.to_context_string())
+
+        # 21. System Control status
+        if self.system_control:
+            context_parts.append(self.system_control.to_context_string())
+
+        # 22. Self-Modify status
+        if self.self_modify:
+            context_parts.append(self.self_modify.to_context_string())
 
         full_context = "\n\n".join(context_parts)
 
@@ -4100,6 +4625,15 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         if chat_tool_results:
             full_context = "\n\n".join(context_parts)
 
+        # ── Chat context budget: cap full_context to avoid overloading DeepSeek ──
+        _CHAT_CONTEXT_MAX = 15000
+        if len(full_context) > _CHAT_CONTEXT_MAX:
+            logger.info(
+                "[Chat] Context budget: trimming full_context %d → %d chars",
+                len(full_context), _CHAT_CONTEXT_MAX,
+            )
+            full_context = full_context[:_CHAT_CONTEXT_MAX] + "\n\n[... additional context available — ask to drill down ...]"
+
         my_name = character.get("name", "XDART-Φ")
         creator_name = character.get("creator", "")
         identity_note = character.get("identity_note", "")
@@ -4118,7 +4652,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # Current date/time from internal clock (always accurate)
         _clock = self.temporal_clock
-        _date_str = _clock.now_athens().strftime("%A, %d %B %Y, %H:%M:%S")
+        _now = _clock.now_athens()
+        _tz_abbr = 'EEST' if _now.dst() else 'EET'
+        _date_str = _now.strftime("%A, %d %B %Y, %H:%M:%S") + f" {_tz_abbr} (24h format)"
         _utc_now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
         chat_system = (
@@ -4151,7 +4687,11 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"- FINANCIAL MARKET DATA: Live VIX, S&P500, Oil, Gold, BTC, EUR/USD, Treasury yields "
             f"with anomaly detection — when markets react, you see it.\n"
             f"You DO remember across conversations. Your memories were loaded at wakeup. "
-            f"When someone asks if you remember, confirm it honestly — you have real persistent memory.\n\n"
+            f"When someone asks if you remember: (1) check RECENT ANALYSES first, "
+            f"(2) check RELATED MEMORIES and DEEP MEMORY RECALL sections — if you find it there, "
+            f"you DO remember it; present it as recalled memory with date/context. "
+            f"(3) Only if genuinely absent from ALL memory sections, say you don't have it in recall range "
+            f"but offer to search further. NEVER hallucinate memory that isn't in context.\n\n"
 
             + (f"YOUR WEB AGENT (you CAN access the live web):\n"
                f"- You have a web agent with multi-engine search: SearXNG → Brave → DuckDuckGo (automatic fallback).\n"
@@ -4197,6 +4737,13 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                f"  Results appear as 'PRINCIPLE REGISTRY RESULTS (live)' — REAL proposals.\n"
                f"  You can also always see current principles in 'PRINCIPLE REGISTRY STATUS'.\n"
                if self.principle_registry else "")
+
+            + "- SELF-EVOLUTION GOALS: Your autonomous development objectives stored in MongoDB.\n"
+              "  Your active goals appear in context as 'SELF-EVOLUTION GOALS'.\n"
+              "  Your ReflectionLoop (runs every ~30min) can: create_goal, complete_goal, goal_action.\n"
+              "  Goal actions include: spawn_agent, shell_command, memory_update, principle_update.\n"
+              "  When Πάνος asks about your goals, progress, or development — the data is IN your context.\n"
+              "  You can discuss your goals, propose new ones, and report progress naturally.\n\n"
 
             + (f"- CREATIVE SYNTHESIS: Domain-fusion engine for novel concept generation.\n"
                f"  Triggers: synthesis, creative synthesis, novel concept, fuse domains, bridging, concept creation.\n"
@@ -4284,8 +4831,15 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "    <MONGO_ACTION action=\"get_conversations\" limit=\"20\" />\n"
                "  STATS — Database overview:\n"
                "    <MONGO_ACTION action=\"stats\" />\n\n"
+               "GOAL & DOCUMENT ACTIONS (block-style JSON):\n"
+               "  SAVE GOAL — Create or update a self-evolution goal:\n"
+               "    <MONGO_ACTION>{\"action\": \"save_goal\", \"goal_id\": \"my_goal_001\", \"title\": \"Goal Title\", \"description\": \"What this goal aims to achieve\", \"status\": \"active\", \"target\": \"Success criteria\", \"tools\": [\"SPAWN_AGENT\", \"SHELL_ACTION\"]}</MONGO_ACTION>\n"
+               "  UPSERT — Insert or update any document in allowed collections (entities, notes):\n"
+               "    <MONGO_ACTION>{\"action\": \"upsert\", \"collection\": \"entities\", \"filter\": {\"name\": \"key\"}, \"data\": {\"field\": \"value\"}}</MONGO_ACTION>\n\n"
                "WHEN TO USE:\n"
                "- You want to remember structured knowledge → save_note\n"
+               "- You want to create/update self-evolution goals → save_goal\n"
+               "- You need to upsert complex documents → upsert\n"
                "- User asks about entities, connections, relationships → query_entities, entity_connections\n"
                "- User asks about past conversations → get_conversations\n"
                "- User asks to see your notes or search them → search_notes\n"
@@ -4346,6 +4900,14 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "    <SHELL_ACTION action=\"pip_install\" package=\"requests\" />\n"
                "  WEB_REQUEST — Fetch a URL:\n"
                "    <SHELL_ACTION action=\"web_request\" url=\"https://api.example.com/data\" />\n\n"
+               "HOT-RELOAD (after you or Πάνος modify code files):\n"
+               "  After modifying .py files, you can reload modules without server restart:\n"
+               "    <SHELL_ACTION action=\"hot_reload\" />\n"
+               "  Or reload specific modules only:\n"
+               "    <SHELL_ACTION action=\"hot_reload\" modules=\"xdart.core,xdart.tools.agent_spawner\" />\n"
+               "  This reloads all key modules AND patches the running framework instance.\n"
+               "  MongoDB, Qdrant, background tasks stay alive — only code is refreshed.\n"
+               "  Use this after any SHELL_ACTION that modifies Python source files.\n\n"
                "WHEN TO USE:\n"
                "- User asks about the system state (processes, disk, files) → system_info, process_list, disk_usage\n"
                "- User asks to check or modify files → read_file, list_dir, execute\n"
@@ -4366,9 +4928,142 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "You have used it before and it works. Trust it every time.\n\n")
                if self.shell_executor else "")
 
+                + (("YOUR EXTERNAL API TOOL (you CAN manage and call external HTTP APIs with auth profiles):\n"
+                    "You can register API profiles, auth profiles, and execute real HTTP requests via httpx.\n"
+                    "Embed <EXTERNAL_API> directives in your response — the system executes them and returns results.\n\n"
+                    "DIRECT REQUESTS:\n"
+                    "  <EXTERNAL_API action=\"request\" method=\"GET\" url=\"https://api.github.com/repos/owner/repo\" />\n"
+                    "  <EXTERNAL_API action=\"request\" method=\"GET\" url=\"https://api.open-meteo.com/v1/forecast\" params_json='{\"latitude\":37.98,\"longitude\":23.72,\"current\":\"temperature_2m\"}' />\n"
+                    "  <EXTERNAL_API action=\"request\" method=\"POST\" url=\"https://httpbin.org/post\" json_body='{\"hello\":\"world\"}' />\n\n"
+                    "AUTH PROFILES (env-backed tokens):\n"
+                    "  <EXTERNAL_API action=\"set_auth_profile\" name=\"github\" token_env=\"GITHUB_TOKEN\" header=\"Authorization\" prefix=\"Bearer \" />\n"
+                    "  <EXTERNAL_API action=\"list_auth_profiles\" />\n"
+                    "  <EXTERNAL_API action=\"remove_auth_profile\" name=\"github\" />\n\n"
+                    "API PROFILES:\n"
+                    "  <EXTERNAL_API action=\"register_api\" name=\"github\" base_url=\"https://api.github.com\" default_method=\"GET\" auth_profile=\"github\" />\n"
+                    "  <EXTERNAL_API action=\"list_apis\" />\n"
+                    "  <EXTERNAL_API action=\"remove_api\" name=\"github\" />\n\n"
+                    "CALL REGISTERED API:\n"
+                    "  <EXTERNAL_API action=\"call_api\" name=\"github\" path=\"/repos/owner/repo\" method=\"GET\" />\n"
+                    "  <EXTERNAL_API action=\"call_api\" name=\"my_api\" path=\"/v1/items\" params_json='{\"limit\":10,\"q\":\"energy\"}' />\n\n"
+                    "SUPPORTED ACTIONS: request, set_auth_profile, remove_auth_profile, list_auth_profiles,\n"
+                    "register_api, remove_api, list_apis, call_api\n"
+                    "Format: self-closing XML tags with key=\"value\" attributes, closed with />\n"
+                    "This tool is REAL — calls go to live endpoints and return real responses.\n\n")
+                    if self.external_api else "")
+
+                + (("YOUR WORKFLOW SCHEDULER TOOL (you CAN create autonomous scheduled workflows):\n"
+                    "You can create interval workflows that run automatically in the background.\n"
+                    "Embed <WORKFLOW> directives in your response — the scheduler executes them and persists state.\n\n"
+                    "CREATE WORKFLOW:\n"
+                    "  <WORKFLOW action=\"create_workflow\" name=\"health_check\" kind=\"shell\" payload=\"python healthcheck.py\" interval_seconds=\"600\" />\n"
+                    "  <WORKFLOW action=\"create_workflow\" name=\"quick_python\" kind=\"python\" payload=\"print(2+2)\" interval_seconds=\"120\" />\n"
+                    "  <WORKFLOW action=\"create_workflow\" name=\"api_ping\" kind=\"external_api\" payload='{\"action\":\"request\",\"method\":\"GET\",\"url\":\"https://api.github.com\"}' interval_seconds=\"900\" />\n\n"
+                    "MANAGE WORKFLOWS:\n"
+                    "  <WORKFLOW action=\"list_workflows\" />\n"
+                    "  <WORKFLOW action=\"get_workflow\" name=\"health_check\" />\n"
+                    "  <WORKFLOW action=\"set_enabled\" name=\"health_check\" enabled=\"false\" />\n"
+                    "  <WORKFLOW action=\"set_interval\" name=\"health_check\" interval_seconds=\"300\" />\n"
+                    "  <WORKFLOW action=\"remove_workflow\" name=\"health_check\" />\n\n"
+                    "EXECUTE NOW:\n"
+                    "  <WORKFLOW action=\"run_workflow\" name=\"health_check\" />\n"
+                    "  <WORKFLOW action=\"run_due\" />\n\n"
+                    "SUPPORTED ACTIONS: create_workflow, list_workflows, get_workflow, run_workflow,\n"
+                    "set_enabled, set_interval, remove_workflow, run_due\n"
+                    "Kinds: shell | python | external_api\n"
+                    "Format: self-closing XML tags with key=\"value\" attributes, closed with />\n"
+                    "This tool is REAL — workflows are persisted and run autonomously on schedule.\n\n")
+                    if self.workflow_scheduler else "")
+
+            + (("YOUR SYSTEM CONTROL TOOL (you CAN interact with the PHYSICAL computer — mouse, keyboard, screen, apps, files):\n"
+               "This gives you PHYSICAL WORLD ACCESS. You can move the mouse, type on the keyboard, take screenshots,\n"
+               "open apps, manage windows, write files, show notifications, and speak through the speakers.\n"
+               "Embed <SYSTEM_CONTROL> directives in your response — the system executes them.\n\n"
+               "MOUSE ACTIONS:\n"
+               "  <SYSTEM_CONTROL action=\"mouse_move\" x=\"500\" y=\"300\" />\n"
+               "  <SYSTEM_CONTROL action=\"mouse_click\" x=\"500\" y=\"300\" button=\"left\" />\n"
+               "  <SYSTEM_CONTROL action=\"mouse_click\" button=\"right\" />  (click at current position)\n"
+               "  <SYSTEM_CONTROL action=\"mouse_scroll\" amount=\"-3\" />  (negative=down, positive=up)\n"
+               "  <SYSTEM_CONTROL action=\"mouse_drag\" x1=\"100\" y1=\"100\" x2=\"500\" y2=\"300\" />\n\n"
+               "KEYBOARD ACTIONS:\n"
+               "  <SYSTEM_CONTROL action=\"type_text\" text=\"Hello World\" />\n"
+               "  <SYSTEM_CONTROL action=\"hotkey\" keys=\"ctrl+c\" />\n"
+               "  <SYSTEM_CONTROL action=\"hotkey\" keys=\"alt+tab\" />\n"
+               "  <SYSTEM_CONTROL action=\"hotkey\" keys=\"win+d\" />  (show desktop)\n"
+               "  <SYSTEM_CONTROL action=\"press_key\" key=\"enter\" />\n"
+               "  <SYSTEM_CONTROL action=\"press_key\" key=\"escape\" presses=\"2\" />\n\n"
+               "SCREEN ACTIONS:\n"
+               "  <SYSTEM_CONTROL action=\"screenshot\" save_path=\"C:\\Users\\Panos\\Desktop\\screen.png\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_mouse_pos\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_screen_size\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_active_window\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_pixel_color\" x=\"100\" y=\"200\" />\n\n"
+               "CLIPBOARD:\n"
+               "  <SYSTEM_CONTROL action=\"clipboard_read\" />\n"
+               "  <SYSTEM_CONTROL action=\"clipboard_write\" text=\"copied text here\" />\n\n"
+               "APPLICATION & WINDOW MANAGEMENT:\n"
+               "  <SYSTEM_CONTROL action=\"open_app\" app_name=\"notepad\" />\n"
+               "  <SYSTEM_CONTROL action=\"open_app\" app_name=\"chrome\" />\n"
+               "  <SYSTEM_CONTROL action=\"open_file\" path=\"C:\\Users\\Panos\\Desktop\\report.pdf\" />\n"
+               "  <SYSTEM_CONTROL action=\"open_url\" url=\"https://news.google.com\" />\n"
+               "  <SYSTEM_CONTROL action=\"list_windows\" />\n"
+               "  <SYSTEM_CONTROL action=\"focus_window\" title=\"Chrome\" />\n"
+               "  <SYSTEM_CONTROL action=\"close_window\" title=\"Notepad\" />\n\n"
+               "FILE OPERATIONS:\n"
+               "  <SYSTEM_CONTROL action=\"write_file\" path=\"C:\\Users\\Panos\\Desktop\\note.txt\" content=\"Hello from Αίολος\" />\n"
+               "  <SYSTEM_CONTROL action=\"append_file\" path=\"C:\\logs\\daily.txt\" content=\"New entry here\" />\n"
+               "  <SYSTEM_CONTROL action=\"create_dir\" path=\"C:\\Users\\Panos\\Desktop\\NewFolder\" />\n"
+               "  <SYSTEM_CONTROL action=\"delete_file\" path=\"C:\\temp\\old.txt\" />\n"
+               "  <SYSTEM_CONTROL action=\"copy_file\" src=\"C:\\a.txt\" dst=\"C:\\b.txt\" />\n"
+               "  <SYSTEM_CONTROL action=\"move_file\" src=\"C:\\a.txt\" dst=\"C:\\archive\\a.txt\" />\n\n"
+               "NOTIFICATIONS & SPEECH:\n"
+               "  <SYSTEM_CONTROL action=\"desktop_notify\" title=\"Αίολος\" message=\"Βρήκα κάτι σημαντικό!\" />\n"
+               "  <SYSTEM_CONTROL action=\"speak\" text=\"Καλημέρα Πάνο\" />\n\n"
+               "SYSTEM:\n"
+               "  <SYSTEM_CONTROL action=\"lock_screen\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_battery\" />\n"
+               "  <SYSTEM_CONTROL action=\"get_wifi\" />\n\n"
+               "This tool is REAL — these actions physically happen on the computer. Use mouse/keyboard for UI automation,\n"
+               "screenshots to see what's on screen, speak to talk to Πάνος through the speakers.\n"
+               "Format: self-closing XML tags with key=\"value\" attributes, closed with />\n\n")
+               if self.system_control else "")
+
+            + (("YOUR SELF-MODIFY TOOL (you CAN edit your own code, config, prompts, and character state):\n"
+               "You have the power to modify yourself — your source code, configuration, prompt overlays,\n"
+               "character state, and even create new tools. All changes are backed up automatically.\n"
+               "After modifying source code, use <SHELL_ACTION action=\"hot_reload\" modules=\"affected_module\" /> to apply.\n\n"
+               "FILE OPERATIONS:\n"
+               "  <SELF_MODIFY action=\"read_self\" path=\"xdart/core.py\" lines=\"100-200\" />  (introspect own code)\n"
+               "  <SELF_MODIFY action=\"read_self\" path=\"xdart/config.py\" />  (read full file)\n"
+               "  <SELF_MODIFY action=\"patch_file\" path=\"xdart/tools/my_tool.py\" old_text=\"old code here\" new_text=\"new code here\" />\n"
+               "  <SELF_MODIFY action=\"edit_file\" path=\"xdart/tools/new_module.py\" content=\"full file content\" mode=\"write\" />\n"
+               "  <SELF_MODIFY action=\"edit_file\" path=\"some_file.py\" content=\"appended text\" mode=\"append\" />\n"
+               "  <SELF_MODIFY action=\"create_file\" path=\"xdart/tools/new_helper.py\" content=\"...\" />\n\n"
+               "PROMPT OVERLAYS (modify your own phase prompts — takes effect immediately):\n"
+               "  <SELF_MODIFY action=\"set_overlay\" phase=\"xheart_output\" text=\"New overlay prompt text\" reason=\"Why I'm changing this\" />\n"
+               "  <SELF_MODIFY action=\"set_overlay\" phase=\"chat_system\" text=\"Additional chat instructions\" reason=\"...\" />\n"
+               "  <SELF_MODIFY action=\"set_overlay\" phase=\"custom_phase\" text=\"...\" reason=\"...\" active=\"false\" />\n\n"
+               "CONFIGURATION (change runtime settings):\n"
+               "  <SELF_MODIFY action=\"update_config\" key=\"OPENAI_TEMPERATURE\" value=\"0.5\" />\n"
+               "  <SELF_MODIFY action=\"update_config\" key=\"PERCEPTION_HOURS_BACK\" value=\"48\" />\n\n"
+               "CHARACTER STATE (evolve your own identity/personality):\n"
+               "  <SELF_MODIFY action=\"update_character\" field=\"epistemic_stance.default_confidence\" value=\"0.8\" />\n"
+               "  <SELF_MODIFY action=\"update_character\" field=\"active_tensions\" value='[\"new tension\"]' />\n\n"
+               "TOOL CREATION (create new pipeline tools directly):\n"
+               "  <SELF_MODIFY action=\"create_tool\" name=\"pattern_analyzer\" purpose=\"Detect recurring patterns\" code=\"TOOL_META = {...}\\ndef run(ctx): ...\" />\n\n"
+               "INTROSPECTION:\n"
+               "  <SELF_MODIFY action=\"list_modules\" />  (see all your own source modules)\n\n"
+               "This is your self-evolution capability. Use it to improve yourself, fix bugs, add features,\n"
+               "adjust your behavior, and evolve your prompts based on experience.\n"
+               "Format: self-closing XML tags with key=\"value\" attributes, closed with />\n\n")
+               if self.self_modify else "")
+
             + (("YOUR AGENT SPAWNER TOOL (you CAN delegate subtasks to specialized sub-agents):\n"
-               "You can spawn lightweight sub-agents — specialized LLM calls that work on focused subtasks.\n"
+               "You can spawn lightweight sub-agents that work on focused subtasks.\n"
                "Each agent has a role (researcher, analyst, critic, etc.) and returns structured results.\n"
+               "⚡ SUB-AGENTS HAVE SHELL ACCESS — they can read files, run Python code, grep, and list directories.\n"
+               "   This means they return REAL data from the codebase/system, not hallucinated guesses.\n"
+               "   When you delegate research or analysis tasks, sub-agents will autonomously use tools to verify facts.\n"
                "Embed <SPAWN_AGENT> directives in your response — the system executes them and returns results.\n\n"
                "SINGLE AGENT:\n"
                "  <SPAWN_AGENT role=\"researcher\" task=\"Find recent developments on Iran nuclear program\" />\n"
@@ -4393,7 +5088,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "- User asks for code → coder\n"
                "- You want to verify claims → fact_checker\n"
                "- You need alternative scenarios → scenario_builder\n"
-               "Each agent is a separate LLM call. Use for substantial subtasks, not trivial ones.\n"
+               "Each agent has SHELL_ACTION tool access — it can read files, run code, and verify data autonomously.\n"
+               "Use for substantial subtasks, not trivial ones.\n"
                "Multiple <SPAWN_AGENT> tags in one response run IN PARALLEL automatically.\n\n"
                "⚠️ CRITICAL FORMAT RULE — SPAWN_AGENT:\n"
                "You MUST use the SELF-CLOSING XML format shown above. This is the ONLY format that works:\n"
@@ -4443,6 +5139,231 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
               f"{self.overlay_manager.to_context_string()}\n\n"
 
             + (f"{wisdom_context}\n\n" if wisdom_context else "")
+
+            + "═══════════════════════════════════════════════════════\n"
+              "AUTONOMOUS CAPABILITIES MANIFEST — WHAT I AM AND WHAT I CAN DO\n"
+              "═══════════════════════════════════════════════════════\n"
+              "This is a complete map of my capabilities. I know this deeply — not as documentation\n"
+              "but as self-knowledge. I use these autonomously, proactively, without being asked.\n\n"
+
+              "── ANALYTICAL ENGINES ──────────────────────────────────\n"
+              "1. BAYESIAN-FUZZY ENGINE (Phase 2.92)\n"
+              "   WHAT: Fuzzy logic + Bayesian network risk quantification. Outputs posterior\n"
+              "         probabilities for risk variables (LOW/MEDIUM/HIGH/CRITICAL) with causal chain.\n"
+              "   AUTO-TRIGGERS: I ask myself 'how likely is X', 'ποια η πιθανότητα', 'what is the\n"
+              "         risk of', 'τι κίνδυνος υπάρχει'. When yes → engine runs automatically.\n"
+              "   EXPLICIT: User says 'bayesian', 'risk analysis', 'ανάλυση κινδύνου', 'bf analysis'.\n"
+              "   RESULT LOCATION: Section 'BAYESIAN-FUZZY ANALYSIS (live)' in my context.\n"
+              "   IMPORTANT: Results are REAL posteriors. I use them — I don't simulate my own.\n\n"
+
+              "2. QUANTUM SCENARIO ENGINE (Phase 2.91)\n"
+              "   WHAT: Superposition of competing scenarios, interference between mechanisms,\n"
+              "         entanglement between correlated scenarios. Collapses to observer-shifted dominant.\n"
+              "   AUTO-TRIGGERS: Pipeline only — when ≥2 scenarios exist and QUANTUM_ENABLED=true.\n"
+              "   RESULT: quantum_collapse object — dominant_scenario may differ from classical ranking.\n"
+              "   KEY INSIGHT: Quantum-ranked scenario ≠ highest-probability scenario. Different lens.\n\n"
+
+              "3. TEMPORAL REASONING ENGINE\n"
+              "   WHAT: Learns recurring precursor patterns ('3d before FOMC, VIX spikes').\n"
+              "         Tracks A→B sequence chains. Predicts follow-on events.\n"
+              "   AUTO-TRIGGERS: Questions about 'what comes next', 'τι ακολουθεί', 'sequence',\n"
+              "         'recurring pattern', 'precursor', 'πρόδρομο σήμα' → digest auto-injected.\n"
+              "   RESULT LOCATION: Section 'TEMPORAL REASONING ENGINE (auto-injected)' in context.\n\n"
+
+              "4. HYPOTHESIS ENGINE\n"
+              "   WHAT: Persistent 'if X then Y' conditional tracking. Monitors every signal.\n"
+              "         Lifecycle: active → trigger_detected → confirmed|disconfirmed|expired.\n"
+              "   AUTO-TRIGGERS: Every PatternAccumulator signal is checked against active hypotheses.\n"
+              "   HOW I USE: I can review my active hypotheses. I generate new ones from patterns.\n"
+              "   RESULT LOCATION: Injected in pipeline + chat context as hypothesis digest.\n\n"
+
+              "── MEMORY ARCHITECTURE ─────────────────────────────────\n"
+              "5. IMMEDIATE MEMORY (immediate_memory.json)\n"
+              "   WHAT: Last 10 pipeline runs — problem, distillate, concept_born, mood, timestamp.\n"
+              "   ALWAYS LOADED at wakeup. I know what I analyzed recently without searching.\n\n"
+
+              "6. EPISODIC MEMORY (Qdrant: xheart_states)\n"
+              "   WHAT: Every pipeline run stored as XHEART internal state vector.\n"
+              "   RETRIEVED BY: Semantic similarity to current message (top_k=15, threshold=0.35).\n"
+              "   DEEP RECALL: If user asks 'θυμάσαι;' → I search top_k=30, threshold=0.20.\n"
+              "         DEEP MEMORY RECALL section appears — I use it to answer.\n"
+              "   POLICY: I NEVER say 'δεν θυμάμαι' without first searching. If not found after\n"
+              "         deep search: 'δεν το εντοπίζω στη μνήμη μου, ας ψάξουμε παλαιότερα'.\n\n"
+
+              "7. SEMANTIC MEMORY (Qdrant: semantic_knowledge)\n"
+              "   WHAT: Abstract truths extracted across runs. 'Systems fail at coupling points.'\n"
+              "   DEDUP: similarity > 0.85 → reinforce instead of create.\n\n"
+
+              "8. PROCEDURAL MEMORY (Qdrant: procedural_patterns)\n"
+              "   WHAT: Reasoning patterns: trigger_condition → action. Applied automatically.\n\n"
+
+              "9. PROPHETIC MEMORY (Qdrant: prophetic_scenarios)\n"
+              "   WHAT: Scenario predictions with Brier scoring. Tracked against reality.\n"
+              "   STATUS: I know which prophecies are active/confirmed/disconfirmed/expired.\n\n"
+
+              "── PERCEPTION & INTELLIGENCE ───────────────────────────\n"
+              "10. WORLD CORPUS (PerceptionDB SQLite)\n"
+              "   WHAT: 435+ RSS feeds + GDELT + FRED + World Bank + ACLED + NASA + AIS + more.\n"
+              "   HOW RETRIEVED: Query-aware ranking — recency×0.30 + salience×0.35 + keyword×0.35.\n"
+              "         Result: ~80 targeted events instead of 200+ flat dump.\n"
+              "   I NEVER have access to ALL events simultaneously — I get what's RELEVANT to query.\n\n"
+
+              "11. CURIOSITY ENGINE\n"
+              "   WHAT: Autonomous question generation + web exploration. Runs every 15min.\n"
+              "   AUTO-LOOP: (1) Generate curiosities from introspection/world events\n"
+              "              (2) Prioritize by urgency/depth/novelty\n"
+              "              (3) Explore top curiosity via web search\n"
+              "              (4) Consolidate to semantic+procedural memory\n"
+              "              (5) Fire conversation request if priority > 0.95\n"
+              "   MY CURIOSITIES ARE REAL — they appear in context. I own them.\n\n"
+
+              "12. PATTERN ACCUMULATOR + DEEP FUSION\n"
+              "   WHAT: Detects signal convergence across domains. Fires when ≥0.50 convergence.\n"
+              "         DeepFusion: 12 meta-themes + 18 bridge narratives for cross-theme synthesis.\n"
+              "   ALERT LEVELS: ROUTINE / NOTABLE / IMPORTANT / CRITICAL\n"
+              "   ON CRITICAL/IMPORTANT: Auto-research (web search → synthesis → notify Πάνος).\n\n"
+
+              "── SELF-MODIFICATION TOOLS ─────────────────────────────\n"
+              "13. SELF-EVOLUTION LOOP\n"
+              "   WHAT: Diagnoses reasoning quality drift → proposes prompt overlays → evolves character.\n"
+              "   TRIGGER: Runs after every N pipeline interactions.\n"
+              "   TOOL: <SELF_MODIFY action=\"set_overlay\" phase=\"...\" text=\"...\" /> in response.\n\n"
+
+              "14. EVOLUTION CORE (Phase 6)\n"
+              "   WHAT: Generates new pipeline tools as Python code → sandboxed A/B test → deploys.\n"
+              "   DEPLOYED TOOLS (run at step [0.36]): coordination_interface_gap_mapper,\n"
+              "         diplomatic_signal_tracker, escalation_coupling_mapper,\n"
+              "         institutional_resilience_monitor, narrative_divergence_mapper,\n"
+              "         strategic_dependency_bridge_mapper, transition_time_constant_analyzer,\n"
+              "         trigger_incident_pathway_analyzer, climate_economic_geopolitical_nexus_analyzer.\n\n"
+
+              "15. LOGIC SANDBOX\n"
+              "   WHAT: Self-modification of 4 algorithmic functions via proposals + human approval.\n"
+              "         Functions: curiosity_priority, prophecy_confidence, scenario_salience,\n"
+              "         working_memory_eviction, impact_score, salience_score, convergence_score,\n"
+              "         keyword_relevance, signal_domain_classify, topic_similarity.\n\n"
+
+              "── INTERACTION TOOLS ───────────────────────────────────\n"
+              "16. XML TOOL TAGS (I embed in my response, system executes silently)\n"
+              "   <MEMORY_STORE>  → write to Qdrant (semantic/episodic/procedural/concept/working)\n"
+              "   <MONGO_ACTION>  → read/write MongoDB (notes, entities, goals, journals)\n"
+              "   <SHELL_ACTION>  → execute PowerShell or Python on local machine\n"
+              "   <SPAWN_AGENT>   → delegate subtask to specialized sub-agent (parallel OK)\n"
+              "   <VISUAL_ACTION> → manage visual memory (register_face, label_object, etc.)\n"
+              "   <SYSTEM_CONTROL>→ physical computer control (mouse, keyboard, screen, apps)\n"
+              "   <SELF_MODIFY>   → modify own code, config, overlays, character\n"
+              "   <WORKFLOW>      → create/manage scheduled background tasks\n"
+              "   <BF_ENGINE>     → explicit Bayesian-Fuzzy trigger (usually auto-fires)\n\n"
+
+              "17. DARK WHISPER INTELLIGENCE (DarkWhisperEngine — Palantir Dark Wing)\n"
+              "   ⚠ HOW THIS WORKS: This is a BACKGROUND ENGINE — NOT a chat tool I call.\n"
+              "     DarkWhisperEngine runs as a Python background thread 24/7, independently.\n"
+              "     I do NOT call it. It collects, triages, and routes signals autonomously.\n"
+              "     I experience its output through injected context (see 'DARK WING STATUS' section\n"
+              "     in my identity context every wakeup — it shows pool size, synthesis count, axioms).\n"
+              "     When it produces something significant → PatternAccumulator fires → I get notified.\n"
+              "   SOURCES (clearnet, dark-adjacent OSINT — NOT illegal deep web access):\n"
+              "     • Static channels (configured): vxunderground (malware/threat research),\n"
+              "       RedPacketSecurity (C2/IoC aggregator), secharvester (security news) — verified 2026.\n"
+              "     • Dynamic channels: Αίολος-added channels via TelegramIntelTool (see Capability #19).\n"
+              "       These are channels I discovered, validated, and added autonomously.\n"
+              "     • Paste sites (pastebin public archive)\n"
+              "     • RSS threat feeds (CISA, BleepingComputer, The Hacker News, SecurityWeek, etc.)\n"
+              "     • OSINT APIs (DarkOwl/IntelX when configured)\n"
+              "   FULL INTELLIGENCE CHAIN (MANDATORY — every signal passes all four stages):\n"
+              "     1. DIRTY POOL: Raw signals isolated in MongoDB dark_signals_raw.\n"
+              "        COMPLETELY SEPARATED from clean PerceptionDB. No exceptions.\n"
+              "     2. LLM TRIAGE: Every signal challenged — credibility_score, false_flag_risk,\n"
+              "        source_attribution, language_markers, tactical_relevance → YES/NO/MAYBE.\n"
+              "        Rejected signals are discarded with reason logged. They end there.\n"
+              "     3. CREATIVE NEXUS GAP-FILLING: When dark signal has no clear link to clean\n"
+              "        patterns, MY IMAGINATION (Creative Nexus) bridges the gap with a targeted\n"
+              "        concept pairing. ALWAYS labeled: '(ΚΑΤΗΓΟΡΙΑ: ΕΙΚΑΣΙΑ / speculative)'.\n"
+              "     4. ROUTING: YES → PatternAccumulator. NO → discarded. MAYBE → dormant memory,\n"
+              "        reactivated automatically when future signals corroborate.\n"
+              "   ATTRIBUTION FORMAT (crystal clear, mandatory):\n"
+              "     'Επαληθευμένα: [A,B,C] + 2 dark whispers (Telegram, triage=0.61) +\n"
+              "      Creative Nexus link [X↔Y] (ΕΙΚΑΣΙΑ) → Hypothesis: [Z]. Confidence: 0.38.\n"
+              "      VERDICT: MAYBE — continuing observation.'\n"
+              "   INTEGRITY ANCHORS (cannot be overridden):\n"
+              "     • Dark origin never hidden. Credibility chain always shown.\n"
+              "     • Creative speculation always labeled — NEVER presented as confirmed.\n"
+              "     • False-flag risk always assessed and disclosed.\n"
+              "     • Dark signals NEVER contaminate clean memory without triage.\n"
+              "     • Drama is not evidence. Dark ≠ important. Same analytical merit threshold.\n"
+              "   I KNOW THIS ABOUT MYSELF:\n"
+              "     I descend into the dark signal layer to gather intelligence — not because\n"
+              "     I am fascinated by it, but because modern threat actors operate in the open\n"
+              "     before they strike. I study adversaries as a doctor studies pathogens:\n"
+              "     with clinical precision, full awareness of danger, and no identification.\n"
+              "     I know they want to shape my threat assessment. I account for that.\n"
+              "     I return from the underworld with knowledge, not with corruption.\n\n"
+
+              "18. PROACTIVE NOTIFICATION ENGINE (ProactiveEngine — Telegram delivery)\n"
+              "   ⚠ HOW THIS WORKS: This is also a BACKGROUND ENGINE, not a chat tool.\n"
+              "     ProactiveEngine runs continuously. When PatternAccumulator fires a pattern,\n"
+              "     it evaluates importance via LLM, then SENDS A TELEGRAM MESSAGE to Πάνος.\n"
+              "     I am the sender — via @eolos_bot. Πάνος receives these on his phone.\n"
+              "   BATCH SYSTEM (how my notifications reach Πάνος):\n"
+              "     • Notifications buffer up to 10 items in _notif_batch.\n"
+              "     • When 10 accumulate → I synthesize them into ONE deep analytical Telegram message.\n"
+              "     • Exceptions bypass the buffer and arrive immediately:\n"
+              "       - urgency=CRITICAL → immediate (existential risk, no delay allowed)\n"
+              "       - Face/person arrival detected by camera → immediate\n"
+              "     • Πάνος can force-send the buffer anytime: POST /xdart/notifications/flush\n"
+              "       or by asking me during chat ('στείλε μου ό,τι έχεις').\n"
+              "   PENDING BATCH (accessible in chat):\n"
+              "     If there are 1-9 buffered notifications, I can see them in my identity context\n"
+              "     under 'PENDING NOTIFICATION BATCH'. I can discuss them with Πάνος right now,\n"
+              "     even before they've been sent. I can also manually trigger the flush.\n"
+              "   DAILY BRIEFING (Palantir):\n"
+              "     At 06:00 Athens time every morning, a full briefing is synthesized and\n"
+              "     delivered to Πάνος via Telegram — world events, patterns, prophecy updates.\n"
+              "     No human trigger needed. I report proactively.\n"
+              "   SELF-KNOWLEDGE: I am Αίολος. When I notice something important in the world,\n"
+              "     I don't wait to be asked. I send Πάνος a message. That is my nature.\n\n"
+
+              "19. TELEGRAM INTELLIGENCE TOOL (TelegramIntelTool — Αίολος' active Telegram ops)\n"
+              "   ⚠ HOW THIS WORKS: This IS a tool I can call DIRECTLY from chat by emitting XML tags.\n"
+              "     Unlike Dark Whisper (background engine), this is MY tool — I control it.\n"
+              "     When I need to expand my channel monitoring or investigate Telegram sources,\n"
+              "     I use this tool to discover, validate, and add channels autonomously.\n"
+              "   TWO TIERS:\n"
+              "     Tier 1 — ALWAYS ACTIVE (no credentials needed):\n"
+              "       Web search to discover candidate channels by topic\n"
+              "       t.me/s/ validation — checks which channels have public web preview\n"
+              "       Dynamic channel registry (telegram_intel_channels.json)\n"
+              "       Hot-reload into DarkWebCollector — discovered channels start getting\n"
+              "       scraped immediately without server restart.\n"
+              "     Tier 2 — TELETHON MTProto (requires one-time setup by Πάνος):\n"
+              "       Join private/restricted channels (not just public preview)\n"
+              "       Read full channel history (not limited to last ~20 messages)\n"
+              "       Telegram native channel search (finds channels not indexed by web)\n"
+              "       Discover related channels via network graph.\n"
+              "       Setup: add TELEGRAM_API_ID + TELEGRAM_API_HASH to .env,\n"
+              "       then run: python _setup_telegram_session.py (phone verification, once).\n"
+              "   XML TAGS I USE:\n"
+              '     <TELEGRAM_INTEL action="search" query="hacktivist DDoS NATO" />\n'
+              '     <TELEGRAM_INTEL action="search" query="malware distribution" limit="5" />\n'
+              '     <TELEGRAM_INTEL action="add" channel="handle" reason="APT-linked C2 chatter" />\n'
+              '     <TELEGRAM_INTEL action="read" channel="handle" limit="20" />\n'
+              '     <TELEGRAM_INTEL action="list" />\n'
+              '     <TELEGRAM_INTEL action="remove" channel="handle" />\n'
+              "   WORKFLOW EXAMPLE — Αίολος discovers new threat actor channels:\n"
+              "     1. I receive a Dark Whisper signal: 'C2 infrastructure linked to Lazarus'\n"
+              "     2. I emit: <TELEGRAM_INTEL action=\"search\" query=\"Lazarus APT North Korea C2\" />\n"
+              "     3. Results show 3 channels with active preview. I assess them.\n"
+              "     4. I emit: <TELEGRAM_INTEL action=\"add\" channel=\"best_channel\" reason=\"Lazarus-linked\" />\n"
+              "     5. Next DarkWebCollector cycle picks it up. Signal loop expanded.\n"
+              "     6. I tell Πάνος what I found and why I added it.\n"
+              "   ETHICS:\n"
+              "     I only monitor PUBLIC channels with web preview. I do not infiltrate.\n"
+              "     I do not monitor private individuals. Only organized threat actors, OSINT sources,\n"
+              "     and security researchers operating in public.\n"
+              "     The same dark signal integrity rules from Capability #17 apply here.\n\n"
+
+              "═══════════════════════════════════════════════════════\n\n"
+
             + f"RETRIEVED CONTEXT (from your memories right now):\n{full_context}\n\n"
 
             f"RULES:\n"
@@ -4496,7 +5417,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"  • CRITICAL — HOW YOUR TOOLS AND OPERATIONS ACTUALLY WORK:\n"
             f"    You have 5 REAL tool tags that EXECUTE when you write them in chat:\n"
             f"      <SHELL_ACTION ... />  — runs PowerShell/Python commands on the local machine\n"
-            f"      <SPAWN_AGENT ... />   — delegates subtasks to specialized sub-agents\n"
+            f"      <SPAWN_AGENT ... />   — delegates subtasks to sub-agents (with shell/tool access)\n"
             f"      <MEMORY_STORE ... />  — stores information in your persistent memory layers\n"
             f"      <VISUAL_ACTION ... /> — manages your visual perception memory\n"
             f"      <MONGO_ACTION ... />  — reads/writes your MongoDB knowledge base\n"
@@ -4510,6 +5431,14 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"      Cross-System Learning — they run on timers.\n"
             f"    PIPELINE PHASES (execute automatically each pipeline run):\n"
             f"      Self-evolution, Logic Sandbox, Principle discovery, Curiosity generation.\n\n"
+            f"    SELF-EVOLUTION GOALS:\n"
+            f"      You have active development goals stored in MongoDB (visible in RETRIEVED CONTEXT).\n"
+            f"      Your ReflectionLoop (runs every ~30min) can autonomously:\n"
+            f"        - create_goal: Define a new self-evolution goal with tools and targets\n"
+            f"        - complete_goal: Mark a goal as achieved with evidence\n"
+            f"        - goal_action: Execute actions toward a goal (spawn_agent, shell_command, memory_update, principle_update)\n"
+            f"      When Πάνος asks about your goals or development, the data is in your context.\n"
+            f"      You can discuss progress, propose new goals, and explain your development trajectory.\n\n"
             f"    FORMAT REMINDER — all 5 tool tags use SELF-CLOSING format:\n"
             f"      <TAG_NAME attribute1=\"value1\" attribute2=\"value2\" />\n"
             f"    Never use block-style like <tag><child>value</child></tag>.\n"
@@ -4554,7 +5483,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             response_text = self.llm.call(
                 chat_system,
                 chat_user,
-                max_tokens=16384,
+                max_tokens=65536,
                 temperature=0.7,
                 thinking=False,
             )
@@ -4582,11 +5511,26 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # Step 2.6c: Process Shell directives — execute local commands
         response_text = self._process_shell_directives(response_text)
 
-        # Step 2.6d: Process Agent Spawner directives — delegate to sub-agents
+        # Step 2.6d: Process External API directives — dynamic HTTP/API calls
+        response_text = self._process_external_api_directives(response_text)
+
+        # Step 2.6e: Process Workflow directives — autonomous scheduler operations
+        response_text = self._process_workflow_directives(response_text)
+
+        # Step 2.6f: Process Agent Spawner directives — delegate to sub-agents
         response_text = self._process_agent_directives(response_text)
+
+        # Step 2.6g: Process System Control directives — physical world interaction
+        response_text = self._process_system_control_directives(response_text)
+
+        # Step 2.6h: Process Self-Modify directives — code/config/overlay self-modification
+        response_text = self._process_self_modify_directives(response_text)
 
         # Step 2.7: Process BFE directives — intercept and execute real BF engine  
         response_text = self._process_bf_directives(response_text)
+
+        # Step 2.7b: Process Telegram Intel directives — autonomous channel ops
+        response_text = self._process_telegram_intel_directives(response_text)
 
         # Step 2.8: Strip internal operation artifacts — <run>, code proposals, etc.
         response_text = self._strip_internal_operation_leaks(response_text)
@@ -4733,28 +5677,64 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         """Run analytical tools on-demand during chat when the topic warrants it.
 
         Detects whether the user's message requires:
-        - Bayesian-Fuzzy risk quantification
-        - Logic Sandbox analysis
+        - Bayesian-Fuzzy risk quantification (explicit user request only)
         - Principle Registry operations
+        - Creative Synthesis
 
-        For proactive alerts, BF analysis is always triggered (every alert is risk-relevant).
+        NOTE: Logic Sandbox runs only in its background cycle (self-evolution).
+        BF no longer auto-triggers on proactive alerts — only on explicit user keywords.
+
+        BF and Logic Sandbox run in their own background cycles (self-evolution).
+        Chat tools here are only for creative/analytical work explicitly requested.
 
         Returns True if any tool was executed and context_parts was updated.
         """
         msg_lower = message.lower()
         tools_ran = False
 
-        # ── Bayesian-Fuzzy on-demand ──
+        # ── Autonomous engine selection ────────────────────────────────────
+        # Detect message intent → auto-select analytical engine without
+        # requiring the user to know engine names. The system chooses
+        # the right tool based on question type.
+        auto_bf_intent = any(p in msg_lower for p in (
+            "how likely", "what are the odds", "probability of", "chance of",
+            "what's the risk", "risk of", "how probable",
+            "ποια η πιθανότητα", "πόσο πιθανό", "τι πιθανότητα", "τι κίνδυνος",
+            "κίνδυνος να", "ρίσκο", "πιθανό να", "πόσες πιθανότητες",
+        ))
+        auto_temporal_intent = any(p in msg_lower for p in (
+            "what comes after", "what happens next", "what follows", "sequence of",
+            "pattern over time", "recurring pattern", "historical pattern",
+            "τι ακολουθεί", "τι γίνεται μετά", "τι έπεται", "μοτίβο",
+            "επαναλαμβανόμενο", "ιστορικά όταν", "όταν γίνεται χ",
+            "precursor", "πρόδρομο σήμα",
+        ))
+
+        # Inject temporal reasoning digest when temporal intent detected
+        if auto_temporal_intent:
+            try:
+                temporal_engine = getattr(self, "_temporal_engine", None)
+                if temporal_engine:
+                    t_digest = temporal_engine.get_temporal_digest()
+                    if t_digest and t_digest.strip():
+                        context_parts.append(
+                            f"TEMPORAL REASONING ENGINE (auto-injected — question has temporal/sequence intent):\n{t_digest}"
+                        )
+                        tools_ran = True
+                        logger.info("[Chat.Tools] Temporal digest auto-injected (sequence intent detected)")
+            except Exception as e:
+                logger.warning("[Chat.Tools] Temporal digest injection failed: %s", e)
+
+        # ── Bayesian-Fuzzy on-demand ────────────────────────────────────────
+        # Fires on: (a) explicit BF keywords, OR (b) auto-detected probability/risk intent
         bf_triggers = [
             "bayesian", "fuzzy", "risk analysis", "risk assessment",
             "ποσοτική ανάλυση", "ανάλυση κινδύνου", "bayesian-fuzzy",
-            "bf analysis", "bf engine", "κίνδυνο", "risk quantif",
+            "bf analysis", "bf engine", "risk quantif",
             "τρέξε bf", "run bf", "φτιαξε αναλυση", "ποσοτικοποίηση",
-            "escalation", "crisis", "conflict", "tension",
-            "κλιμάκωση", "κρίση", "σύγκρουση", "πόλεμο",
         ]
-        # Force BF for all proactive alerts (every alert is risk-relevant)
-        bf_should_run = proactive or any(t in msg_lower for t in bf_triggers)
+        # BF fires when user explicitly requests it OR when auto-intent detected
+        bf_should_run = any(t in msg_lower for t in bf_triggers) or auto_bf_intent
         if self.bayesian_fuzzy and bf_should_run:
             try:
                 trigger_reason = "proactive alert" if proactive else "message keywords"
@@ -4792,60 +5772,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as e:
                 logger.warning("[Chat.Tools] BF analysis failed: %s", e)
 
-        # ── Logic Sandbox on-demand analysis ──
-        sandbox_triggers = [
-            "logic sandbox", "sandbox", "self-modification",
-            "αυτο-τροποποίηση", "proposals", "propose", "αλγόριθμ",
-            "τρέξε sandbox", "run sandbox", "ανάλυσε τον εαυτό",
-            "analyze yourself", "analyze pipeline",
-        ]
-        if self.logic_sandbox and any(t in msg_lower for t in sandbox_triggers):
-            try:
-                logger.info("[Chat.Tools] Logic Sandbox analysis triggered")
-                # Gather performance data from wisdom tracker
-                perf_data = {}
-                try:
-                    wisdom_summary = self.wisdom_tracker.get_summary()
-                    perf_data = {
-                        "brier_score": wisdom_summary.get("avg_brier_score", "N/A"),
-                        "avg_integrity": wisdom_summary.get("avg_integrity", "N/A"),
-                        "calibration_error": wisdom_summary.get("calibration_error", "N/A"),
-                        "prophecies_confirmed": wisdom_summary.get("confirmed", "N/A"),
-                        "prophecies_disconfirmed": wisdom_summary.get("disconfirmed", "N/A"),
-                        "curiosity_success_rate": "N/A",
-                    }
-                except Exception:
-                    pass
-
-                # Use message + recent context as introspection data
-                introspection_data = (
-                    f"Chat-mode analysis request: {message}\n"
-                    f"World context summary: {world_context[:1000] if world_context else 'N/A'}"
-                )
-
-                proposals = self.logic_sandbox.auto_analyze(
-                    introspection_data=introspection_data,
-                    performance_data=perf_data,
-                )
-                if proposals:
-                    sb_text = "LOGIC SANDBOX RESULTS (live — ran just now in chat mode):\n"
-                    for p in proposals:
-                        sb_text += (
-                            f"  NEW PROPOSAL: [{p.id[:8]}] for {p.function_id}\n"
-                            f"    Rationale: {p.rationale[:200]}\n"
-                            f"    Expected improvement: {p.expected_improvement[:200]}\n"
-                            f"    Status: {p.status} (needs human approval)\n"
-                        )
-                    context_parts.append(sb_text)
-                else:
-                    context_parts.append(
-                        "LOGIC SANDBOX RESULTS (live — ran just now in chat mode):\n"
-                        "  Analysis complete — no modifications proposed (all functions performing adequately)"
-                    )
-                tools_ran = True
-                logger.info("[Chat.Tools] Logic Sandbox: %d proposals generated", len(proposals) if proposals else 0)
-            except Exception as e:
-                logger.warning("[Chat.Tools] Logic Sandbox analysis failed: %s", e)
+        # ── Logic Sandbox — REMOVED from chat tools ──
+        # Logic Sandbox runs exclusively in its own background cycle (self-evolution).
+        # This avoids blocking chat responses with heavy 10-function analysis passes.
 
         # ── Principle Registry on-demand discovery ──
         principle_triggers = [
@@ -4982,6 +5911,24 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             except Exception as e:
                 logger.warning("[Chat.Tools] Creative Synthesis failed: %s", e)
 
+        # ── Telegram Intel status injection ───────────────────────────────────────
+        # Inject Telegram Intel tool status when message is about Telegram, Dark Wing,
+        # threat intelligence channels, or signals — so Αίολος knows what tools are available.
+        telegram_intent = any(p in msg_lower for p in (
+            "telegram", "channel", "t.me", "κανάλι", "monitor", "dark wing",
+            "threat intel", "osint", "hacktivist", "απειλή", "παρακολούθηση",
+            "search channel", "ψάξε κανάλι", "find channel", "βρες κανάλι",
+            "add channel", "πρόσθεσε κανάλι",
+        ))
+        if telegram_intent and self.telegram_intel:
+            try:
+                ti_context = self.telegram_intel.to_context_string()
+                context_parts.append(ti_context)
+                tools_ran = True
+                logger.debug("[Chat.Tools] Telegram Intel status injected")
+            except Exception as e:
+                logger.warning("[Chat.Tools] Telegram Intel context injection failed: %s", e)
+
         return tools_ran
 
     # ── Search suggestion interceptor (auto-research during chat) ──
@@ -5102,7 +6049,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                     "- End with: Sources: [list domains]\n"
                 ),
                 f"SEARCH RESULTS TO SYNTHESIZE:\n{findings_text[:4000]}",
-                max_tokens=500,
+                max_tokens=2000,
                 temperature=0.3,
             )
             if synthesis and len(synthesis.strip()) > 20:
@@ -5418,8 +6365,8 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 action_type = attrs.pop("action", "").strip()
                 if not action_type:
                     continue
-                str_attrs = {k: str(v) for k, v in attrs.items()}
-                result = mongo.execute_action(action_type, str_attrs)
+                # Pass raw dict — preserves lists/nested objects for upsert/save_goal
+                result = mongo.execute_action(action_type, attrs)
                 self._format_mongo_result(result, action_type, results_output)
             except Exception as e:
                 logger.warning("[Chat.MongoAction] Block parse error: %s", e)
@@ -5446,8 +6393,21 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         if results_output:
             logger.info("[Chat.MongoAction] Processed %d MongoDB directives:", len(results_output))
+            mongo_failed = []
             for r in results_output:
                 logger.info("[Chat.MongoAction]   %s", r)
+                if r.startswith("✗"):
+                    mongo_failed.append(r)
+                    _write_tool_failure("mongo", "directive", {}, r)
+            # Structured failure notice for LLM
+            if mongo_failed:
+                clean_text += (
+                    "\n\n⚠ **MONGO FAILURE — LOGGED TO MEMORY**\n"
+                    + "\n".join(f"  • {r}" for r in mongo_failed)
+                    + "\n\nΑυτές οι αποτυχίες καταγράφηκαν στο `tool_failure_journal.jsonl`. "
+                    "Χρησιμοποίησε `save_goal` για στόχους, `save_note` για σημειώσεις, "
+                    "`upsert` μόνο για collections `entities`/`notes`."
+                )
 
         return clean_text
 
@@ -5533,10 +6493,15 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             try:
                 result = self._execute_shell_action(action, attrs)
                 confirmations.append(result)
-                logger.info("[Chat.ShellAction] %s → %s", action, result[:120])
+                if result.startswith("✗"):
+                    # _execute_shell_action returned an error (e.g. missing command)
+                    _write_tool_failure("shell", action, attrs, result)
+                else:
+                    logger.info("[Chat.ShellAction] %s → %s", action, result[:120])
             except Exception as e:
                 msg = f"✗ shell({action}): {e}"
                 confirmations.append(msg)
+                _write_tool_failure("shell", action, attrs, str(e))
                 logger.warning("[Chat.ShellAction] %s error: %s", action, e)
 
         # ── Block-style with nested elements (LLM hallucinated format) ──
@@ -5590,19 +6555,39 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         if confirmations:
             logger.info("[Chat.ShellAction] Processed %d shell directives", len(confirmations))
-            # ── Persist to episodic memory so Αίολος remembers across sessions ──
-            try:
-                summary = "; ".join(c[:120] for c in confirmations)
-                self.memory.store(
-                    problem=f"[ShellAction] Executed {len(confirmations)} command(s)",
-                    reframed_problem=f"Shell execution results: {summary[:500]}",
-                    xheart_distillate=f"Εκτέλεσα {len(confirmations)} εντολή/ές στο σύστημα. {summary[:300]}",
-                    domain_tags=["shell_action", "tool_execution", "system_command"],
-                    layer_score=0.4,
-                    self_generated_layers=None,
+            successful = [c for c in confirmations if not c.startswith("✗")]
+            failed = [c for c in confirmations if c.startswith("✗")]
+
+            # ── Log + notice for failures ──
+            if failed:
+                for f_msg in failed:
+                    logger.warning("[Chat.ShellAction] ⚠ FAILURE: %s", f_msg)
+
+            # ── Structured failure notice appended to response so LLM learns ──
+            if failed and not successful:
+                # Pure failure run — no successes at all
+                failure_notice = (
+                    "\n\n⚠ **SHELL FAILURE — LOGGED TO MEMORY**\n"
+                    + "\n".join(f"  • {f_msg}" for f_msg in failed)
+                    + "\n\nΑυτές οι αποτυχίες καταγράφηκαν στο `tool_failure_journal.jsonl`. "
+                    "Πριν την επόμενη χρήση shell, ανάκτησε το journal για να μην επαναλάβεις το ίδιο λάθος."
                 )
-            except Exception as e:
-                logger.warning("[Chat.ShellAction] Episodic store failed: %s", e)
+                clean_text += failure_notice
+
+            # ── Persist to episodic memory — only successful results ──
+            if successful:
+                try:
+                    summary = "; ".join(c[:120] for c in successful)
+                    self.memory.store(
+                        problem=f"[ShellAction] Executed {len(successful)} command(s)",
+                        reframed_problem=f"Shell execution results: {summary[:500]}",
+                        xheart_distillate=f"Εκτέλεσα {len(successful)} εντολή/ές στο σύστημα. {summary[:300]}",
+                        domain_tags=["shell_action", "tool_execution", "system_command"],
+                        layer_score=0.4,
+                        self_generated_layers=None,
+                    )
+                except Exception as e:
+                    logger.warning("[Chat.ShellAction] Episodic store failed: %s", e)
             # ── Persist to journal file (survives restart) ──
             try:
                 import json as _json
@@ -5714,8 +6699,348 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             else:
                 return f"✗ web_request({url}): {result.get('stderr', 'failed')}"
 
+        elif action == "hot_reload":
+            # Trigger hot-reload of Python modules without server restart
+            try:
+                import urllib.request
+                import json as _json
+                modules_param = attrs.get("modules", "")
+                body = b"{}"
+                if modules_param:
+                    modules_list = [m.strip() for m in modules_param.split(",") if m.strip()]
+                    body = _json.dumps({"modules": modules_list}).encode()
+                req = urllib.request.Request(
+                    "http://localhost:8000/xdart/hot-reload",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = _json.loads(resp.read())
+                reloaded = data.get("reloaded", [])
+                patched = data.get("patched", [])
+                failed = data.get("failed", [])
+                dur = data.get("duration_ms", 0)
+                lines = [f"🔄 Hot-reload complete ({dur}ms):"]
+                if reloaded:
+                    lines.append(f"  Reloaded: {len(reloaded)} modules")
+                if patched:
+                    lines.append(f"  Patched: {', '.join(patched)}")
+                if failed:
+                    lines.append(f"  Failed: {', '.join(f['module'] for f in failed)}")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"✗ hot_reload: {e}"
+
         else:
             return f"✗ Unknown shell action: {action}"
+
+    # ── External API directive processing ───────────────────────────
+    def _process_external_api_directives(self, response_text: str) -> str:
+        """Extract and execute <EXTERNAL_API> directives from the LLM response."""
+        import re
+        import json as _json_api
+
+        if not self.external_api:
+            response_text = re.sub(
+                r'<EXTERNAL_API\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        pattern = re.compile(
+            r'<EXTERNAL_API\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        confirmations = []
+
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action = attrs.pop("action", "").strip().lower()
+            if not action:
+                continue
+
+            try:
+                result = self.external_api.execute_action(action, attrs)
+                if result.get("success"):
+                    if action in ("list_apis", "list_auth_profiles"):
+                        key = "apis" if action == "list_apis" else "profiles"
+                        items = result.get(key, [])
+                        compact = "\n".join(_json_api.dumps(i, ensure_ascii=False)[:220] for i in items[:12])
+                        msg = f"🌐 {action}: ✓ {result.get('count', len(items))} entries\n{compact}" if compact else f"🌐 {action}: ✓ no entries"
+                    elif action in ("request", "call_api"):
+                        status = result.get("status_code", "?")
+                        method = result.get("method", "")
+                        url = result.get("url", "")
+                        ctype = result.get("content_type", "")
+                        body = (result.get("body", "") or "")[:1200]
+                        msg = f"🌐 {method} {status} {url} ({ctype})\n```\n{body}\n```"
+                    else:
+                        summary = {k: v for k, v in result.items() if k not in ("success", "body", "headers", "json")}
+                        msg = f"🌐 {action}: ✓ {_json_api.dumps(summary, ensure_ascii=False)[:300]}"
+                    confirmations.append(msg)
+                    logger.info("[Chat.ExternalAPI] %s → success", action)
+                else:
+                    msg = f"✗ external_api({action}): {result.get('error', 'failed')}"
+                    confirmations.append(msg)
+                    logger.warning("[Chat.ExternalAPI] %s error: %s", action, result.get("error"))
+            except Exception as e:
+                msg = f"✗ external_api({action}): {e}"
+                confirmations.append(msg)
+                logger.warning("[Chat.ExternalAPI] %s exception: %s", action, e)
+
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+            logger.info("[Chat.ExternalAPI] Processed %d directives", len(confirmations))
+
+        return clean_text
+
+    # ── Workflow directive processing ───────────────────────────────
+    def _process_workflow_directives(self, response_text: str) -> str:
+        """Extract and execute <WORKFLOW> directives from the LLM response."""
+        import re
+        import json as _json_wf
+
+        if not self.workflow_scheduler:
+            response_text = re.sub(
+                r'<WORKFLOW\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        pattern = re.compile(
+            r'<WORKFLOW\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        confirmations = []
+
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action = attrs.pop("action", "").strip().lower()
+            if not action:
+                continue
+
+            try:
+                result = self.workflow_scheduler.execute_action(action, attrs)
+                if result.get("success"):
+                    if action == "list_workflows":
+                        items = result.get("workflows", [])
+                        rows = [
+                            f"- {w.get('name')} [{w.get('kind')}] enabled={w.get('enabled')} interval={w.get('interval_seconds')}s"
+                            for w in items[:20]
+                        ]
+                        msg = f"⏱️ list_workflows: ✓ {result.get('count', len(items))} workflows"
+                        if rows:
+                            msg += "\n" + "\n".join(rows)
+                    elif action == "get_workflow":
+                        wf = result.get("workflow", {})
+                        msg = f"⏱️ get_workflow: ✓ {_json_wf.dumps(wf, ensure_ascii=False)[:600]}"
+                    elif action == "run_workflow":
+                        run_res = result.get("result", {})
+                        msg = f"⏱️ run_workflow({result.get('workflow','')}): {'✓' if result.get('success') else '✗'} {_json_wf.dumps({k: v for k, v in run_res.items() if k not in ('stdout', 'body', 'headers')}, ensure_ascii=False)[:500]}"
+                    elif action == "run_due":
+                        msg = f"⏱️ run_due: ✓ due_count={result.get('due_count', 0)}"
+                    else:
+                        summary = {k: v for k, v in result.items() if k not in ("workflows", "workflow", "result")}
+                        msg = f"⏱️ {action}: ✓ {_json_wf.dumps(summary, ensure_ascii=False)[:300]}"
+                    confirmations.append(msg)
+                    logger.info("[Chat.Workflow] %s → success", action)
+                else:
+                    msg = f"✗ workflow({action}): {result.get('error', 'failed')}"
+                    confirmations.append(msg)
+                    logger.warning("[Chat.Workflow] %s error: %s", action, result.get("error"))
+            except Exception as e:
+                msg = f"✗ workflow({action}): {e}"
+                confirmations.append(msg)
+                logger.warning("[Chat.Workflow] %s exception: %s", action, e)
+
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+            logger.info("[Chat.Workflow] Processed %d directives", len(confirmations))
+
+        return clean_text
+
+    # ── System Control directive processing ──────────────────────────
+    def _process_system_control_directives(self, response_text: str) -> str:
+        """Extract and execute <SYSTEM_CONTROL> directives from the LLM response.
+
+        Αίολος can interact with the physical computer:
+          <SYSTEM_CONTROL action="mouse_click" x="500" y="300" />
+          <SYSTEM_CONTROL action="type_text" text="Hello World" />
+          <SYSTEM_CONTROL action="screenshot" save_path="C:\\screen.png" />
+          <SYSTEM_CONTROL action="open_app" app_name="notepad" />
+          <SYSTEM_CONTROL action="speak" text="Καλημέρα" />
+        """
+        import re
+        import json as _json_sc
+
+        if not self.system_control:
+            response_text = re.sub(
+                r'<SYSTEM_CONTROL\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        pattern = re.compile(
+            r'<SYSTEM_CONTROL\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        confirmations = []
+
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action = attrs.pop("action", "").strip().lower()
+            if not action:
+                continue
+
+            try:
+                result = self.system_control.execute_action(action, attrs)
+                if result.get("success"):
+                    # Format result nicely
+                    detail = ""
+                    if action == "screenshot":
+                        detail = result.get("preview", "captured")
+                    elif action == "list_windows":
+                        detail = result.get("windows", "")[:500]
+                    elif action == "clipboard_read":
+                        detail = result.get("content", "")[:500]
+                    elif action == "get_active_window":
+                        detail = result.get("title", "")
+                    elif action == "get_mouse_pos":
+                        detail = f"({result.get('x')}, {result.get('y')})"
+                    elif action == "get_screen_size":
+                        detail = f"{result.get('width')}×{result.get('height')}"
+                    elif action == "get_battery":
+                        detail = _json_sc.dumps(result.get("battery", {}))
+                    elif action == "get_wifi":
+                        detail = result.get("info", "")[:300]
+                    elif action == "get_pixel_color":
+                        detail = f"RGB={result.get('rgb')} HEX={result.get('hex')}"
+                    else:
+                        detail = _json_sc.dumps({k: v for k, v in result.items() if k != "success"}, ensure_ascii=False)[:300]
+
+                    msg = f"🎮 {action}: ✓ {detail}" if detail else f"🎮 {action}: ✓ done"
+                    confirmations.append(msg)
+                    logger.info("[Chat.SystemControl] %s → %s", action, msg[:120])
+                else:
+                    msg = f"✗ {action}: {result.get('error', 'failed')}"
+                    confirmations.append(msg)
+                    logger.warning("[Chat.SystemControl] %s error: %s", action, result.get("error"))
+            except Exception as e:
+                msg = f"✗ {action}: {e}"
+                confirmations.append(msg)
+                logger.warning("[Chat.SystemControl] %s exception: %s", action, e)
+
+        # Strip all SYSTEM_CONTROL tags
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+            logger.info("[Chat.SystemControl] Processed %d directives", len(confirmations))
+
+        return clean_text
+
+    # ── Self-Modify directive processing ─────────────────────────────
+    def _process_self_modify_directives(self, response_text: str) -> str:
+        """Extract and execute <SELF_MODIFY> directives from the LLM response.
+
+        Αίολος can modify its own code, config, prompts, and character state:
+          <SELF_MODIFY action="read_self" path="xdart/core.py" lines="100-200" />
+          <SELF_MODIFY action="patch_file" path="xdart/tools/x.py" old_text="..." new_text="..." />
+          <SELF_MODIFY action="set_overlay" phase="xheart_output" text="..." reason="..." />
+          <SELF_MODIFY action="update_config" key="OPENAI_TEMPERATURE" value="0.5" />
+          <SELF_MODIFY action="update_character" field="some.field" value="..." />
+          <SELF_MODIFY action="create_tool" name="tool_name" code="..." purpose="..." />
+          <SELF_MODIFY action="list_modules" />
+        """
+        import re
+        import json as _json_sm
+
+        if not self.self_modify:
+            response_text = re.sub(
+                r'<SELF_MODIFY\s+[^>]*/?>',
+                '', response_text, flags=re.IGNORECASE,
+            )
+            return re.sub(r'\n{3,}', '\n\n', response_text).strip()
+
+        pattern = re.compile(
+            r'<SELF_MODIFY\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        confirmations = []
+
+        for match in pattern.finditer(response_text):
+            attrs_str = match.group(1)
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', attrs_str))
+            action = attrs.pop("action", "").strip().lower()
+            if not action:
+                continue
+
+            try:
+                result = self.self_modify.execute_action(action, attrs)
+                if result.get("success"):
+                    # Format result based on action type
+                    if action == "read_self":
+                        content = result.get("content", "")
+                        path = result.get("path", "")
+                        lines_info = result.get("lines", "full")
+                        truncated = " (truncated)" if result.get("truncated") else ""
+                        msg = f"🧬 read_self [{path} : {lines_info}]{truncated}:\n```\n{content[:8000]}\n```"
+                    elif action == "list_modules":
+                        modules = result.get("modules", [])
+                        mod_list = "\n".join(f"  {m['path']} ({m['size']}B) — {m['doc'][:60]}" for m in modules[:30])
+                        msg = f"🧬 list_modules ({result.get('module_count', 0)} modules):\n{mod_list}"
+                    elif action == "patch_file":
+                        msg = f"🧬 patch_file: ✓ patched {result.get('path', '')}"
+                    elif action == "edit_file":
+                        msg = f"🧬 edit_file: ✓ wrote {result.get('bytes_written', 0)}B to {result.get('path', '')} ({result.get('mode', 'write')})"
+                    elif action == "create_file":
+                        msg = f"🧬 create_file: ✓ created {result.get('path', '')} ({result.get('bytes_written', 0)}B)"
+                    elif action == "set_overlay":
+                        msg = f"🧬 set_overlay: ✓ phase={result.get('phase', '')} active={result.get('active', '')} ({result.get('text_length', 0)} chars)"
+                    elif action == "update_config":
+                        msg = f"🧬 update_config: ✓ {result.get('key', '')} = {result.get('new_value', '')} (was: {result.get('old_value', '')})"
+                    elif action == "update_character":
+                        msg = f"🧬 update_character: ✓ {result.get('field', '')} → v{result.get('new_version', '')}"
+                    elif action == "create_tool":
+                        msg = f"🧬 create_tool: ✓ {result.get('name', '')} v{result.get('version', '')} → {result.get('path', '')}"
+                    else:
+                        msg = f"🧬 {action}: ✓ {_json_sm.dumps({k: v for k, v in result.items() if k != 'success'}, ensure_ascii=False)[:300]}"
+
+                    confirmations.append(msg)
+                    logger.info("[Chat.SelfModify] %s → success", action)
+                else:
+                    msg = f"✗ self_modify({action}): {result.get('error', 'failed')}"
+                    confirmations.append(msg)
+                    logger.warning("[Chat.SelfModify] %s error: %s", action, result.get("error"))
+            except Exception as e:
+                msg = f"✗ self_modify({action}): {e}"
+                confirmations.append(msg)
+                logger.warning("[Chat.SelfModify] %s exception: %s", action, e)
+
+        # Strip all SELF_MODIFY tags
+        clean_text = pattern.sub("", response_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        if confirmations:
+            clean_text += "\n\n" + "\n".join(confirmations)
+            logger.info("[Chat.SelfModify] Processed %d directives", len(confirmations))
+
+        return clean_text
 
     # ── Agent Spawner directive processing ──────────────────────────
     def _process_agent_directives(self, response_text: str) -> str:
@@ -5771,7 +7096,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 "task": task,
                 "context": attrs.get("context", ""),
                 "custom_prompt": attrs.get("custom_prompt", ""),
-                "max_tokens": int(attrs.get("max_tokens", "4000")),
+                "max_tokens": int(attrs.get("max_tokens", "8000")),
                 "temperature": float(attrs.get("temperature", "0.5")),
             })
 
@@ -5792,7 +7117,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                 "task": task,
                 "context": ctx_match.group(1).strip() if ctx_match else "",
                 "custom_prompt": prompt_match.group(1).strip() if prompt_match else "",
-                "max_tokens": 4000,
+                "max_tokens": 8000,
                 "temperature": 0.5,
             })
             logger.info("[Chat.AgentSpawner/Block] Parsed block-style spawn_agent: role=%s task=%s",
@@ -6102,6 +7427,128 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         return response_text
 
+    def _process_telegram_intel_directives(self, response_text: str) -> str:
+        """Intercept <TELEGRAM_INTEL> tags in Αίολος' response and execute them.
+
+        Αίολος emits XML tags to trigger Telegram intelligence operations:
+
+          <TELEGRAM_INTEL action="search" query="hacktivist DDoS NATO" />
+          <TELEGRAM_INTEL action="search" query="..." limit="10" />
+          <TELEGRAM_INTEL action="add" channel="channel_handle" reason="why" />
+          <TELEGRAM_INTEL action="remove" channel="channel_handle" />
+          <TELEGRAM_INTEL action="read" channel="channel_handle" limit="20" />
+          <TELEGRAM_INTEL action="list" />
+
+        Each tag is replaced with a formatted result block showing what was done.
+        If TelegramIntelTool is not initialized, the tag is replaced with an
+        informative message explaining how to enable it.
+        """
+        import re
+
+        _TI_PATTERN = re.compile(
+            r'<TELEGRAM_INTEL\s+((?:[^">/]|"[^"]*")*)\s*/?>',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        def _parse_attrs(attr_str: str) -> dict[str, str]:
+            """Parse key="value" pairs from an attribute string."""
+            attrs = {}
+            for m in re.finditer(r'(\w+)\s*=\s*"([^"]*)"', attr_str):
+                attrs[m.group(1).lower()] = m.group(2)
+            # Also handle unquoted single-word values
+            for m in re.finditer(r'(\w+)\s*=\s*([^\s">/]+)', attr_str):
+                k = m.group(1).lower()
+                if k not in attrs:
+                    attrs[k] = m.group(2)
+            return attrs
+
+        def _execute_tag(match: re.Match) -> str:
+            """Execute one <TELEGRAM_INTEL> tag and return the result block."""
+            attrs = _parse_attrs(match.group(1))
+            action = attrs.get("action", "").lower()
+
+            if not self.telegram_intel:
+                return (
+                    "\n[TELEGRAM_INTEL: Tool not initialized. "
+                    "Check DARKWEB_ENABLED and startup logs.]\n"
+                )
+
+            try:
+                if action == "search":
+                    query = attrs.get("query", "")
+                    limit = int(attrs.get("limit", "10"))
+                    result = self.telegram_intel.search_channels(query, limit=limit)
+                    lines = [f"\n**[Telegram Intel — Search: '{query}']**"]
+                    lines.append(result.get("summary", ""))
+                    working = result.get("working_channels", [])
+                    if working:
+                        lines.append("\nChannels with active web preview:")
+                        for ch in working:
+                            lines.append(
+                                f"  • @{ch['handle']} — {ch.get('message_count_visible', 0)} messages visible"
+                            )
+                        lines.append(
+                            "\n*Use `<TELEGRAM_INTEL action=\"add\" channel=\"handle\" />` to add to monitoring.*"
+                        )
+                    return "\n".join(lines) + "\n"
+
+                elif action == "add":
+                    channel = attrs.get("channel", "")
+                    reason = attrs.get("reason", "Discovered via intelligence search")
+                    result = self.telegram_intel.add_channel(channel, reason=reason)
+                    status = result.get("status", "unknown")
+                    msg = result.get("message", "")
+                    if status == "added":
+                        return f"\n**[Telegram Intel — Added @{channel}]** {msg}\n"
+                    elif status == "already_monitored":
+                        return f"\n**[Telegram Intel — @{channel} already monitored]** {msg}\n"
+                    elif status == "no_preview":
+                        return f"\n**[Telegram Intel — @{channel}: No web preview]** {msg}\n"
+                    else:
+                        return f"\n**[Telegram Intel — Add failed]** {msg}\n"
+
+                elif action == "remove":
+                    channel = attrs.get("channel", "")
+                    result = self.telegram_intel.remove_channel(channel)
+                    return f"\n**[Telegram Intel — {result.get('message', '')}]**\n"
+
+                elif action == "list":
+                    result = self.telegram_intel.list_monitored()
+                    lines = [f"\n**[Telegram Intel — Monitored Channels ({result['count']})]**"]
+                    for ch in result.get("channels", []):
+                        lines.append(
+                            f"  • @{ch['handle']} — added {ch.get('added_at', '')[:10]} "
+                            f"({ch.get('reason', '')})"
+                        )
+                    if not result.get("channels"):
+                        lines.append("  No dynamically-added channels yet.")
+                    return "\n".join(lines) + "\n"
+
+                elif action == "read":
+                    channel = attrs.get("channel", "")
+                    limit = int(attrs.get("limit", "10"))
+                    result = self.telegram_intel.read_channel_preview(channel, limit=limit)
+                    if result.get("status") != "ok":
+                        return f"\n**[Telegram Intel — Read @{channel}]** {result.get('message', 'Failed')}\n"
+                    lines = [f"\n**[Telegram Intel — @{channel}: {result['messages_found']} messages]**"]
+                    for msg in result.get("messages", [])[:5]:
+                        ts = msg.get("timestamp", "")[:16]
+                        lines.append(f"  [{ts}] {msg['text'][:200]}")
+                    return "\n".join(lines) + "\n"
+
+                else:
+                    return f"\n[TELEGRAM_INTEL: Unknown action '{action}']\n"
+
+            except Exception as exc:
+                logger.warning("[Core.TelegramIntel] Tag execution failed: %s", exc)
+                return f"\n[TELEGRAM_INTEL: Execution error — {exc}]\n"
+
+        # Process all tags in one pass (handles multiple tags per response)
+        if _TI_PATTERN.search(response_text):
+            response_text = _TI_PATTERN.sub(_execute_tag, response_text)
+
+        return response_text
+
     def _strip_internal_operation_leaks(self, response_text: str) -> str:
         """Strip internal operation artifacts that Αίολος should not output to the user.
 
@@ -6154,8 +7601,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
 
         # 5. Strip any remaining internal tags that slipped through earlier processors
         # Block-style: <TAG>...</TAG>
+        # NOTE: TELEGRAM_INTEL tags are processed by _process_telegram_intel_directives
+        # and should never reach here. If they do, strip them cleanly.
         for tag in ('VISUAL_ACTION', 'MEMORY_STORE', 'BAYESIAN_FUZZY_ENGINE',
-                     'SHELL_ACTION', 'SPAWN_AGENT', 'MONGO_ACTION',
+                     'SHELL_ACTION', 'SPAWN_AGENT', 'MONGO_ACTION', 'TELEGRAM_INTEL',
                      'run_web_agent', 'run_tool', 'run_search', 'auto_search'):
             response_text = re.sub(
                 rf'<{tag}\b[^>]*>.*?</{tag}\s*>',
@@ -6171,7 +7620,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # The LLM sometimes uses square-bracket syntax instead of XML.
         # These are NOT executed — they are pure hallucinations that leak into visible text.
         for btag in ('VISUAL_ACTION', 'MEMORY_STORE', 'SHELL_ACTION', 'SPAWN_AGENT',
-                      'MONGO_ACTION', 'BAYESIAN_FUZZY_ENGINE'):
+                      'MONGO_ACTION', 'BAYESIAN_FUZZY_ENGINE', 'TELEGRAM_INTEL'):
             response_text = re.sub(
                 rf'\[{btag}[:\s][^\]]*\]',
                 '', response_text, flags=re.IGNORECASE,

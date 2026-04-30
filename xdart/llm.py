@@ -16,6 +16,8 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from datetime import datetime, timezone, timedelta
+from threading import Lock
 from typing import Any, Generator
 
 from openai import OpenAI
@@ -34,9 +36,113 @@ from xdart.config import (
     LLM_FALLBACK_API_KEY,
     LLM_FALLBACK_BASE_URL,
     LLM_FALLBACK_MODEL,
+    LOCAL_EMBEDDING_ENABLED,
+    LOCAL_EMBEDDING_MODEL,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Embedding circuit breaker ─────────────────────────────────────────────────
+# When OpenAI returns insufficient_quota (billing issue, not a transient 429),
+# we stop hammering the endpoint for EMBED_QUOTA_COOLDOWN_MINUTES.
+# This eliminates the repeated "Episodic store failed: 429" spam.
+_embed_circuit: dict = {
+    "open": False,           # True = circuit open, all embed calls fail fast
+    "open_until": None,      # datetime when circuit closes again
+    "last_error": "",        # last error message for logging context
+}
+_embed_circuit_lock = Lock()
+_EMBED_QUOTA_COOLDOWN_MINUTES = 30  # re-try after 30 min
+_EMBED_RATE_COOLDOWN_MINUTES = 2    # transient rate-limit: shorter cooldown
+
+
+def _check_embed_circuit() -> str | None:
+    """Return error string if circuit is open, else None (circuit closed = OK to call)."""
+    with _embed_circuit_lock:
+        if not _embed_circuit["open"]:
+            return None
+        if datetime.now(timezone.utc) >= _embed_circuit["open_until"]:
+            # Cooldown expired — close circuit and retry
+            _embed_circuit["open"] = False
+            _embed_circuit["open_until"] = None
+            logger.info("[LLM.embed] Circuit breaker reset — retrying OpenAI embeddings")
+            return None
+        remaining = (_embed_circuit["open_until"] - datetime.now(timezone.utc)).seconds // 60
+        return f"Embedding circuit open ({remaining}min remaining): {_embed_circuit['last_error'][:120]}"
+
+
+def _trip_embed_circuit(error_msg: str, *, quota: bool = False) -> None:
+    """Open the embedding circuit breaker after a quota/rate-limit error."""
+    cooldown = _EMBED_QUOTA_COOLDOWN_MINUTES if quota else _EMBED_RATE_COOLDOWN_MINUTES
+    with _embed_circuit_lock:
+        _embed_circuit["open"] = True
+        _embed_circuit["open_until"] = datetime.now(timezone.utc) + timedelta(minutes=cooldown)
+        _embed_circuit["last_error"] = error_msg
+    level = "ERROR" if quota else "WARNING"
+    logger.log(
+        logging.ERROR if quota else logging.WARNING,
+        "[LLM.embed] ⚡ Circuit breaker OPEN for %d min [%s]: %s",
+        cooldown, "quota_exceeded" if quota else "rate_limit", error_msg[:200],
+    )
+
+
+# ── Local fastembed (offline fallback) ───────────────────────────────────────
+_local_embed_model = None
+_local_embed_lock = Lock()
+
+
+def _get_local_embed_model():
+    """Lazy-load the fastembed model (downloads on first use, cached to disk thereafter)."""
+    global _local_embed_model
+    if _local_embed_model is not None:
+        return _local_embed_model
+    with _local_embed_lock:
+        if _local_embed_model is not None:
+            return _local_embed_model
+        try:
+            from fastembed import TextEmbedding
+            from pathlib import Path as _Path
+            _cache = str(_Path(__file__).resolve().parent.parent / ".fastembed_cache")
+            logger.info("[LLM.embed] Loading local fastembed model: %s (cache=%s)", LOCAL_EMBEDDING_MODEL, _cache)
+            _local_embed_model = TextEmbedding(model_name=LOCAL_EMBEDDING_MODEL, cache_dir=_cache)
+            logger.info("[LLM.embed] Local fastembed model ready")
+        except Exception as exc:
+            logger.error("[LLM.embed] Failed to load local fastembed model: %s", exc)
+            raise
+    return _local_embed_model
+
+
+def _local_embed(text: str) -> list[float]:
+    """Generate embedding using local fastembed model."""
+    model = _get_local_embed_model()
+    # fastembed returns a generator of numpy arrays
+    results = list(model.embed([text]))
+    return results[0].tolist()
+
+
+def _local_embed_batch(texts: list[str]) -> list[list[float]]:
+    """Generate batch embeddings using local fastembed model."""
+    model = _get_local_embed_model()
+    results = list(model.embed(texts))
+    return [r.tolist() for r in results]
+
+
+def prewarm_local_embed() -> bool:
+    """Pre-load the fastembed model at startup so the first embed call doesn't block.
+
+    Call from api.py lifespan in a background thread before HTTP requests arrive.
+    Returns True on success, False on failure.
+    """
+    if not LOCAL_EMBEDDING_ENABLED:
+        return False
+    try:
+        _get_local_embed_model()
+        logger.info("[LLM.embed] Prewarm complete — model ready")
+        return True
+    except Exception as exc:
+        logger.error("[LLM.embed] Prewarm failed: %s", exc)
+        return False
 
 
 def _is_reasoning_model(model: str) -> bool:
@@ -78,10 +184,12 @@ class LLMClient:
         if resolved_base_url:
             client_kwargs["base_url"] = resolved_base_url
 
-        # Timeout: 60s prevents hanging on DeepSeek stalls
-        # Uses httpx.Timeout with explicit per-phase limits
+        # Timeout: keep connect at 10s (fast-fail if server unreachable) but set
+        # read to None so httpx never cuts off long DeepSeek thinking chains.
+        # The hard wall-clock ceiling is enforced by _api_call_with_timeout's
+        # thread-pool future.result(timeout=_API_CALL_TIMEOUT).
         import httpx
-        client_kwargs["timeout"] = httpx.Timeout(60.0, connect=10.0)
+        client_kwargs["timeout"] = httpx.Timeout(None, connect=10.0)
 
         self.client = OpenAI(**client_kwargs)
         self.model = model or OPENAI_MODEL
@@ -127,7 +235,7 @@ class LLMClient:
         fallback_key = LLM_FALLBACK_API_KEY
         if fallback_key and self.is_deepseek:
             import httpx as _httpx
-            fb_kwargs: dict[str, Any] = {"api_key": fallback_key, "timeout": _httpx.Timeout(60.0, connect=10.0)}
+            fb_kwargs: dict[str, Any] = {"api_key": fallback_key, "timeout": _httpx.Timeout(None, connect=10.0)}
             if LLM_FALLBACK_BASE_URL:
                 fb_kwargs["base_url"] = LLM_FALLBACK_BASE_URL
             self._fallback_client = OpenAI(**fb_kwargs)
@@ -136,15 +244,21 @@ class LLMClient:
     # Hard wall-clock timeout for API calls.
     # httpx read-timeout resets on every byte so DeepSeek keepalives bypass it.
     # This wrapper gives an absolute ceiling regardless of network activity.
-    _API_CALL_TIMEOUT = 180  # seconds — hard wall-clock limit for primary
-    _FALLBACK_TIMEOUT = 60   # seconds — shorter ceiling for fallback (faster API)
+    # 400s primary: DeepSeek thinking mode can produce long CoT chains (100-200s+).
+    # Previous 220s was cutting off heavy reasoning runs.
+    _API_CALL_TIMEOUT = 400  # seconds — hard wall-clock limit for primary
+    _FALLBACK_TIMEOUT = 120  # seconds — fallback ceiling (GPT is faster but large prompts need time)
 
     def _api_call_with_timeout(self, kwargs: dict[str, Any], label: str = "LLM"):
         """Run client.chat.completions.create with a hard wall-clock timeout.
         If primary fails and a fallback client exists, retry on OpenAI.
         Uses separate thread pools so primary timeouts cannot block fallback."""
         # ── Try primary (DeepSeek) ──
-        future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
+        try:
+            future = self._timeout_pool.submit(self.client.chat.completions.create, **kwargs)
+        except RuntimeError:
+            # Pool shut down (reload/shutdown in progress)
+            raise RuntimeError(f"{label}: executor shutdown — reload in progress")
         try:
             result = future.result(timeout=self._API_CALL_TIMEOUT)
             if result.choices:
@@ -153,6 +267,8 @@ class LLMClient:
         except FuturesTimeout:
             future.cancel()
             logger.error("[%s] Primary hard timeout (%ds)", label, self._API_CALL_TIMEOUT)
+        except RuntimeError:
+            raise  # Re-raise shutdown errors immediately
         except Exception as exc:
             logger.error("[%s] Primary API error: %s", label, exc)
 
@@ -169,7 +285,10 @@ class LLMClient:
         if "temperature" not in fb_kwargs:
             fb_kwargs["temperature"] = 0.7
 
-        fb_future = self._fallback_pool.submit(self._fallback_client.chat.completions.create, **fb_kwargs)
+        try:
+            fb_future = self._fallback_pool.submit(self._fallback_client.chat.completions.create, **fb_kwargs)
+        except RuntimeError:
+            raise RuntimeError(f"{label}: fallback executor shutdown — reload in progress")
         try:
             return fb_future.result(timeout=self._FALLBACK_TIMEOUT)
         except FuturesTimeout:
@@ -230,17 +349,19 @@ class LLMClient:
             "max_completion_tokens": effective_max,
         }
 
-        # Reasoning models don't support temperature/top_p
-        if not self.is_reasoning:
-            kwargs["temperature"] = effective_temp
-
         # DeepSeek thinking mode — allow per-call override
+        # reasoning_effort="high" is the new V4-Pro parameter for effort control
         use_thinking = thinking if thinking is not None else self.thinking_enabled
         if use_thinking and self.is_deepseek:
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
         elif self.is_deepseek:
             # Explicitly disable thinking to save completion tokens
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        # Reasoning models don't support temperature/top_p.
+        # DeepSeek thinking mode also suppresses temperature (no effect per docs).
+        if not self.is_reasoning and not (use_thinking and self.is_deepseek):
+            kwargs["temperature"] = effective_temp
 
         t0 = time.perf_counter()
         response = self._api_call_with_timeout(kwargs, label="LLM.call")
@@ -274,6 +395,12 @@ class LLMClient:
         if usage:
             logger.info("[LLM.call] Tokens — prompt=%d, completion=%d, total=%d",
                          usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0) or 0
+            if cache_hit or cache_miss:
+                logger.info("[LLM.call] KV cache — hit=%d tokens, miss=%d tokens (%.0f%% hit rate)",
+                             cache_hit, cache_miss,
+                             100 * cache_hit / (cache_hit + cache_miss) if (cache_hit + cache_miss) else 0)
         return content
 
     def call_stream(
@@ -321,14 +448,14 @@ class LLMClient:
             "stream": True,
         }
 
-        if not self.is_reasoning:
-            kwargs["temperature"] = effective_temp
-
         use_thinking = thinking if thinking is not None else self.thinking_enabled
         if use_thinking and self.is_deepseek:
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
         elif self.is_deepseek:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        if not self.is_reasoning and not (use_thinking and self.is_deepseek):
+            kwargs["temperature"] = effective_temp
 
         t0 = time.perf_counter()
         try:
@@ -398,14 +525,15 @@ class LLMClient:
             "max_completion_tokens": max_tokens,
             "stream": True,
         }
-        if not self.is_reasoning:
-            kwargs["temperature"] = temperature
 
         use_thinking = thinking if thinking is not None else self.thinking_enabled
         if use_thinking and self.is_deepseek:
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
         elif self.is_deepseek:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        if not self.is_reasoning and not (use_thinking and self.is_deepseek):
+            kwargs["temperature"] = temperature
 
         logger.info("[LLM.call_stream_multi] Sending streaming request — model=%s, %d messages, max_tokens=%d",
                      self.model, len(clean_messages), max_tokens)
@@ -505,20 +633,20 @@ class LLMClient:
             "max_completion_tokens": effective_max,
         }
 
-        # Reasoning models: no temperature, but JSON mode is supported
-        if not self.is_reasoning:
-            kwargs["temperature"] = temperature if temperature is not None else OPENAI_TEMPERATURE
-
         # response_format supported by OpenAI and DeepSeek
         kwargs["response_format"] = {"type": "json_object"}
 
         # DeepSeek thinking mode — allow per-call override
         use_thinking = thinking if thinking is not None else self.thinking_enabled
         if use_thinking and self.is_deepseek:
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
         elif self.is_deepseek:
             # Explicitly disable thinking to save completion tokens
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        # Reasoning models and DeepSeek thinking mode don't support temperature
+        if not self.is_reasoning and not (use_thinking and self.is_deepseek):
+            kwargs["temperature"] = temperature if temperature is not None else OPENAI_TEMPERATURE
 
         t0 = time.perf_counter()
         _max_retries = 2
@@ -529,6 +657,10 @@ class LLMClient:
                 if response.choices:
                     break
                 logger.warning("[LLM.call_json] Empty choices on attempt %d/%d — retrying", _attempt + 1, _max_retries)
+            except RuntimeError as rt_exc:
+                # Executor shutdown — don't retry, propagate immediately
+                logger.warning("[LLM.call_json] Executor shutdown: %s", rt_exc)
+                raise
             except Exception as api_exc:
                 logger.warning("[LLM.call_json] API error on attempt %d/%d: %s", _attempt + 1, _max_retries, api_exc)
                 if _attempt == _max_retries - 1:
@@ -553,6 +685,12 @@ class LLMClient:
         if usage:
             logger.info("[LLM.call_json] Tokens — prompt=%d, completion=%d, total=%d",
                          usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0) or 0
+            if cache_hit or cache_miss:
+                logger.info("[LLM.call_json] KV cache — hit=%d tokens, miss=%d tokens (%.0f%% hit rate)",
+                             cache_hit, cache_miss,
+                             100 * cache_hit / (cache_hit + cache_miss) if (cache_hit + cache_miss) else 0)
         raw = raw.strip()
 
         # Strip markdown code fences if the model wraps them
@@ -630,44 +768,110 @@ class LLMClient:
     def embed(self, text: str) -> list[float]:
         """Generate an embedding vector for the given text.
 
-        Uses separate embedding client (OpenAI) when main provider
-        doesn't support embeddings (e.g., DeepSeek).
+        Priority:
+        1. LOCAL_EMBEDDING_ENABLED=true → always use fastembed (offline)
+        2. OpenAI circuit closed → use OpenAI
+        3. OpenAI circuit open (quota/rate) → fallback to fastembed if available
         """
+        # ── Local-first mode ──
+        if LOCAL_EMBEDDING_ENABLED:
+            return _local_embed(text)
+
+        # ── Circuit breaker check ──
+        circuit_err = _check_embed_circuit()
+        if circuit_err:
+            # Try local fallback before failing
+            try:
+                logger.debug("[LLM.embed] Circuit open — falling back to local fastembed")
+                return _local_embed(text)
+            except Exception:
+                raise RuntimeError(circuit_err)
+
         truncated_len = min(len(text), 8191)
         logger.info("[LLM.embed] Generating embedding — text_len=%d (truncated=%d), model=%s",
                      len(text), truncated_len, OPENAI_EMBEDDING_MODEL)
         t0 = time.perf_counter()
-        response = self._embed_client.embeddings.create(
-            model=OPENAI_EMBEDDING_MODEL,
-            input=text[:8191],  # respect token limit
-        )
+        try:
+            response = self._embed_client.embeddings.create(
+                model=OPENAI_EMBEDDING_MODEL,
+                input=text[:8191],
+            )
+        except Exception as exc:
+            exc_str = str(exc)
+            if "insufficient_quota" in exc_str or "exceeded your current quota" in exc_str:
+                _trip_embed_circuit(exc_str, quota=True)
+                # Immediate local fallback after tripping
+                try:
+                    logger.info("[LLM.embed] Quota exceeded — switching to local fastembed fallback")
+                    return _local_embed(text)
+                except Exception:
+                    pass
+            elif "429" in exc_str or "rate_limit" in exc_str.lower():
+                _trip_embed_circuit(exc_str, quota=False)
+                try:
+                    logger.debug("[LLM.embed] Rate limit — falling back to local fastembed")
+                    return _local_embed(text)
+                except Exception:
+                    pass
+            raise
         elapsed = time.perf_counter() - t0
         embedding = response.data[0].embedding
         logger.info("[LLM.embed] Embedding generated — dim=%d, %.2fs elapsed", len(embedding), elapsed)
         return embedding
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for multiple texts in a single API call.
+        """Generate embeddings for multiple texts.
 
-        Uses separate embedding client when main provider lacks embeddings.
-        OpenAI supports up to 2048 inputs per batch request."""
+        Priority same as embed(): local-first when enabled, OpenAI otherwise,
+        auto-fallback to local on quota/rate errors.
+        """
         if not texts:
             return []
+
+        # ── Local-first mode ──
+        if LOCAL_EMBEDDING_ENABLED:
+            return _local_embed_batch(texts)
+
+        # ── Circuit breaker check ──
+        circuit_err = _check_embed_circuit()
+        if circuit_err:
+            try:
+                logger.debug("[LLM.embed_batch] Circuit open — falling back to local fastembed")
+                return _local_embed_batch(texts)
+            except Exception:
+                raise RuntimeError(circuit_err)
+
         truncated = [t[:8191] for t in texts]
         logger.info("[LLM.embed_batch] Generating %d embeddings, model=%s",
                      len(truncated), OPENAI_EMBEDDING_MODEL)
         t0 = time.perf_counter()
-        # Process in chunks of 2048 (OpenAI batch limit)
         all_embeddings = []
-        for i in range(0, len(truncated), 2048):
-            chunk = truncated[i:i + 2048]
-            response = self._embed_client.embeddings.create(
-                model=OPENAI_EMBEDDING_MODEL,
-                input=chunk,
-            )
-            # Sort by index to preserve order
-            sorted_data = sorted(response.data, key=lambda x: x.index)
-            all_embeddings.extend([d.embedding for d in sorted_data])
+        try:
+            for i in range(0, len(truncated), 2048):
+                chunk = truncated[i:i + 2048]
+                response = self._embed_client.embeddings.create(
+                    model=OPENAI_EMBEDDING_MODEL,
+                    input=chunk,
+                )
+                sorted_data = sorted(response.data, key=lambda x: x.index)
+                all_embeddings.extend([d.embedding for d in sorted_data])
+        except Exception as exc:
+            exc_str = str(exc)
+            if "insufficient_quota" in exc_str or "exceeded your current quota" in exc_str:
+                _trip_embed_circuit(exc_str, quota=True)
+                try:
+                    logger.info("[LLM.embed_batch] Quota exceeded — switching to local fastembed fallback")
+                    return _local_embed_batch(texts)
+                except Exception:
+                    pass
+            elif "429" in exc_str or "rate_limit" in exc_str.lower():
+                _trip_embed_circuit(exc_str, quota=False)
+                try:
+                    logger.debug("[LLM.embed_batch] Rate limit — falling back to local fastembed")
+                    return _local_embed_batch(texts)
+                except Exception:
+                    pass
+            raise
         elapsed = time.perf_counter() - t0
         logger.info("[LLM.embed_batch] %d embeddings generated — %.2fs elapsed",
                      len(all_embeddings), elapsed)

@@ -276,6 +276,73 @@ class KeywordSpikeDetector:
             for t, c, s in term_counts[:top_n]
         ]
 
+    def get_trend_dashboard(self, top_n: int = 15) -> str:
+        """Generate a compact trend dashboard string for LLM context injection.
+
+        Shows top trending keywords with direction, momentum, and recent spikes.
+        Returns a formatted string ready for direct injection into context.
+        """
+        now = time.time()
+        window_cutoff = now - WINDOW_SECONDS
+        day_cutoff = now - 86400  # 24h lookback for direction
+
+        # Calculate current window counts + 24h baseline for direction
+        trend_data: list[tuple[str, int, int, float, float]] = []  # term, count_2h, sources, baseline_rate, surge
+
+        for term, record in self._registry.items():
+            window_occs = [o for o in record.occurrences if o.timestamp > window_cutoff]
+            if not window_occs:
+                continue
+            count_2h = len(window_occs)
+            sources_2h = len({o.source for o in window_occs})
+
+            # 24h baseline (hourly rate)
+            day_occs = [o for o in record.occurrences if o.timestamp > day_cutoff]
+            baseline_rate = len(day_occs) / 24.0 if day_occs else 0.0
+            # 2h rate
+            rate_2h = count_2h / (WINDOW_SECONDS / 3600)
+            surge = rate_2h / max(baseline_rate, _MIN_BASELINE_RATE)
+
+            trend_data.append((term, count_2h, sources_2h, baseline_rate, surge))
+
+        if not trend_data:
+            return ""
+
+        # Sort by current count
+        trend_data.sort(key=lambda x: x[1], reverse=True)
+
+        lines = [f"KEYWORD TREND DASHBOARD (top {min(top_n, len(trend_data))} terms, 2h window):"]
+
+        for term, count, sources, baseline, surge in trend_data[:top_n]:
+            # Direction arrow based on surge ratio
+            if surge >= 3.0:
+                arrow = "⬆⬆"  # surging
+            elif surge >= 1.5:
+                arrow = "⬆"   # rising
+            elif surge >= 0.8:
+                arrow = "→"   # stable
+            elif surge >= 0.3:
+                arrow = "⬇"   # declining
+            else:
+                arrow = "⬇⬇"  # dropping fast
+
+            lines.append(
+                f"  {arrow} {term}: {count} mentions ({sources} sources) "
+                f"[{surge:.1f}× baseline]"
+            )
+
+        # Recent spikes (last 2h)
+        recent_spikes = self.get_recent_spikes(max_age_seconds=7200)
+        if recent_spikes:
+            lines.append(f"\nRECENT SPIKES ({len(recent_spikes)} in last 2h):")
+            for spike in recent_spikes[-5:]:
+                lines.append(
+                    f"  🔺 '{spike.term}' — {spike.current_count} mentions, "
+                    f"{spike.surge_ratio}× surge from {spike.unique_sources} sources"
+                )
+
+        return "\n".join(lines)
+
     @property
     def registry_size(self) -> int:
         return len(self._registry)

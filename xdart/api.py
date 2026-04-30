@@ -15,6 +15,7 @@ REST API endpoints:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -62,6 +63,7 @@ except ImportError:
     FINNHUB_API_KEY = ""
 from xdart.core import XDARTFramework
 from xdart.core_change_logger import CoreChangeLogger
+from xdart.health_tracker import health_tracker
 from xdart.models import ClientProfile, FrameworkOutput
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ class HealthResponse(BaseModel):
     memories: int
     concepts: int
     pipeline_running: bool = False
+    startup_complete: bool = False
 
 
 # ── App ──
@@ -135,11 +138,107 @@ _proactive_engine = None  # ProactiveEngine — stored for notification endpoint
 _vision_integration = None  # VisionIntegration — stored for vision endpoints
 _mongo_store = None  # MongoStore — structured persistence layer
 _last_audit_result: dict = {}  # Latest system audit results — populated by audit loop
+_shutdown_event: asyncio.Event | None = None  # Global shutdown signal for background tasks
+_briefing_engine = None  # ScheduledBriefingEngine — Palantir autonomous daily briefs
+_ontology_engine = None  # OntologyEngine — Palantir Βήμα 1: typed semantic entities & relationships
+_action_graph = None    # IntelligenceActionGraph — Palantir Βήμα 2: analysis→decision→action→outcome
+_darkwhisper_engine = None  # DarkWhisperEngine — Palantir Dark Wing: clearnet OSINT synthesis
+_telegram_intel = None       # TelegramIntelTool — Αίολος' autonomous Telegram channel ops
+_startup_complete: bool = False  # True after all lifespan init completes — UI polls this
+
+
+async def _send_startup_notification() -> None:
+    """Fire-and-forget Telegram notification when all systems are ready.
+
+    Sent once per server start. Helps the user know exactly when to open
+    the UI instead of guessing / repeatedly refreshing.
+    """
+    try:
+        import httpx as _httpx
+        from xdart.config import TELEGRAM_BOT_TOKEN as _TBT, TELEGRAM_CHAT_ID as _TCI
+        components = health_tracker.get_summary()
+        healthy = sum(1 for v in components.get("components", {}).values()
+                      if v.get("status") == "ok")
+        total = len(components.get("components", {}))
+        text = (
+            f"✅ Αίολος is online and ready\n"
+            f"🧠 {healthy}/{total} subsystems green\n"
+            f"📡 Open http://localhost:8000 to connect"
+        )
+        url = f"https://api.telegram.org/bot{_TBT}/sendMessage"
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, json={"chat_id": _TCI, "text": text, "parse_mode": "Markdown"})
+        logger.info("[Startup] Telegram ready notification sent")
+    except Exception as exc:
+        logger.debug("[Startup] Telegram notification failed (non-critical): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration, _mongo_store
+    global _framework, _collector, _collector_task, _consolidation_task, _proactive_engine, _vision_integration, _mongo_store, _shutdown_event, _briefing_engine, _ontology_engine, _action_graph, _darkwhisper_engine, _startup_complete
+
+    # ── Ensure proper logging in uvicorn reload child process ──
+    import logging as _logging, sys as _sys
+    if not _logging.root.handlers or all(
+        getattr(h, '_name', '') == 'uvicorn' or 'uvicorn' in type(h).__module__
+        for h in _logging.root.handlers
+    ):
+        _handler = _logging.StreamHandler(_sys.stderr)
+        _handler.setFormatter(_logging.Formatter(
+            fmt="%(asctime)s \u2502 %(name)-25s \u2502 %(levelname)-5s \u2502 %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        _logging.root.addHandler(_handler)
+        _logging.root.setLevel(_logging.INFO)
+        _logging.getLogger("httpx").setLevel(_logging.WARNING)
+        _logging.getLogger("openai").setLevel(_logging.WARNING)
+        _logging.getLogger("urllib3").setLevel(_logging.WARNING)
+        logger.info("[Lifespan] Logging re-initialized for reload worker")
+
+    _shutdown_event = asyncio.Event()
+
+    # ── Windows ProactorEventLoop WinError 10054 suppression ──────────────────
+    # On Windows, when a browser closes an SSE or streaming connection, asyncio
+    # fires _call_connection_lost() on an already-gone socket and raises
+    # ConnectionResetError (WinError 10054). This is a spurious Python 3.12
+    # Windows bug — the connection IS properly closed (you'll see "SSE subscriber
+    # removed" right after). Install a custom exception handler that silently
+    # drops this specific error so it doesn't flood the logs.
+    def _ignore_win_connection_reset(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        handle = context.get("handle")
+        handle_repr = repr(handle) if handle else ""
+        if (
+            isinstance(exc, ConnectionResetError)
+            and "_call_connection_lost" in handle_repr
+        ):
+            return  # safe to ignore — socket is already gone
+        loop.default_exception_handler(context)
+
+    asyncio.get_running_loop().set_exception_handler(_ignore_win_connection_reset)
+    logger.info("[Lifespan] Windows WinError-10054 asyncio exception handler installed")
+
+    # ── Expand default thread pool to prevent executor starvation ──
+    # Background tasks (LLM calls ~30-60s each, NER, sub-agents, curiosity,
+    # reflection, sandbox) compete with HTTP handlers for threads.
+    # Default is min(32, cpu+4) ≈ 8-12 threads — easily exhausted when
+    # 10+ concurrent LLM calls are in flight.
+    _expanded_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=40, thread_name_prefix="xdart",
+    )
+    asyncio.get_running_loop().set_default_executor(_expanded_executor)
+    logger.info("[Lifespan] Default thread pool expanded to 40 workers")
+
+    # Pre-warm fastembed model in background so first embed call doesn't freeze
+    try:
+        from xdart.config import LOCAL_EMBEDDING_ENABLED as _LEE
+        from xdart.llm import prewarm_local_embed as _prewarm
+        if _LEE:
+            asyncio.get_running_loop().run_in_executor(_expanded_executor, _prewarm)
+            logger.info("[Lifespan] fastembed prewarm started in background thread")
+    except Exception as _e:
+        logger.warning("[Lifespan] fastembed prewarm setup failed: %s", _e)
+
     _framework = XDARTFramework()
 
     # ── MongoDB Structured Persistence ──
@@ -162,10 +261,13 @@ async def lifespan(app: FastAPI):
             # Wire LLM into MongoStore for creative imagination cycles
             _mongo_store._llm = _framework.llm
             logger.info("MongoDB connected — db=%s", MONGO_DB_NAME)
+            health_tracker.record_startup("MongoDB", True, f"connected to {MONGO_DB_NAME}")
         else:
             logger.warning("MongoDB unavailable — running without database")
+            health_tracker.record_startup("MongoDB", False, "unavailable")
     except Exception as e:
         logger.warning("MongoDB init failed (continuing without): %s", e)
+        health_tracker.record_startup("MongoDB", False, str(e))
 
     # ── Initialize Proactive Communication Engine ──
     _proactive_task = None
@@ -182,6 +284,13 @@ async def lifespan(app: FastAPI):
             )
             # Wire proactive engine into framework for pipeline awareness
             _framework._proactive_engine = _proactive_engine
+            # Set main event loop reference for thread-safe SSE delivery
+            _proactive_engine._main_loop = asyncio.get_running_loop()
+            # Wire proactive engine into WakeupProtocol so Αίολος sees pending
+            # notification batch during chat (even before 10-item flush threshold)
+            if hasattr(_framework, "wakeup") and _framework.wakeup:
+                _framework.wakeup.proactive_engine = _proactive_engine
+                logger.info("Proactive engine wired into WakeupProtocol (pending batch visible in chat)")
             # Wire prophetic memory for autonomous prophecy generation
             if hasattr(_framework, 'prophetic_memory') and _framework.prophetic_memory:
                 _proactive_engine.prophetic_memory = _framework.prophetic_memory
@@ -191,10 +300,38 @@ async def lifespan(app: FastAPI):
                 llm=_framework.llm,
             )
             _proactive_task = asyncio.create_task(digest_loop.run_forever())
-            logger.info("Proactive engine started (telegram=%s)",
+
+            # Start periodic batch flush loop (every 30 min — flushes buffer even if < 10)
+            async def _batch_flush_loop():
+                """Flush pending notification batch every 30 min regardless of batch size."""
+                while not _shutdown_event.is_set():
+                    try:
+                        await asyncio.sleep(1800)  # 30 minutes
+                        if _proactive_engine is None:
+                            continue
+                        with _proactive_engine._notif_batch_lock:
+                            pending = len(_proactive_engine._notif_batch)
+                        if pending > 0:
+                            logger.info(
+                                "[Proactive] Periodic batch flush triggered (%d pending notifications)",
+                                pending,
+                            )
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(
+                                None, _proactive_engine._flush_notification_batch
+                            )
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as exc:
+                        logger.warning("[Proactive] Batch flush loop error: %s", exc)
+
+            asyncio.create_task(_batch_flush_loop())
+            logger.info("Proactive engine started (telegram=%s, batch_flush_interval=30min)",
                         "yes" if TELEGRAM_BOT_TOKEN else "no")
+            health_tracker.record_startup("ProactiveEngine", True)
         except Exception as e:
             logger.warning("Proactive engine failed to start: %s", e)
+            health_tracker.record_startup("ProactiveEngine", False, str(e))
 
     # ── Domain-to-signal-type mapping for pattern diversity ──
     _DOMAIN_SIGNAL_MAP = {
@@ -274,6 +411,7 @@ async def lifespan(app: FastAPI):
                             len(events))
         except Exception as exc:
             logger.warning("[ProactiveAlert] Handler failed: %s", exc)
+            health_tracker.record_error("ProactiveAlert", f"Handler failed: {exc}", exc)
 
     # Start background perception collector if enabled
     # Pre-initialize so Python doesn't treat them as unbound locals when DataCollector
@@ -294,6 +432,7 @@ async def lifespan(app: FastAPI):
                 entity_graph = EntityGraph(persist_path=entity_graph_path)
                 logger.info("Entity Knowledge Graph initialized (%d nodes, %d edges)",
                             entity_graph.node_count, entity_graph.edge_count)
+                health_tracker.record_startup("EntityGraph", True, f"{entity_graph.node_count} nodes")
                 # Wire MongoDB for dual-write
                 if _mongo_store and _mongo_store.available:
                     entity_graph._mongo = _mongo_store
@@ -308,6 +447,7 @@ async def lifespan(app: FastAPI):
                             logger.warning("Entity graph MongoDB import failed: %s", _ie)
             except Exception as e:
                 logger.warning("Entity graph init failed (continuing without): %s", e)
+                health_tracker.record_startup("EntityGraph", False, str(e))
 
             # ── Financial Market Collector (VIX, S&P500, Oil, Gold, BTC, etc.) ──
             market_collector = None
@@ -316,8 +456,10 @@ async def lifespan(app: FastAPI):
                 market_collector = MarketDataCollector()
                 logger.info("Financial market collector initialized (%d tickers)",
                             len(market_collector._history) or 8)
+                health_tracker.record_startup("FinancialFeeds", True)
             except Exception as e:
                 logger.warning("Financial feeds init failed (continuing without): %s", e)
+                health_tracker.record_startup("FinancialFeeds", False, str(e))
 
             # Wire entity graph + market collector into ProactiveEngine
             if _proactive_engine:
@@ -330,6 +472,30 @@ async def lifespan(app: FastAPI):
             if _framework:
                 _framework._entity_graph = entity_graph
                 _framework._market_collector = market_collector
+
+            # ── Typed Semantic Ontology (Palantir Βήμα 1) ──
+            try:
+                from xdart.intelligence.ontology import OntologyEngine
+                from xdart.knowledge.entity_graph import _KNOWN_ENTITIES
+                _ontology_engine = OntologyEngine(
+                    entity_graph=entity_graph,
+                    mongo=_mongo_store if _mongo_store and _mongo_store.available else None,
+                    persist_path=Path(PERCEPTION_DB_PATH).parent,
+                    known_entity_names=set(_KNOWN_ENTITIES.keys()),
+                )
+                _ontology_engine.start()
+                logger.info(
+                    "Typed Semantic Ontology initialized (%d entities, %d relationships)",
+                    len(_ontology_engine._entities), len(_ontology_engine._relationships),
+                )
+                health_tracker.record_startup("OntologyEngine", True,
+                                              f"{len(_ontology_engine._entities)} entities")
+                # Wire into framework for chat context injection
+                if _framework:
+                    _framework._ontology_engine = _ontology_engine
+            except Exception as _oe:
+                logger.warning("Ontology engine init failed (continuing without): %s", _oe)
+                health_tracker.record_startup("OntologyEngine", False, str(_oe))
 
             collector = DataCollector(
                 db=perception_db,
@@ -345,12 +511,17 @@ async def lifespan(app: FastAPI):
             )
             _collector = collector  # store reference for intelligence endpoint
             _collector_task = asyncio.create_task(collector.run_forever())
+            # Wire spike detector into framework for context injection
+            if _framework:
+                _framework._spike_detector = collector.spike_detector
             # Wire PerceptionDB into ProactiveEngine for auto-research storage
             if _proactive_engine:
                 _proactive_engine.perception_db = perception_db
             logger.info("Perception collector started as background task")
+            health_tracker.record_startup("PerceptionCollector", True)
         except Exception as e:
             logger.warning("Perception collector failed to start: %s", e)
+            health_tracker.record_startup("PerceptionCollector", False, str(e))
 
     # NOTE: Memory consolidation loop is started AFTER the vision system block
     # so that _vision_integration is available when the loop is created.
@@ -421,13 +592,16 @@ async def lifespan(app: FastAPI):
                                 )
                     except Exception as exc:
                         logger.warning("[SandboxMaint] Maintenance cycle failed: %s", exc)
+                        health_tracker.record_error("LogicSandbox", f"Maintenance cycle failed: {exc}", exc)
 
                     await asyncio.sleep(30 * 60)  # Every 30 minutes
 
             _sandbox_maintenance_task = asyncio.create_task(_sandbox_maintenance_loop())
             logger.info("Logic Sandbox maintenance loop started (30min interval)")
+            health_tracker.record_startup("LogicSandbox", True)
     except Exception as e:
         logger.warning("Logic Sandbox maintenance loop failed to start: %s", e)
+        health_tracker.record_startup("LogicSandbox", False, str(e))
 
     # Start background prophecy resolution loop (every 6 hours)
     _resolver_task = None
@@ -470,12 +644,15 @@ async def lifespan(app: FastAPI):
                             )
                     except Exception as exc:
                         logger.warning("[ProphecyResolver] Background run failed: %s", exc)
+                        health_tracker.record_error("ProphecyResolver", f"Background run failed: {exc}", exc)
                 await asyncio.sleep(6 * 3600)  # Then every 6 hours
 
         _resolver_task = asyncio.create_task(_prophecy_resolution_loop())
         logger.info("Prophecy resolution loop started (6h interval)")
+        health_tracker.record_startup("ProphecyResolver", True)
     except Exception as e:
         logger.warning("Prophecy resolution loop failed to start: %s", e)
+        health_tracker.record_startup("ProphecyResolver", False, str(e))
 
     # Start background curiosity loop (autonomous exploration every 15 min)
     _curiosity_task = None
@@ -542,8 +719,10 @@ async def lifespan(app: FastAPI):
             logger.info("Curiosity loop started (30min interval, web=%s, perception=%s)",
                         "yes" if _web_fn else "no",
                         "yes" if _perception_db else "no")
+            health_tracker.record_startup("CuriosityLoop", True)
         except Exception as e:
             logger.warning("Curiosity loop failed to start: %s", e)
+            health_tracker.record_startup("CuriosityLoop", False, str(e))
 
     # ── Shared memory store function for background subsystems ──
     # Routes to SemanticMemory.store_truth() → embeds in Qdrant
@@ -564,6 +743,7 @@ async def lifespan(app: FastAPI):
                             len(content), tags)
         except Exception as exc:
             logger.warning("[BackgroundMemory] Store failed: %s", exc)
+            health_tracker.record_error("BackgroundMemory", f"Store failed: {exc}", exc)
 
     # ── Create multimodal collector (wired INTO main perception cycle, not standalone) ──
     _multimodal_collector = None
@@ -590,11 +770,230 @@ async def lifespan(app: FastAPI):
             # Wire into already-running DataCollector (started before this block)
             if _collector:
                 _collector.multimodal_collector = _multimodal_collector
+            # Wire into ProactiveEngine so digest loop can access live sensor data
+            if _proactive_engine:
+                _proactive_engine._multimodal_collector = _multimodal_collector
             logger.info("Multimodal OSINT created (airspace=%s, satellite=%s, maritime=yes) — runs every perception cycle",
                         "auth" if OPENSKY_USER else "anon",
                         "yes" if FIRMS_MAP_KEY else "no")
+            health_tracker.record_startup("MultimodalOSINT", True)
         except Exception as e:
             logger.warning("Multimodal perception failed to init: %s", e)
+            health_tracker.record_startup("MultimodalOSINT", False, str(e))
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PALANTIR P0: Real-Time Intelligence Feeds + Sanctions + Calendar
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Real-Time Feeds (Finnhub forex + Cyber Threats + Airspace Warnings) ──
+    _realtime_feeds = None
+    try:
+        from xdart.config import OTX_API_KEY, GREYNOISE_API_KEY
+    except ImportError:
+        OTX_API_KEY = GREYNOISE_API_KEY = ""
+
+    try:
+        from xdart.perception.realtime_feeds import RealtimeFeedManager
+        _realtime_feeds = RealtimeFeedManager(
+            finnhub_api_key=FINNHUB_API_KEY,
+            otx_api_key=OTX_API_KEY,
+            greynoise_api_key=GREYNOISE_API_KEY,
+        )
+        if _proactive_engine:
+            _proactive_engine._realtime_feeds = _realtime_feeds
+        # Wire into already-running DataCollector
+        if _collector:
+            _collector.realtime_feeds = _realtime_feeds
+        # Wire realtime digest into multimodal collector's external sections
+        if _multimodal_collector and _realtime_feeds:
+            _multimodal_collector._external_digest_sections.append(
+                _realtime_feeds.get_realtime_digest
+            )
+        logger.info("Real-Time Feeds initialized (finnhub=%s, otx=%s, greynoise=%s)",
+                    "yes" if FINNHUB_API_KEY else "no",
+                    "yes" if OTX_API_KEY else "no",
+                    "yes" if GREYNOISE_API_KEY else "no")
+        health_tracker.record_startup("RealtimeFeeds", True)
+    except Exception as e:
+        logger.warning("Real-Time Feeds failed to init: %s", e)
+        health_tracker.record_startup("RealtimeFeeds", False, str(e))
+
+    # ── Sanctions Cross-Reference Engine (OFAC + EU + UN) ──
+    _sanctions_registry = None
+    try:
+        from xdart.config import SANCTIONS_ENABLED
+    except ImportError:
+        SANCTIONS_ENABLED = True
+
+    if SANCTIONS_ENABLED:
+        try:
+            from xdart.knowledge.sanctions import SanctionsRegistry
+            _sanctions_registry = SanctionsRegistry()
+            if _framework:
+                _framework._sanctions_registry = _sanctions_registry
+            if _proactive_engine:
+                _proactive_engine._sanctions_registry = _sanctions_registry
+            # Wire sanctions digest into multimodal collector's external sections
+            if _multimodal_collector and _sanctions_registry:
+                _multimodal_collector._external_digest_sections.append(
+                    _sanctions_registry.get_sanctions_digest
+                )
+
+            # Start async refresh task (downloads lists on first run)
+            async def _sanctions_refresh_loop():
+                """Refresh sanctions lists every 24h."""
+                await asyncio.sleep(30)  # 30s initial delay
+                while True:
+                    try:
+                        await _sanctions_registry.refresh()
+                        # Cross-reference against EntityGraph entities
+                        if _framework and hasattr(_framework, '_entity_graph') and _framework._entity_graph:
+                            try:
+                                all_entities = list(_framework._entity_graph._graph.nodes)[:5000]
+                                new_matches = _sanctions_registry.cross_reference_entities(all_entities)
+                                if new_matches:
+                                    logger.info("[Sanctions] %d new entity matches found", len(new_matches))
+                                    # Feed matches as signals
+                                    if _proactive_engine:
+                                        for signal in _sanctions_registry.get_match_signals()[:10]:
+                                            _proactive_engine.feed_signal(
+                                                source_type="sanctions_match",
+                                                headline=signal["headline"],
+                                                region=signal.get("region", "GLOBAL"),
+                                                raw_data=signal.get("data"),
+                                            )
+                            except Exception as e:
+                                logger.debug("[Sanctions] Entity cross-ref failed: %s", e)
+                    except Exception as e:
+                        logger.warning("[Sanctions] Refresh failed: %s", e)
+                    await asyncio.sleep(86400)  # 24h
+
+            _sanctions_task = asyncio.create_task(_sanctions_refresh_loop())
+            logger.info("Sanctions Registry initialized (OFAC + EU + UN auto-download)")
+            health_tracker.record_startup("SanctionsRegistry", True)
+        except Exception as e:
+            logger.warning("Sanctions Registry failed to init: %s", e)
+            health_tracker.record_startup("SanctionsRegistry", False, str(e))
+
+    # ── Geopolitical Event Calendar ──
+    _event_calendar = None
+    try:
+        from xdart.config import EVENT_CALENDAR_ENABLED
+    except ImportError:
+        EVENT_CALENDAR_ENABLED = True
+
+    if EVENT_CALENDAR_ENABLED:
+        try:
+            from xdart.knowledge.event_calendar import GeopoliticalCalendar
+            _event_calendar = GeopoliticalCalendar()
+            if _framework:
+                _framework._event_calendar = _event_calendar
+            if _proactive_engine:
+                _proactive_engine._event_calendar = _event_calendar
+            # Wire calendar digest into multimodal collector's external sections
+            if _multimodal_collector and _event_calendar:
+                _multimodal_collector._external_digest_sections.append(
+                    _event_calendar.get_calendar_digest
+                )
+
+            # Start calendar proximity check loop
+            async def _calendar_check_loop():
+                """Check for approaching events every hour."""
+                await asyncio.sleep(60)  # 1 min initial delay
+                while True:
+                    try:
+                        # Generate proximity signals
+                        signals = _event_calendar.get_proximity_signals()
+                        if signals and _proactive_engine:
+                            for sig in signals:
+                                _proactive_engine.feed_signal(
+                                    source_type="calendar_proximity",
+                                    headline=sig["headline"],
+                                    region=sig.get("region", "GLOBAL"),
+                                    raw_data=sig.get("data"),
+                                )
+                                logger.info("[Calendar] Proximity alert: %s", sig["headline"])
+                    except Exception as e:
+                        logger.warning("[Calendar] Check failed: %s", e)
+                    await asyncio.sleep(3600)  # 1 hour
+
+            _calendar_task = asyncio.create_task(_calendar_check_loop())
+            upcoming = _event_calendar.get_upcoming_events(14)
+            logger.info("Event Calendar initialized (%d curated, %d upcoming in 14d)",
+                        len(_event_calendar._curated_events), len(upcoming))
+            health_tracker.record_startup("EventCalendar", True)
+        except Exception as e:
+            logger.warning("Event Calendar failed to init: %s", e)
+            health_tracker.record_startup("EventCalendar", False, str(e))
+
+    # ── Temporal Reasoning Engine (P3 — recurring pattern learning) ──
+    _temporal_engine = None
+    try:
+        from xdart.phases.temporal_reasoning import TemporalReasoningEngine
+        _temporal_engine = TemporalReasoningEngine(
+            llm=_framework.llm if _framework else None,
+            calendar=_event_calendar,
+        )
+        # Wire perception DB (get from proactive engine if available)
+        _pdb = getattr(_proactive_engine, "perception_db", None) if _proactive_engine else None
+        if _pdb:
+            _temporal_engine.perception_db = _pdb
+        # Wire entity graph (stored on framework)
+        if _framework and getattr(_framework, "_entity_graph", None):
+            _temporal_engine.entity_graph = _framework._entity_graph
+        # Wire into framework
+        if _framework:
+            _framework._temporal_engine = _temporal_engine
+        # Wire into proactive engine
+        if _proactive_engine:
+            _proactive_engine._temporal_engine = _temporal_engine
+
+        # Background loop: periodic temporal checks (every 2 hours)
+        async def _temporal_check_loop():
+            """Record event-window observations and check precursors."""
+            await asyncio.sleep(300)  # 5 min initial delay
+            while True:
+                try:
+                    loop = asyncio.get_running_loop()
+                    results = await loop.run_in_executor(
+                        None, _temporal_engine.periodic_check,
+                    )
+                    obs = results.get("observations_recorded", 0)
+                    alerts = results.get("precursor_alerts", [])
+                    seqs = results.get("sequences_active", 0)
+                    if obs or alerts:
+                        logger.info(
+                            "[Temporal] Periodic check: %d obs recorded, "
+                            "%d precursor alerts, %d active sequences",
+                            obs, len(alerts), seqs,
+                        )
+                    # Feed precursor alerts to proactive engine
+                    if alerts and _proactive_engine:
+                        for alert in alerts:
+                            _proactive_engine.feed_signal(
+                                source_type="temporal_precursor",
+                                headline=(
+                                    f"TEMPORAL PATTERN: {alert['event_name']} in "
+                                    f"{alert['days_until']}d — {alert.get('pattern_description', 'pattern match')}"
+                                ),
+                                region="GLOBAL",
+                                raw_data=alert,
+                            )
+                except Exception as e:
+                    logger.warning("[Temporal] Periodic check failed: %s", e)
+                await asyncio.sleep(7200)  # 2 hours
+
+        _temporal_task = asyncio.create_task(_temporal_check_loop())
+
+        stats = _temporal_engine.stats()
+        logger.info(
+            "Temporal Reasoning Engine initialized (%d patterns, %d mature, %d observations)",
+            stats["total_patterns"], stats["mature_patterns"], stats["total_observations"],
+        )
+        health_tracker.record_startup("TemporalReasoning", True)
+    except Exception as e:
+        logger.warning("Temporal Reasoning Engine failed to init: %s", e)
+        health_tracker.record_startup("TemporalReasoning", False, str(e))
 
     # ── Create cross-system learning (wired INTO hourly perception cycle, not standalone) ──
     _cross_system_loop = None
@@ -634,8 +1033,10 @@ async def lifespan(app: FastAPI):
                 _collector.cross_system_runner = _cross_system_loop
             logger.info("Cross-system learning created (core=%s, openalex=free) — runs every hourly cycle",
                         "key" if CORE_API_KEY else "unauth")
+            health_tracker.record_startup("CrossSystemLearning", True)
         except Exception as e:
             logger.warning("Cross-system learning failed to init: %s", e)
+            health_tracker.record_startup("CrossSystemLearning", False, str(e))
 
     # ── Vision System (Αίολος' Eyes) — face detection + recognition ──
     try:
@@ -669,8 +1070,10 @@ async def lifespan(app: FastAPI):
                         "yes" if getattr(_framework, 'memory', None) else "no",
                         "yes" if getattr(_framework, 'semantic_memory', None) else "no",
                         "yes" if getattr(_framework, 'wisdom_tracker', None) else "no")
+            health_tracker.record_startup("VisionIntegration", True)
         except Exception as e:
             logger.warning("Vision integration failed to initialize: %s", e)
+            health_tracker.record_startup("VisionIntegration", False, str(e))
 
     # Start background memory consolidation loop (sleep process)
     # Placed AFTER vision init so _vision_integration is available
@@ -692,11 +1095,14 @@ async def lifespan(app: FastAPI):
         logger.info("Memory consolidation loop started (30min interval, vision=%s, imagination=%s)",
                      "yes" if _vision_integration else "no",
                      "yes" if _mongo_store and _mongo_store.available else "no")
+        health_tracker.record_startup("MemoryConsolidation", True)
     except Exception as e:
         logger.warning("Memory consolidation loop failed to start: %s", e)
+        health_tracker.record_startup("MemoryConsolidation", False, str(e))
 
     # Start background System Integrity Audit loop (every 2 hours)
     _audit_task = None
+    _reflection_task = None
     try:
         async def _system_audit_loop():
             """Periodic system health & capability audit — checks all subsystems."""
@@ -836,34 +1242,281 @@ async def lifespan(app: FastAPI):
                         )
                 except Exception as exc:
                     logger.warning("[SystemAudit] Audit cycle failed: %s", exc)
+                    health_tracker.record_error("SystemAudit", f"Audit cycle failed: {exc}", exc)
 
                 await asyncio.sleep(2 * 3600)  # Every 2 hours
 
         _audit_task = asyncio.create_task(_system_audit_loop())
         logger.info("System integrity audit loop started (2h interval)")
+        health_tracker.record_startup("SystemAudit", True)
     except Exception as e:
         logger.warning("System audit loop failed to start: %s", e)
+        health_tracker.record_startup("SystemAudit", False, str(e))
 
-    logger.info("XDART-Φ API started")
+    # Start autonomous reflection loop (meta-cognition every 30 min)
+    try:
+        from xdart.phases.reflection_loop import AutonomousReflectionLoop
+        _principle_registry = None
+        try:
+            _principle_registry = getattr(_framework, 'principle_registry', None)
+        except Exception:
+            pass
+        reflection_loop = AutonomousReflectionLoop(
+            llm=_framework.llm,
+            character_path=str(CHARACTER_STATE_PATH),
+            curiosity_engine=getattr(_framework, 'curiosity_engine', None),
+            proactive_engine=_proactive_engine,
+            principle_registry=_principle_registry,
+            semantic_memory=getattr(_framework, 'semantic_memory', None),
+            mongo=_mongo_store if _mongo_store and _mongo_store.available else None,
+            interval_minutes=30,
+        )
+        # Give the reflection loop access to core engine for goal actions (agents, shell)
+        reflection_loop.core_engine = _framework
+        _reflection_task = asyncio.create_task(reflection_loop.run_forever())
+        logger.info("Autonomous reflection loop started (30min interval)")
+        health_tracker.record_startup("ReflectionLoop", True)
+    except Exception as e:
+        logger.warning("Reflection loop failed to start: %s", e)
+        health_tracker.record_startup("ReflectionLoop", False, str(e))
+
+    # ══════════════════════════════════════════════════════════════
+    #  PALANTIR: Intelligence Action Graph (Βήμα 2)
+    #  analysis → decision → action → outcome feedback loop
+    # ══════════════════════════════════════════════════════════════
+    _action_graph = None
+    try:
+        if _framework:
+            from xdart.intelligence.action_graph import IntelligenceActionGraph
+            _action_graph = IntelligenceActionGraph(
+                llm=_framework.llm,
+                proactive_engine=_proactive_engine,
+                mongo=_mongo_store if _mongo_store and _mongo_store.available else None,
+                persist_path=Path("."),
+            )
+            _action_graph.start()
+            logger.info(
+                "Intelligence Action Graph initialized (%d analyses, %d pending actions)",
+                len(_action_graph._analyses),
+                len(_action_graph.get_pending_actions()),
+            )
+            health_tracker.record_startup("ActionGraph", True)
+            # Wire into framework for chat context + briefing context
+            _framework._action_graph = _action_graph
+            # Wire into briefing engine if it exists
+            # (briefing engine init below will also set this)
+    except Exception as _age:
+        logger.warning("Intelligence Action Graph init failed (continuing without): %s", _age)
+        health_tracker.record_startup("ActionGraph", False, str(_age))
+
+    # ══════════════════════════════════════════════════════════════
+    #  PALANTIR: Scheduled Autonomous Briefing Engine
+    #  Αίολος reports daily at 06:00 Athens. No human trigger needed.
+    # ══════════════════════════════════════════════════════════════
+    _briefing_engine = None
+    try:
+        from xdart.config import BRIEFING_ENABLED, BRIEFING_SCHEDULE_TIMES, BRIEFING_TIMEZONE
+        if BRIEFING_ENABLED and _proactive_engine and _framework:
+            from xdart.intelligence.scheduled_briefing import ScheduledBriefingEngine
+            _briefing_engine = ScheduledBriefingEngine(
+                llm=_framework.llm,
+                proactive_engine=_proactive_engine,
+                schedule_times=BRIEFING_SCHEDULE_TIMES,
+                tz_name=BRIEFING_TIMEZONE,
+                telegram_bot_token=TELEGRAM_BOT_TOKEN,
+                telegram_chat_id=TELEGRAM_CHAT_ID,
+                mongo=_mongo_store if _mongo_store and _mongo_store.available else None,
+            )
+            _briefing_engine.start()
+            logger.info(
+                "Scheduled Briefing Engine started (schedule=%s tz=%s telegram=%s)",
+                BRIEFING_SCHEDULE_TIMES, BRIEFING_TIMEZONE,
+                "yes" if TELEGRAM_BOT_TOKEN else "no",
+            )
+            health_tracker.record_startup("ScheduledBriefing", True,
+                                          f"schedule={BRIEFING_SCHEDULE_TIMES}")
+        elif not BRIEFING_ENABLED:
+            logger.info("Scheduled Briefing Engine disabled (BRIEFING_ENABLED=false)")
+    except Exception as e:
+        logger.warning("Scheduled Briefing Engine failed to start: %s", e)
+        health_tracker.record_startup("ScheduledBriefing", False, str(e))
+
+    # ══════════════════════════════════════════════════════════════
+    #  PALANTIR DARK WING: Dark Whisper Intelligence Engine
+    #  Clearnet OSINT → dirty pool → LLM triage → Creative Nexus → synthesis
+    # ══════════════════════════════════════════════════════════════
+    _darkwhisper_engine = None
+    try:
+        from xdart.config import DARKWEB_ENABLED
+        if DARKWEB_ENABLED and _framework and _proactive_engine:
+            from xdart.perception.darkweb import DirtyPool, DarkWebCollector
+            from xdart.intelligence.dark_triage import DarkSignalTriage
+            from xdart.intelligence.darkwhisper import DarkWhisperEngine
+
+            _mongo_db = _mongo_store._db if _mongo_store and _mongo_store.available else None
+            _dirty_pool = DirtyPool(mongo_db=_mongo_db)
+            _dark_collector = DarkWebCollector(dirty_pool=_dirty_pool)
+            _dark_triage = DarkSignalTriage(
+                dirty_pool=_dirty_pool,
+                llm=_framework.llm,
+            )
+            _darkwhisper_engine = DarkWhisperEngine(
+                llm=_framework.llm,
+                proactive_engine=_proactive_engine,
+                mongo_store=_mongo_store if _mongo_store and _mongo_store.available else None,
+                mongo_db=_mongo_db,
+                dirty_pool=_dirty_pool,
+                triage=_dark_triage,
+                collector=_dark_collector,
+            )
+            # Start the collector (asyncio task) and synthesis engine (thread)
+            _dark_collector.start()
+            _darkwhisper_engine.start()
+            # Wire into framework for context injection in chat
+            if _framework:
+                _framework._darkwhisper_engine = _darkwhisper_engine
+                # Wire into WakeupProtocol so every API call injects live Dark Wing
+                # status into the identity context (bridges the stateless LLM memory gap)
+                if hasattr(_framework, "wakeup") and _framework.wakeup:
+                    _framework.wakeup.darkwhisper_engine = _darkwhisper_engine
+                    logger.info("Dark Wing wired into WakeupProtocol (live status per call)")
+            # Wire into ProactiveEngine so pattern fires trigger dark signal resonance
+            if _proactive_engine:
+                _proactive_engine._darkwhisper_engine = _darkwhisper_engine
+                logger.info("Dark Wing wired into ProactiveEngine (pattern resonance active)")
+            logger.info(
+                "Dark Whisper Intelligence Engine started "
+                "(channels=%d, ahmia=%s, paste=%s)",
+                len(__import__("xdart.config", fromlist=["DARKWEB_TELEGRAM_CHANNELS"]).DARKWEB_TELEGRAM_CHANNELS),
+                __import__("xdart.config", fromlist=["DARKWEB_AHMIA_ENABLED"]).DARKWEB_AHMIA_ENABLED,
+                __import__("xdart.config", fromlist=["DARKWEB_PASTE_ENABLED"]).DARKWEB_PASTE_ENABLED,
+            )
+            health_tracker.record_startup("DarkWhisperEngine", True, "clearnet OSINT active")
+        elif not DARKWEB_ENABLED:
+            logger.info("Dark Whisper Intelligence disabled (DARKWEB_ENABLED=false)")
+            health_tracker.record_startup("DarkWhisperEngine", False, "disabled by config")
+    except Exception as _dwe:
+        logger.warning("Dark Whisper Engine failed to start (continuing without): %s", _dwe)
+        health_tracker.record_startup("DarkWhisperEngine", False, str(_dwe))
+
+    # ══════════════════════════════════════════════════════════════
+    #  TELEGRAM INTELLIGENCE TOOL — Αίολος' autonomous channel ops
+    #  Search • Validate • Monitor — feeds into DirtyPool pipeline
+    # ══════════════════════════════════════════════════════════════
+    global _telegram_intel
+    try:
+        from xdart.tools.telegram_intel_tool import TelegramIntelTool
+        from xdart.config import (
+            TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_NAME, BRAVE_SEARCH_API_KEY,
+        )
+        _telegram_intel = TelegramIntelTool(
+            brave_api_key=BRAVE_SEARCH_API_KEY,
+            api_id=TELEGRAM_API_ID,
+            api_hash=TELEGRAM_API_HASH,
+            session_name=TELEGRAM_SESSION_NAME,
+            dark_collector=_dark_collector if "_dark_collector" in dir() else None,
+            dirty_pool=_dirty_pool if "_dirty_pool" in dir() else None,
+        )
+        # Wire into framework for context injection in chat
+        if _framework:
+            _framework.telegram_intel = _telegram_intel
+            # Wire into WakeupProtocol so every API call injects live Telegram Intel
+            # status into the identity context (bridges the stateless LLM memory gap)
+            if hasattr(_framework, "wakeup") and _framework.wakeup:
+                _framework.wakeup.telegram_intel = _telegram_intel
+                logger.info("Telegram Intel Tool wired into WakeupProtocol (live status per call)")
+        health_tracker.record_startup(
+            "TelegramIntelTool",
+            True,
+            f"tier1=active, tier2={'available' if TELEGRAM_API_ID else 'inactive'}",
+        )
+        logger.info(
+            "Telegram Intel Tool initialized (tier1=active, tier2=%s, brave=%s)",
+            "available" if TELEGRAM_API_ID else "inactive (no API_ID)",
+            "YES" if BRAVE_SEARCH_API_KEY else "NO (fallback to DDG)",
+        )
+    except Exception as _ti_exc:
+        logger.warning("Telegram Intel Tool failed to init (continuing without): %s", _ti_exc)
+        health_tracker.record_startup("TelegramIntelTool", False, str(_ti_exc))
+
+    # ── Startup complete ──────────────────────────────────────────────────────
+    _startup_complete = True
+    logger.info("XDART-Φ ✅ API fully initialized and ready (all systems green)")
+
+    # Send Telegram notification so user knows the server is ready to use.
+    # Runs as a fire-and-forget background task — doesn't block anything.
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        asyncio.create_task(_send_startup_notification())
+
     yield
 
-    # ── Shutdown: record temporal state for offline gap detection ──
+    # ── Shutdown: signal all background tasks to stop gracefully ──
+    logger.info("XDART-Φ API shutting down — signalling background tasks...")
+    _shutdown_event.set()  # Signal all loops to stop at next check
+
+    # Stop briefing engine (daemon thread — stop() is graceful)
+    if _briefing_engine:
+        try:
+            _briefing_engine.stop()
+        except Exception:
+            pass
+
+    # Stop Palantir Βήμα 1 + Βήμα 2 engines
+    if _ontology_engine:
+        try:
+            _ontology_engine.stop()
+        except Exception:
+            pass
+    if _action_graph:
+        try:
+            _action_graph.stop()
+        except Exception:
+            pass
+
+    # Stop Dark Whisper Engine (Dark Wing)
+    if _darkwhisper_engine:
+        try:
+            _darkwhisper_engine.stop()
+            if hasattr(_darkwhisper_engine, "collector"):
+                _darkwhisper_engine.collector.stop()
+        except Exception:
+            pass
+
+    # Record temporal state for offline gap detection
     if _framework and hasattr(_framework, 'temporal_clock'):
         _framework.temporal_clock.record_shutdown()
 
-    if _collector_task:
-        _collector_task.cancel()
-    if _consolidation_task:
-        _consolidation_task.cancel()
-    if _resolver_task:
-        _resolver_task.cancel()
-    if _curiosity_task:
-        _curiosity_task.cancel()
-    if _proactive_task:
-        _proactive_task.cancel()
-    # Multimodal + cross-system now run inside collector — no separate tasks
-    if _audit_task:
-        _audit_task.cancel()
+    # Collect all active tasks
+    _bg_tasks = [t for t in [
+        _collector_task, _consolidation_task, _resolver_task,
+        _curiosity_task, _proactive_task, _audit_task, _reflection_task,
+    ] if t and not t.done()]
+
+    # Give tasks a moment to notice shutdown_event and exit gracefully
+    if _bg_tasks:
+        logger.info("XDART-Φ Waiting for %d background tasks to finish...", len(_bg_tasks))
+        # Wait up to 2 seconds for graceful exit
+        done, pending = await asyncio.wait(_bg_tasks, timeout=2.0)
+        # Force-cancel anything still running
+        for task in pending:
+            task.cancel()
+        if pending:
+            # Wait for cancellations to propagate
+            await asyncio.wait(pending, timeout=1.0)
+            logger.info("XDART-Φ Force-cancelled %d remaining tasks", len(pending))
+
+    # Shutdown LLM thread pools AFTER all tasks are done
+    if _framework and hasattr(_framework, 'llm') and _framework.llm:
+        for pool_name in ('_timeout_pool', '_fallback_pool'):
+            pool = getattr(_framework.llm, pool_name, None)
+            if pool:
+                pool.shutdown(wait=False, cancel_futures=True)
+        logger.info("XDART-Φ LLM thread pools shut down")
+
+    # Shutdown expanded executor
+    _expanded_executor.shutdown(wait=False, cancel_futures=True)
+    logger.info("XDART-Φ Thread pool shut down")
+
     logger.info("XDART-Φ API stopped")
 
 
@@ -884,15 +1537,161 @@ app.add_middleware(
 
 @app.get("/xdart/health", response_model=HealthResponse)
 async def health():
-    def _get():
-        return HealthResponse(
-            status="ok",
-            model=OPENAI_MODEL,
-            memories=_framework.memory.entry_count if _framework else 0,
-            concepts=_framework.memory.concept_count if _framework else 0,
-            pipeline_running=_framework.pipeline_running if _framework else False,
-        )
-    return await asyncio.get_event_loop().run_in_executor(None, _get)
+    """Lightweight health check — never blocked by thread pool."""
+    return HealthResponse(
+        status="ok" if _startup_complete else "starting",
+        model=OPENAI_MODEL,
+        memories=_framework.memory.entry_count if _framework else 0,
+        concepts=_framework.memory.concept_count if _framework else 0,
+        pipeline_running=_framework.pipeline_running if _framework else False,
+        startup_complete=_startup_complete,
+    )
+
+
+@app.get("/xdart/system/errors")
+async def system_errors():
+    """Full subsystem health report — errors, statuses, uptime.
+
+    Αίολος and the dashboard use this to see what's broken and what's healthy.
+    """
+    return health_tracker.get_summary()
+
+
+# ══════════════════════════════════════════════════════════════
+#  HOT-RELOAD — surgical module reload without full restart
+# ══════════════════════════════════════════════════════════════
+
+# Modules that can be safely reloaded at runtime.
+# After reload, methods on the _framework instance are patched so
+# new code takes effect immediately — no restart, no lost state.
+_HOT_RELOAD_MODULES = [
+    "xdart.config",
+    "xdart.llm",
+    "xdart.models",
+    "xdart.core",
+    "xdart.proactive",
+    "xdart.adversarial",
+    "xdart.tools.agent_spawner",
+    "xdart.tools.shell_executor",
+    "xdart.knowledge.mongo",
+    "xdart.knowledge.entity_graph",
+    "xdart.knowledge.patterns",
+    "xdart.knowledge.views_catalog",
+    "xdart.phases.reflection_loop",
+    "xdart.phases.wakeup",
+    "xdart.phases.memory",
+    "xdart.phases.memory_architecture",
+    "xdart.perception.context_retriever",
+    "xdart.perception.collector",
+    "xdart.perception.filter",
+    "xdart.perception.keyword_spikes",
+    "xdart.evolution.core",
+    "xdart.evolution.sandbox",
+    "xdart.evolution.self_knowledge",
+]
+
+
+@app.post("/xdart/hot-reload")
+async def hot_reload(modules: list[str] | None = None):
+    """Reload Python modules without restarting the server.
+
+    If no modules specified, reloads all key modules.
+    After reload, patches the running framework instance so new
+    code (prompts, logic, tools) takes effect immediately.
+
+    Background tasks (CuriosityLoop, ReflectionLoop, etc.) keep running.
+    MongoDB/Qdrant connections stay alive.
+    """
+    import importlib
+    import sys
+    import time as _time
+
+    target_modules = modules or _HOT_RELOAD_MODULES
+    results = {"reloaded": [], "failed": [], "patched": [], "duration_ms": 0}
+    t0 = _time.perf_counter()
+
+    # Phase 1: Reload requested modules
+    for mod_name in target_modules:
+        if mod_name not in sys.modules:
+            results["failed"].append({"module": mod_name, "error": "not loaded"})
+            continue
+        try:
+            importlib.reload(sys.modules[mod_name])
+            results["reloaded"].append(mod_name)
+        except Exception as e:
+            results["failed"].append({"module": mod_name, "error": str(e)})
+            logger.warning("[HotReload] Failed to reload %s: %s", mod_name, e)
+
+    # Phase 2: Patch the running framework instance with new class methods
+    if _framework and "xdart.core" in results["reloaded"]:
+        try:
+            from xdart.core import XDARTFramework as NewClass
+            # Patch all methods from the new class onto the existing instance
+            for attr_name in dir(NewClass):
+                if attr_name.startswith("__"):
+                    continue
+                new_attr = getattr(NewClass, attr_name)
+                if callable(new_attr) and not isinstance(new_attr, property):
+                    try:
+                        import types
+                        if isinstance(new_attr, staticmethod):
+                            setattr(_framework, attr_name, new_attr)
+                        else:
+                            bound = types.MethodType(new_attr, _framework)
+                            setattr(_framework, attr_name, bound)
+                    except Exception:
+                        pass
+            results["patched"].append("XDARTFramework (methods)")
+            logger.info("[HotReload] Patched XDARTFramework methods on live instance")
+        except Exception as e:
+            results["failed"].append({"module": "framework_patch", "error": str(e)})
+
+    # Patch AgentSpawner if reloaded
+    if _framework and _framework.agent_spawner and "xdart.tools.agent_spawner" in results["reloaded"]:
+        try:
+            from xdart.tools.agent_spawner import AgentSpawner as NewSpawner
+            import types
+            for attr_name in dir(NewSpawner):
+                if attr_name.startswith("__"):
+                    continue
+                new_attr = getattr(NewSpawner, attr_name)
+                if callable(new_attr) and not isinstance(new_attr, property):
+                    try:
+                        bound = types.MethodType(new_attr, _framework.agent_spawner)
+                        setattr(_framework.agent_spawner, attr_name, bound)
+                    except Exception:
+                        pass
+            results["patched"].append("AgentSpawner (methods)")
+        except Exception as e:
+            results["failed"].append({"module": "spawner_patch", "error": str(e)})
+
+    # Patch MongoStore if reloaded — focus on _action_* handlers + public methods
+    if _mongo_store and "xdart.knowledge.mongo" in results["reloaded"]:
+        try:
+            from xdart.knowledge.mongo import MongoStore as NewMongo
+            import types
+            for attr_name in dir(NewMongo):
+                if attr_name.startswith("__"):
+                    continue
+                # Patch action handlers and public methods
+                if not (attr_name.startswith("_action_") or not attr_name.startswith("_")):
+                    continue
+                new_attr = getattr(NewMongo, attr_name)
+                if callable(new_attr) and not isinstance(new_attr, property):
+                    try:
+                        bound = types.MethodType(new_attr, _mongo_store)
+                        setattr(_mongo_store, attr_name, bound)
+                    except Exception:
+                        pass
+            results["patched"].append("MongoStore (action handlers)")
+        except Exception as e:
+            results["failed"].append({"module": "mongo_patch", "error": str(e)})
+
+    results["duration_ms"] = round((_time.perf_counter() - t0) * 1000)
+    logger.info("[HotReload] Complete: %d reloaded, %d patched, %d failed (%.0fms)",
+                len(results["reloaded"]), len(results["patched"]),
+                len(results["failed"]), results["duration_ms"])
+    return results
 
 
 PRESET_CLIENT_PROFILES = {
@@ -1133,7 +1932,15 @@ async def chat(req: ChatRequest):
             proactive=req.proactive,
         )
 
-    result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+    except Exception as exc:
+        logger.warning("[API] /xdart/chat failed: %s", exc)
+        return ChatResponse(
+            action="respond",
+            response=f"Apologies — an internal error occurred: {str(exc)[:200]}",
+            reasoning="error_fallback",
+        )
 
     return ChatResponse(
         action=result.get("action", "respond"),
@@ -1902,6 +2709,213 @@ async def get_system_audit():
         return {"status": "pending", "message": "First audit has not run yet (runs 5min after startup, then every 2h)"}
     return _last_audit_result
 
+
+# ── Live Events Map — geo-coded events for Leaflet visualization ──
+
+# Country/region centroid fallback for events without explicit coordinates
+_REGION_CENTROIDS: dict[str, list[float]] = {
+    "US": [39.8, -98.6], "USA": [39.8, -98.6], "NORTH_AMERICA": [39.8, -98.6],
+    "GB": [54.0, -2.0], "UK": [54.0, -2.0], "EUROPE": [50.0, 10.0],
+    "FR": [46.6, 2.2], "DE": [51.2, 10.4], "IT": [42.5, 12.5],
+    "RU": [55.8, 37.6], "RUSSIA": [55.8, 37.6],
+    "CN": [35.0, 105.0], "CHINA": [35.0, 105.0], "EAST_ASIA": [35.0, 105.0],
+    "JP": [36.2, 138.3], "KR": [36.5, 127.8], "KP": [40.0, 127.0],
+    "IN": [20.6, 79.0], "INDIA": [20.6, 79.0], "SOUTH_ASIA": [20.6, 79.0],
+    "PK": [30.4, 69.3], "BD": [23.7, 90.4],
+    "BR": [-14.2, -51.9], "SOUTH_AMERICA": [-14.2, -51.9],
+    "AU": [-25.3, 133.8], "OCEANIA": [-25.3, 133.8],
+    "ZA": [-30.6, 22.9], "NG": [9.1, 8.7], "AFRICA": [1.0, 20.0],
+    "EG": [26.8, 30.8], "MIDDLE_EAST": [29.0, 47.0], "MENA": [29.0, 47.0],
+    "IL": [31.0, 35.0], "IR": [32.4, 53.7], "IQ": [33.2, 43.7],
+    "SA": [24.0, 45.0], "TR": [39.9, 32.9], "UA": [48.4, 31.2],
+    "SY": [35.0, 38.0], "LB": [33.9, 35.9], "YE": [15.6, 48.5],
+    "AF": [33.9, 67.7], "MM": [19.8, 96.0], "TW": [23.7, 121.0],
+    "PH": [12.9, 121.8], "VN": [16.0, 108.0], "TH": [15.9, 100.5],
+    "ID": [-0.8, 113.9], "SE_ASIA": [10.0, 106.0], "SOUTHEAST_ASIA": [10.0, 106.0],
+    "MX": [23.6, -102.5], "CO": [4.6, -74.3], "VE": [6.4, -66.6],
+    "AR": [-38.4, -63.6], "CL": [-35.7, -71.5],
+    "PL": [51.9, 19.1], "RO": [45.9, 25.0], "GR": [39.1, 21.8],
+    "CENTRAL_ASIA": [41.0, 65.0], "GLOBAL": [20.0, 0.0], "MULTI": [20.0, 0.0],
+}
+
+# Headline keyword → [lat, lon] for geocoding news articles without explicit coords
+import re as _re
+_HEADLINE_GEO_PATTERNS: list[tuple[_re.Pattern, list[float]]] = [
+    (_re.compile(r'\bIran\b', _re.I),                [32.4, 53.7]),
+    (_re.compile(r'\bTehran\b', _re.I),              [35.7, 51.4]),
+    (_re.compile(r'\bIraq\b|Baghdad\b', _re.I),      [33.2, 43.7]),
+    (_re.compile(r'\bSyria\b|Damascus\b', _re.I),    [35.0, 38.0]),
+    (_re.compile(r'\bLebanon\b|Beirut\b', _re.I),    [33.9, 35.9]),
+    (_re.compile(r'\bIsrael\b|Gaza\b|IDF\b', _re.I), [31.5, 34.8]),
+    (_re.compile(r'\bYemen\b|Houthi', _re.I),        [15.6, 48.5]),
+    (_re.compile(r'\bSaudi\b|Riyadh\b', _re.I),      [24.0, 45.0]),
+    (_re.compile(r'\bGulf\b|Persian Gulf|Strait of Hormuz', _re.I), [26.5, 52.0]),
+    (_re.compile(r'\bOman\b', _re.I),                [21.5, 57.0]),
+    (_re.compile(r'\bUkrain', _re.I),                [48.4, 31.2]),
+    (_re.compile(r'\bKyiv\b|Kiev\b', _re.I),         [50.4, 30.5]),
+    (_re.compile(r'\bRussi|Moscow\b|Kremlin\b', _re.I), [55.8, 37.6]),
+    (_re.compile(r'\bChina\b|Beijing\b', _re.I),     [39.9, 116.4]),
+    (_re.compile(r'\bTaiwan\b|Taipei\b', _re.I),     [23.7, 121.0]),
+    (_re.compile(r'\bNorth Korea\b|Pyongyang\b|DPRK\b', _re.I), [40.0, 127.0]),
+    (_re.compile(r'\bSouth Korea\b|Seoul\b', _re.I), [37.6, 127.0]),
+    (_re.compile(r'\bJapan\b|Tokyo\b', _re.I),       [35.7, 139.7]),
+    (_re.compile(r'\bIndia\b|Delhi\b|Mumbai\b', _re.I), [20.6, 79.0]),
+    (_re.compile(r'\bPakistan\b|Islamabad\b', _re.I), [30.4, 69.3]),
+    (_re.compile(r'\bAfghan', _re.I),                [33.9, 67.7]),
+    (_re.compile(r'\bMyanmar\b|Burma\b', _re.I),     [19.8, 96.0]),
+    (_re.compile(r'\bIndonesi', _re.I),              [-0.8, 113.9]),
+    (_re.compile(r'\bPhilippin', _re.I),             [12.9, 121.8]),
+    (_re.compile(r'\bSoutheast Asia\b|ASEAN\b', _re.I), [10.0, 106.0]),
+    (_re.compile(r'\bEurop\b|EU\b|Brussels\b', _re.I), [50.8, 4.4]),
+    (_re.compile(r'\bGerman|Berlin\b', _re.I),        [52.5, 13.4]),
+    (_re.compile(r'\bFranc\b|Paris\b|Macron\b', _re.I), [48.9, 2.3]),
+    (_re.compile(r'\bBritain\b|London\b', _re.I),     [51.5, -0.1]),
+    (_re.compile(r'\bItaly\b|Rome\b', _re.I),         [41.9, 12.5]),
+    (_re.compile(r'\bPoland\b|Warsaw\b', _re.I),      [52.2, 21.0]),
+    (_re.compile(r'\bTurk|Ankara\b|Erdogan\b', _re.I), [39.9, 32.9]),
+    (_re.compile(r'\bEgypt\b|Cairo\b', _re.I),        [30.0, 31.2]),
+    (_re.compile(r'\bLibya\b|Tripoli\b', _re.I),      [32.9, 13.2]),
+    (_re.compile(r'\bSudan\b|Khartoum\b', _re.I),     [15.6, 32.5]),
+    (_re.compile(r'\bSomal', _re.I),                  [5.2, 46.2]),
+    (_re.compile(r'\bNigeri', _re.I),                  [9.1, 8.7]),
+    (_re.compile(r'\bSouth Africa\b', _re.I),          [-30.6, 22.9]),
+    (_re.compile(r'\bEthiopi', _re.I),                 [9.0, 38.7]),
+    (_re.compile(r'\bCongo\b|DRC\b', _re.I),           [-4.0, 21.8]),
+    (_re.compile(r'\bMexico\b', _re.I),                [23.6, -102.5]),
+    (_re.compile(r'\bBrazil\b', _re.I),                [-14.2, -51.9]),
+    (_re.compile(r'\bVenezuel', _re.I),                [6.4, -66.6]),
+    (_re.compile(r'\bColombi', _re.I),                 [4.6, -74.3]),
+    (_re.compile(r'\bArgentin', _re.I),                [-38.4, -63.6]),
+    (_re.compile(r'\bCanad', _re.I),                   [56.1, -106.3]),
+    (_re.compile(r'\bAustrali', _re.I),                [-25.3, 133.8]),
+    (_re.compile(r'\bU\.?S\.?\b|United States|Washington|Pentagon|White House|Trump|Biden', _re.I), [38.9, -77.0]),
+    (_re.compile(r'\bMiddle East\b', _re.I),           [29.0, 47.0]),
+    (_re.compile(r'\bAsia\b', _re.I),                  [30.0, 100.0]),
+    (_re.compile(r'\bAfrica\b', _re.I),                [1.0, 20.0]),
+    (_re.compile(r'\bSuez\b', _re.I),                  [30.0, 32.3]),
+    (_re.compile(r'\bRed Sea\b', _re.I),               [20.0, 38.5]),
+    (_re.compile(r'\bSouth China Sea\b', _re.I),       [12.0, 114.0]),
+    (_re.compile(r'\bBlack Sea\b', _re.I),             [43.0, 34.0]),
+    (_re.compile(r'\bArctic\b', _re.I),                [71.0, 0.0]),
+    (_re.compile(r'\bHong Kong\b', _re.I),             [22.3, 114.2]),
+    (_re.compile(r'\bSingapore\b', _re.I),             [1.3, 103.8]),
+]
+
+
+def _geocode_headline(headline: str) -> tuple[float, float] | None:
+    """Try to extract geographic coordinates from headline text."""
+    if not headline:
+        return None
+    for pattern, coords in _HEADLINE_GEO_PATTERNS:
+        if pattern.search(headline):
+            return (coords[0], coords[1])
+    return None
+
+
+def _extract_coords(event: dict) -> tuple[float, float] | None:
+    """Extract [lat, lon] from an event's raw_payload or region.
+
+    Tries multiple source formats:
+    - raw_payload.coordinates = [lon, lat] (USGS, EONET, UCDP, GDACS, GDELT)
+    - raw_payload.latitude / raw_payload.longitude (ACLED)
+    - region_focus → centroid fallback
+    """
+    rp = event.get("raw_payload")
+    if isinstance(rp, dict):
+        # Direct coordinates array: [lon, lat, ...]
+        coords = rp.get("coordinates")
+        if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+            try:
+                lon, lat = float(coords[0]), float(coords[1])
+                if -180 <= lon <= 180 and -90 <= lat <= 90 and (lon != 0 or lat != 0):
+                    return (lat, lon)
+            except (ValueError, TypeError):
+                pass
+
+        # ACLED-style: separate lat/lon fields
+        lat_val = rp.get("latitude")
+        lon_val = rp.get("longitude")
+        if lat_val is not None and lon_val is not None:
+            try:
+                lat, lon = float(lat_val), float(lon_val)
+                if -180 <= lon <= 180 and -90 <= lat <= 90 and (lon != 0 or lat != 0):
+                    return (lat, lon)
+            except (ValueError, TypeError):
+                pass
+
+    # Headline-based geocoding (more accurate than generic region)
+    headline = event.get("headline", "")
+    geo = _geocode_headline(headline)
+    if geo:
+        return geo
+
+    # Fallback: region centroid
+    regions = event.get("region_focus", [])
+    if isinstance(regions, list):
+        for r in regions:
+            centroid = _REGION_CENTROIDS.get(str(r).upper())
+            if centroid:
+                return (centroid[0], centroid[1])
+
+    source_region = event.get("source_region", "")
+    centroid = _REGION_CENTROIDS.get(str(source_region).upper())
+    if centroid:
+        return (centroid[0], centroid[1])
+
+    return None
+
+
+@app.get("/xdart/events/geo")
+async def get_geo_events(
+    hours_back: int = 48,
+    max_events: int = 500,
+    min_salience: float = 0.3,
+):
+    """Return geo-coded events for the live map visualization.
+
+    Extracts coordinates from raw_payload (GDELT, USGS, ACLED, EONET, UCDP, GDACS)
+    or falls back to region centroids. Returns lightweight GeoJSON-like array.
+    """
+    from xdart.perception.db import PerceptionDB
+
+    db = PerceptionDB(db_path=PERCEPTION_DB_PATH)
+    events = db.get_recent_events(hours_back=hours_back, max_events=max_events)
+
+    features = []
+    for ev in events:
+        salience = ev.get("salience_score", 0)
+        if salience < min_salience:
+            continue
+
+        coords = _extract_coords(ev)
+        if not coords:
+            continue
+
+        rp = ev.get("raw_payload", {}) or {}
+        is_precise = bool(
+            (isinstance(rp.get("coordinates"), (list, tuple)) and len(rp.get("coordinates", [])) >= 2)
+            or (rp.get("latitude") is not None and rp.get("longitude") is not None)
+        )
+
+        features.append({
+            "lat": round(coords[0], 4),
+            "lon": round(coords[1], 4),
+            "precise": is_precise,
+            "headline": ev.get("headline", "")[:200],
+            "domain": ev.get("domain", "MULTI"),
+            "source": ev.get("source_name", ""),
+            "salience": round(salience, 2),
+            "collected_at": ev.get("collected_at", ""),
+            "published_at": ev.get("published_at", ""),
+        })
+
+    return {
+        "features": features,
+        "total": len(features),
+        "hours_back": hours_back,
+    }
+
+
 @app.get("/xdart/entity-graph/data")
 async def get_entity_graph_data(
     entity_filter: str = "",
@@ -2660,6 +3674,548 @@ async def get_daily_briefing():
     return briefing
 
 
+# ══════════════════════════════════════════════════════════════
+#  PALANTIR: Scheduled Autonomous Briefing Endpoints
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/xdart/briefing/now")
+async def trigger_briefing_now():
+    """Trigger an immediate Intelligence Brief generation.
+
+    Αίολος assembles all live intelligence (patterns, hypotheses, macro synthesis,
+    active prophecies, world events), synthesises via LLM, and delivers via
+    Telegram + SSE. The full brief is returned in the response.
+
+    This is the on-demand counterpart to the scheduled 06:00 daily brief.
+    """
+    if not _briefing_engine:
+        return {
+            "status": "error",
+            "message": "Briefing engine not running — check BRIEFING_ENABLED in .env",
+        }
+    try:
+        loop = asyncio.get_running_loop()
+        brief = await loop.run_in_executor(None, _briefing_engine.force_generate)
+        if not brief:
+            return {"status": "error", "message": "Briefing generation returned no data — check logs"}
+        return {
+            "status": "ok",
+            "brief": brief,
+        }
+    except Exception as exc:
+        logger.error("[Briefing API] /now failed: %s", exc)
+        return {"status": "error", "message": str(exc)}
+
+
+@app.get("/xdart/briefing/last")
+async def get_last_intelligence_brief():
+    """Return the most recently generated Intelligence Brief.
+
+    If no brief has been generated yet, returns a status object.
+    """
+    if not _briefing_engine:
+        return {
+            "status": "unavailable",
+            "message": "Briefing engine not running — check BRIEFING_ENABLED in .env",
+        }
+    last = _briefing_engine.get_last_brief()
+    if not last:
+        return {
+            "status": "no_brief",
+            "message": "No brief generated yet. Use POST /xdart/briefing/now to generate one.",
+            "stats": _briefing_engine.stats(),
+        }
+    return {
+        "status": "ok",
+        "brief": last,
+        "stats": _briefing_engine.stats(),
+    }
+
+
+@app.get("/xdart/briefing/history")
+async def get_briefing_history(n: int = 10):
+    """Return the last N Intelligence Briefs (newest first).
+
+    Args:
+        n: Number of briefs to return (max 30). Default 10.
+    """
+    if not _briefing_engine:
+        return {
+            "status": "unavailable",
+            "message": "Briefing engine not running",
+        }
+    n = max(1, min(n, 30))
+    return {
+        "status": "ok",
+        "count": n,
+        "briefs": _briefing_engine.get_history(n),
+        "stats": _briefing_engine.stats(),
+    }
+
+
+@app.get("/xdart/briefing/schedule")
+async def get_briefing_schedule():
+    """Return the briefing schedule and engine status.
+
+    Shows: configured schedule, last brief time, next scheduled time,
+    delivery statistics, and Telegram status.
+    """
+    if not _briefing_engine:
+        return {
+            "status": "unavailable",
+            "enabled": False,
+            "message": "Briefing engine not running — BRIEFING_ENABLED=false or startup failed",
+        }
+    stats = _briefing_engine.stats()
+    return {
+        "status": "ok",
+        "enabled": True,
+        **stats,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PALANTIR ΒΗΜΑ 1 — Typed Semantic Ontology Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/xdart/ontology/stats")
+async def get_ontology_stats():
+    """Ontology engine statistics — entity types, confidence buckets, relationship types."""
+    if not _ontology_engine:
+        return {"status": "unavailable", "message": "OntologyEngine not running"}
+    return {"status": "ok", **_ontology_engine.stats()}
+
+
+@app.get("/xdart/ontology/entities")
+async def get_ontology_entities(
+    min_confidence: float = 0.40,
+    entity_type: str | None = None,
+    limit: int = 50,
+):
+    """Return high-confidence typed entities.
+
+    Args:
+        min_confidence: minimum confidence threshold (0.0–1.0)
+        entity_type: filter by type — person / organization / country / location / movement / bloc / event / concept
+        limit: max results (capped at 200)
+    """
+    if not _ontology_engine:
+        return {"status": "unavailable", "message": "OntologyEngine not running"}
+    limit = min(200, max(1, limit))
+    entities = _ontology_engine.get_high_confidence_entities(
+        min_confidence=min_confidence,
+        entity_type=entity_type,
+        limit=limit,
+    )
+    return {"status": "ok", "count": len(entities), "entities": entities}
+
+
+@app.get("/xdart/ontology/entity/{name:path}")
+async def get_ontology_entity_profile(name: str):
+    """Full entity profile: typed entity metadata + active relationships.
+
+    Args:
+        name: entity canonical name (e.g., 'Vladimir Putin', 'United States')
+    """
+    if not _ontology_engine:
+        return {"status": "unavailable", "message": "OntologyEngine not running"}
+    profile = _ontology_engine.get_entity_profile(name)
+    if not profile:
+        return {"status": "not_found", "message": f"Entity '{name}' not found in ontology"}
+    return {"status": "ok", "profile": profile}
+
+
+@app.get("/xdart/ontology/relationships")
+async def get_ontology_relationships(
+    relation_type: str | None = None,
+    min_confidence: float = 0.35,
+    limit: int = 50,
+):
+    """Return active typed relationships filtered by type and confidence.
+
+    Args:
+        relation_type: attacks / allied_with / funds / controls / opposes / sanctions / commands / negotiates_with / trades_with / monitors / depends_on / leads / supports / co_occurrence
+        min_confidence: minimum relationship confidence (0.0–1.0)
+        limit: max results (capped at 200)
+    """
+    if not _ontology_engine:
+        return {"status": "unavailable", "message": "OntologyEngine not running"}
+    limit = min(200, max(1, limit))
+    rels = _ontology_engine.get_active_relationships(
+        relation_type=relation_type,
+        min_confidence=min_confidence,
+        limit=limit,
+    )
+    return {"status": "ok", "count": len(rels), "relationships": rels}
+
+
+@app.get("/xdart/ontology/paths")
+async def get_ontology_paths(entity_a: str, entity_b: str, max_depth: int = 3):
+    """Find relationship paths between two entities.
+
+    Args:
+        entity_a: source entity canonical name
+        entity_b: target entity canonical name
+        max_depth: max path length (1–5)
+    """
+    if not _ontology_engine:
+        return {"status": "unavailable", "message": "OntologyEngine not running"}
+    max_depth = min(5, max(1, max_depth))
+    paths = _ontology_engine.find_relationship_paths(entity_a, entity_b, max_depth)
+    return {"status": "ok", "paths": paths, "path_count": len(paths)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PALANTIR ΒΗΜΑ 2 — Intelligence Action Graph Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/xdart/actions/pending")
+async def get_pending_intelligence_actions(limit: int = 10):
+    """Return pending intelligence actions sorted by priority.
+
+    Pending actions are recommendations generated by the Intelligence Action Graph
+    that haven't been executed yet.
+    """
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    limit = min(50, max(1, limit))
+    actions = _action_graph.get_pending_actions(limit=limit)
+    return {"status": "ok", "count": len(actions), "actions": actions}
+
+
+@app.get("/xdart/actions/history")
+async def get_intelligence_action_history(n: int = 20):
+    """Return the N most recent intelligence analysis cycles.
+
+    Each entry includes: trigger, situation summary, decisions, and actions.
+    """
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    n = min(50, max(1, n))
+    analyses = _action_graph.get_recent_analyses(n=n)
+    return {"status": "ok", "count": len(analyses), "analyses": analyses}
+
+
+@app.get("/xdart/actions/stats")
+async def get_intelligence_action_stats():
+    """Action graph cycle statistics: prediction accuracy, completion rate, total analyses."""
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    return {"status": "ok", **_action_graph.get_cycle_stats()}
+
+
+@app.post("/xdart/actions/{action_id}/execute")
+async def mark_intelligence_action_executed(action_id: str, result: str = ""):
+    """Mark an intelligence action as executed.
+
+    Args:
+        action_id: UUID of the action to mark as executed
+        result: optional description of what was done
+    """
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    success = _action_graph.mark_action_executed(action_id, result=result)
+    if not success:
+        return {"status": "not_found", "message": f"Action {action_id} not found or already completed"}
+    return {"status": "ok", "message": f"Action {action_id} marked as executed"}
+
+
+@app.post("/xdart/actions/{action_id}/outcome")
+async def record_intelligence_action_outcome(
+    action_id: str,
+    outcome_type: str,
+    evidence: str = "",
+    impact_score: float = 0.5,
+):
+    """Record the outcome for an intelligence action.
+
+    Args:
+        action_id: UUID of the action
+        outcome_type: confirmed / partial / denied / unknown
+        evidence: what signal confirmed or denied the prediction
+        impact_score: actual impact of the event (0.0–1.0)
+    """
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    outcome = _action_graph.record_outcome(
+        action_id=action_id,
+        outcome_type=outcome_type,
+        evidence=evidence,
+        impact_score=min(1.0, max(0.0, impact_score)),
+    )
+    if not outcome:
+        return {"status": "not_found", "message": f"Action {action_id} not found"}
+    return {"status": "ok", "outcome": outcome.to_dict()}
+
+
+@app.post("/xdart/actions/analyze")
+async def trigger_manual_analysis(
+    trigger_summary: str,
+    situation_summary: str,
+    key_entities: str = "",
+    domains: str = "",
+    confidence: float = 0.5,
+):
+    """Manually trigger an intelligence analysis cycle.
+
+    Creates an analysis record, generates decisions via LLM, and produces
+    actionable recommendations.
+
+    Args:
+        trigger_summary: one-line summary of what triggered the analysis
+        situation_summary: detailed situation assessment
+        key_entities: comma-separated entity names
+        domains: comma-separated domain names (GEOPOLITICAL, ECONOMIC, etc.)
+        confidence: trigger confidence (0.0–1.0)
+    """
+    if not _action_graph:
+        return {"status": "unavailable", "message": "Action Graph not running"}
+    entities = [e.strip() for e in key_entities.split(",") if e.strip()]
+    domain_list = [d.strip() for d in domains.split(",") if d.strip()]
+    loop = asyncio.get_event_loop()
+    from xdart.intelligence.action_graph import AnalysisTrigger
+    analysis = await loop.run_in_executor(
+        None,
+        lambda: _action_graph.record_analysis(
+            trigger_type=AnalysisTrigger.MANUAL,
+            trigger_id="manual",
+            trigger_summary=trigger_summary,
+            situation_summary=situation_summary,
+            key_entities=entities,
+            domains=domain_list,
+            confidence=confidence,
+        ),
+    )
+    pending = _action_graph.get_pending_actions(limit=10)
+    return {
+        "status": "ok",
+        "analysis_id": analysis.id,
+        "decisions_generated": len(analysis.decision_ids),
+        "pending_actions": [a for a in pending if a["analysis_id"] == analysis.id],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PALANTIR DARK WING: Dark Whisper Intelligence Endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/xdart/dark/stats")
+async def dark_stats():
+    """Dark Whisper Engine stats — collector, triage, synthesis, dirty pool."""
+    if not _darkwhisper_engine:
+        return {"status": "disabled", "message": "Dark Whisper Engine not running (DARKWEB_ENABLED=false)"}
+    return {
+        "status": "ok",
+        "engine": _darkwhisper_engine.stats(),
+    }
+
+
+@app.get("/xdart/dark/signals")
+async def dark_signals(limit: int = 20):
+    """Recent raw signals from the dirty pool (untriaged + triaged)."""
+    if not _darkwhisper_engine:
+        return {"status": "disabled", "signals": []}
+    try:
+        pool_stats = _darkwhisper_engine.pool.stats()
+        untriaged = _darkwhisper_engine.pool.get_untriaged(limit=limit)
+        # Clean _id from docs
+        for d in untriaged:
+            d.pop("_id", None)
+            if "mongo_id" in d:
+                d["mongo_id"] = str(d["mongo_id"])
+        return {
+            "status": "ok",
+            "pool_stats": pool_stats,
+            "untriaged_sample": untriaged,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.get("/xdart/dark/whispers")
+async def dark_whispers(limit: int = 10):
+    """Recent Dark Whisper syntheses."""
+    if not _darkwhisper_engine:
+        return {"status": "disabled", "syntheses": []}
+    try:
+        syntheses = _darkwhisper_engine.get_recent_syntheses(limit=limit)
+        dormant = _darkwhisper_engine.get_dormant_signals(limit=10)
+        return {
+            "status": "ok",
+            "recent_syntheses": syntheses,
+            "dormant_count": len(dormant),
+            "dormant_sample": dormant[:5],
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.post("/xdart/dark/collect")
+async def dark_collect_now():
+    """Trigger an immediate collection cycle (bypass interval timer)."""
+    if not _darkwhisper_engine:
+        return {"status": "disabled", "message": "Dark Whisper Engine not running"}
+    try:
+        inserted = await _darkwhisper_engine.collector.collect_now()
+        return {"status": "ok", "signals_inserted": inserted}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.post("/xdart/dark/triage")
+async def dark_triage_now():
+    """Trigger an immediate triage batch on untriaged signals."""
+    if not _darkwhisper_engine:
+        return {"status": "disabled", "message": "Dark Whisper Engine not running"}
+    try:
+        loop = asyncio.get_event_loop()
+        triaged = await loop.run_in_executor(
+            None,
+            _darkwhisper_engine.triage.run_triage_batch,
+        )
+        return {
+            "status": "ok",
+            "triaged_count": len(triaged),
+            "yes": sum(1 for s in triaged if s.is_yes),
+            "maybe": sum(1 for s in triaged if s.is_maybe),
+            "triage_stats": _darkwhisper_engine.triage.stats(),
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+# ── Telegram Intelligence Endpoints ──────────────────────────────────────────
+
+
+class TelegramSearchRequest(BaseModel):
+    query: str = Field(description="Natural language topic to search for Telegram channels")
+    limit: int = Field(default=10, ge=1, le=25, description="Max channels to return")
+
+
+class TelegramAddRequest(BaseModel):
+    channel: str = Field(description="Telegram channel handle (without @)")
+    reason: str = Field(default="", description="Why this channel is being added")
+
+
+class TelegramReadRequest(BaseModel):
+    channel: str = Field(description="Channel handle to read messages from")
+    limit: int = Field(default=20, ge=1, le=100, description="Max messages to return")
+
+
+class TelegramTelethonSearchRequest(BaseModel):
+    query: str = Field(description="Search query for Telegram native search (requires Tier 2)")
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+@app.post("/xdart/telegram/intel/search")
+async def telegram_intel_search(req: TelegramSearchRequest):
+    """Search for Telegram channels matching a topic.
+
+    Tier 1 (always active): Web search → t.me/s/ validation.
+    Channels with active web preview can be added to live monitoring.
+    """
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _telegram_intel.search_channels(req.query, limit=req.limit),
+        )
+        return {"status": "ok", **result}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.post("/xdart/telegram/intel/add")
+async def telegram_intel_add(req: TelegramAddRequest):
+    """Add a Telegram channel to live monitoring.
+
+    Validates channel first — must have t.me/s/ web preview active.
+    Added channels are immediately picked up by DarkWebCollector.
+    """
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _telegram_intel.add_channel(req.channel, reason=req.reason),
+        )
+        return result
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.delete("/xdart/telegram/intel/remove/{channel}")
+async def telegram_intel_remove(channel: str):
+    """Remove a channel from live monitoring."""
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _telegram_intel.remove_channel(channel),
+        )
+        return result
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.get("/xdart/telegram/intel/monitored")
+async def telegram_intel_list():
+    """List all dynamically monitored Telegram channels."""
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    return _telegram_intel.list_monitored()
+
+
+@app.post("/xdart/telegram/intel/read")
+async def telegram_intel_read(req: TelegramReadRequest):
+    """Read recent messages from a channel's public web preview (Tier 1)."""
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _telegram_intel.read_channel_preview(req.channel, limit=req.limit),
+        )
+        return result
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.post("/xdart/telegram/intel/telethon/search")
+async def telegram_intel_telethon_search(req: TelegramTelethonSearchRequest):
+    """Search channels via Telegram MTProto API (Tier 2 — requires Telethon setup).
+
+    Requires TELEGRAM_API_ID and TELEGRAM_API_HASH in .env,
+    and an active session from _setup_telegram_session.py.
+    """
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _telegram_intel.telethon_search_channels(req.query, limit=req.limit),
+        )
+        return result
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@app.get("/xdart/telegram/intel/stats")
+async def telegram_intel_stats():
+    """Stats and status of the Telegram Intelligence Tool."""
+    if not _telegram_intel:
+        return {"status": "disabled", "message": "TelegramIntelTool not initialized"}
+    return _telegram_intel.get_stats()
+
+
 # ── Web Agent Endpoints ──
 
 _web_agent = None
@@ -3015,6 +4571,39 @@ async def notification_stats():
     return {"active": True, **_proactive_engine.get_stats()}
 
 
+@app.get("/xdart/notifications/pending")
+async def get_pending_notifications():
+    """Return the current notification batch buffer (0-9 items not yet flushed to Telegram).
+
+    Αίολος and the dashboard can always see what's queued mid-batch.
+    """
+    if not _proactive_engine:
+        return {"active": False, "pending": [], "count": 0, "flush_at": 10}
+    pending = _proactive_engine.get_pending_batch()
+    return {
+        "active": True,
+        "pending": pending,
+        "count": len(pending),
+        "flush_at": _proactive_engine._notif_batch_size,
+        "total_flushed": _proactive_engine._notif_batch_total_flushed,
+    }
+
+
+@app.post("/xdart/notifications/flush")
+async def flush_notification_batch():
+    """Manually flush the current notification batch to Telegram immediately.
+
+    Use this when Πάνος says 'send me what you have' without waiting for 10 items.
+    Returns the number of notifications flushed.
+    """
+    if not _proactive_engine:
+        raise HTTPException(status_code=503, detail="Proactive engine not active")
+    count = await asyncio.get_running_loop().run_in_executor(
+        None, _proactive_engine.flush_batch_now
+    )
+    return {"flushed": count, "status": "ok" if count > 0 else "empty"}
+
+
 # ══════════════════════════════════════════════════════════════
 #  Pattern Accumulator Monitoring Endpoints
 # ══════════════════════════════════════════════════════════════
@@ -3102,6 +4691,9 @@ async def notification_sse_stream(request: Request):
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }),
                     }
+        except (asyncio.CancelledError, GeneratorExit):
+            # Graceful shutdown during reload — suppress noisy tracebacks
+            pass
         finally:
             _proactive_engine.unsubscribe_sse(queue)
 
@@ -3131,6 +4723,146 @@ async def test_notification():
 
 
 # ══════════════════════════════════════════════════════════════
+#  HYPOTHESIS ENGINE — persistent "if X then Y" tracking
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/xdart/hypotheses")
+async def list_hypotheses(status: str | None = None):
+    """List all hypotheses, optionally filtered by status.
+
+    Query params:
+      status: active | trigger_detected | confirmed | disconfirmed | expired
+    """
+    if not _proactive_engine:
+        return {"active": False}
+    return {
+        "active": True,
+        "hypotheses": _proactive_engine.hypothesis_engine.get_all_hypotheses(status),
+        "stats": _proactive_engine.hypothesis_engine.stats(),
+    }
+
+
+@app.get("/xdart/hypotheses/stats")
+async def hypothesis_stats():
+    """Hypothesis engine statistics and accuracy metrics."""
+    if not _proactive_engine:
+        return {"active": False}
+    return {
+        "active": True,
+        **_proactive_engine.hypothesis_engine.stats(),
+    }
+
+
+@app.post("/xdart/hypotheses/create")
+async def create_hypothesis(payload: dict):
+    """Manually create a hypothesis for tracking.
+
+    Body JSON:
+      hypothesis_text: "IF X THEN Y within Z"
+      trigger_condition: "The observable trigger"
+      expected_outcome: "The expected consequence"
+      trigger_keywords: ["kw1", "kw2"]
+      outcome_keywords: ["kw1", "kw2"]
+      trigger_entities: ["Entity1"] (optional)
+      outcome_entities: ["Entity1"] (optional)
+      timeframe_days: 30 (optional, default 30)
+      confidence: 0.5 (optional, default 0.5)
+      domains: ["SECURITY", "ECONOMIC"] (optional)
+    """
+    if not _proactive_engine:
+        raise HTTPException(status_code=503, detail="Proactive engine not active")
+
+    required = ["hypothesis_text", "trigger_condition", "expected_outcome",
+                 "trigger_keywords", "outcome_keywords"]
+    for field in required:
+        if field not in payload:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+
+    hyp = _proactive_engine.hypothesis_engine.create_hypothesis(
+        hypothesis_text=payload["hypothesis_text"],
+        trigger_condition=payload["trigger_condition"],
+        expected_outcome=payload["expected_outcome"],
+        trigger_keywords=set(payload["trigger_keywords"]),
+        outcome_keywords=set(payload["outcome_keywords"]),
+        trigger_entities=set(payload.get("trigger_entities", [])),
+        outcome_entities=set(payload.get("outcome_entities", [])),
+        timeframe_days=payload.get("timeframe_days", 30),
+        confidence=payload.get("confidence", 0.5),
+        source="user",
+        domains=payload.get("domains", []),
+    )
+
+    if hyp is None:
+        raise HTTPException(status_code=409, detail="Hypothesis rejected (max active or duplicate)")
+
+    return {
+        "status": "created",
+        "hypothesis": _proactive_engine.hypothesis_engine._hyp_to_dict(hyp),
+    }
+
+
+@app.get("/xdart/hypotheses/digest")
+async def hypothesis_digest():
+    """Get the formatted hypothesis intelligence digest."""
+    if not _proactive_engine:
+        return {"active": False, "digest": ""}
+    return {
+        "active": True,
+        "digest": _proactive_engine.hypothesis_engine.get_digest(),
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  TEMPORAL REASONING — Recurring patterns, precursors, sequences
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/xdart/temporal/stats")
+async def temporal_stats():
+    """Temporal Reasoning Engine statistics."""
+    if not _temporal_engine:
+        return {"active": False}
+    return {
+        "active": True,
+        **_temporal_engine.stats(),
+    }
+
+
+@app.get("/xdart/temporal/patterns")
+async def temporal_patterns():
+    """List all learned temporal patterns."""
+    if not _temporal_engine:
+        return {"active": False, "patterns": []}
+    return {
+        "active": True,
+        "patterns": _temporal_engine.get_all_patterns(),
+    }
+
+
+@app.get("/xdart/temporal/digest")
+async def temporal_digest():
+    """Get the current temporal intelligence digest."""
+    if not _temporal_engine:
+        return {"active": False, "digest": ""}
+    return {
+        "active": True,
+        "digest": _temporal_engine.get_temporal_digest(),
+    }
+
+
+@app.get("/xdart/temporal/precursors")
+async def temporal_precursors():
+    """Check for active precursor matches right now."""
+    if not _temporal_engine:
+        return {"active": False, "alerts": []}
+    loop = asyncio.get_running_loop()
+    alerts = await loop.run_in_executor(None, _temporal_engine.check_precursors)
+    return {
+        "active": True,
+        "alerts": alerts,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
 #  MULTIMODAL PERCEPTION — Airspace, Maritime, Satellite
 # ══════════════════════════════════════════════════════════════
 
@@ -3155,6 +4887,161 @@ async def multimodal_zones():
             for k, v in STRATEGIC_ZONES.items()
         },
         "total": len(STRATEGIC_ZONES),
+    }
+
+
+@app.get("/xdart/live-osint")
+async def live_osint_digest():
+    """Get the live OSINT intelligence digest — Palantir-class sensor feed.
+
+    Returns a structured text digest of ALL current sensor readings:
+    airspace (ADS-B), maritime (AIS), satellite (FIRMS thermal).
+    This is the same data injected into Αίολος's LLM context.
+    """
+    if not _framework or not hasattr(_framework, '_multimodal_collector') or not _framework._multimodal_collector:
+        return {"status": "disabled", "digest": "", "message": "Multimodal perception not active"}
+
+    collector = _framework._multimodal_collector
+    digest = await asyncio.get_event_loop().run_in_executor(
+        None, collector.get_live_digest,
+    )
+    stats = await asyncio.get_event_loop().run_in_executor(
+        None, collector.get_stats,
+    )
+    return {
+        "status": "active",
+        "digest": digest,
+        "cycles": stats.get("cycles", 0),
+        "airspace_zones": len(collector.airspace.zone_status),
+        "maritime_chokepoints": len(collector.maritime.chokepoint_status),
+        "satellite_zones": len(collector.satellite.zone_thermal_status),
+    }
+
+
+@app.get("/xdart/palantir/status")
+async def palantir_status():
+    """Full Palantir P0 intelligence platform status — all new-gen components."""
+    status = {
+        "platform": "XDART-Φ Palantir Intelligence Platform",
+        "components": {},
+    }
+
+    # Real-Time Feeds
+    if _realtime_feeds:
+        status["components"]["realtime_feeds"] = {
+            "active": True,
+            **_realtime_feeds.stats(),
+        }
+    else:
+        status["components"]["realtime_feeds"] = {"active": False}
+
+    # Sanctions Registry
+    if _sanctions_registry:
+        status["components"]["sanctions_registry"] = {
+            "active": True,
+            **_sanctions_registry.stats(),
+        }
+    else:
+        status["components"]["sanctions_registry"] = {"active": False}
+
+    # Event Calendar
+    if _event_calendar:
+        status["components"]["event_calendar"] = {
+            "active": True,
+            **_event_calendar.stats(),
+        }
+    else:
+        status["components"]["event_calendar"] = {"active": False}
+
+    # Temporal Reasoning
+    if _temporal_engine:
+        status["components"]["temporal_reasoning"] = {
+            "active": True,
+            **_temporal_engine.stats(),
+        }
+    else:
+        status["components"]["temporal_reasoning"] = {"active": False}
+
+    # Compound Alerts
+    if _proactive_engine:
+        status["components"]["compound_alerts"] = {
+            "active": True,
+            **_proactive_engine.compound_alerts.stats(),
+        }
+    else:
+        status["components"]["compound_alerts"] = {"active": False}
+
+    # Multimodal OSINT
+    if _multimodal_collector:
+        status["components"]["multimodal_osint"] = {
+            "active": True,
+            "cycles": _multimodal_collector._cycle_count,
+            "airspace_zones": len(_multimodal_collector.airspace.zone_status),
+            "chokepoints": len(_multimodal_collector.maritime.chokepoint_status),
+            "satellite_zones": len(_multimodal_collector.satellite.zone_thermal_status),
+            "external_digest_sections": len(_multimodal_collector._external_digest_sections),
+        }
+    else:
+        status["components"]["multimodal_osint"] = {"active": False}
+
+    return status
+
+
+@app.get("/xdart/sanctions")
+async def sanctions_status():
+    """Get sanctions cross-reference status and flagged entities."""
+    if not _sanctions_registry:
+        return {"status": "disabled", "message": "Sanctions registry not active"}
+
+    return {
+        "status": "active",
+        **_sanctions_registry.stats(),
+        "flagged_entities": {
+            name: matches
+            for name, matches in list(_sanctions_registry._entity_matches.items())[:50]
+        },
+    }
+
+
+@app.get("/xdart/calendar")
+async def calendar_status():
+    """Get geopolitical event calendar with upcoming events."""
+    if not _event_calendar:
+        return {"status": "disabled", "message": "Event calendar not active"}
+
+    upcoming_14d = _event_calendar.get_upcoming_events(14)
+    return {
+        "status": "active",
+        **_event_calendar.stats(),
+        "upcoming_events": [
+            {
+                "date": ev["date"],
+                "name": ev["name"],
+                "category": ev.get("category", ""),
+                "region": ev.get("region", "GLOBAL"),
+                "impact": ev.get("impact", 0),
+                "days_until": ev["days_until"],
+                "hours_until": round(ev["hours_until"], 1),
+            }
+            for ev in upcoming_14d[:25]
+        ],
+        "active_watch_keywords": sorted(_event_calendar.get_active_watch_keywords()),
+        "digest": _event_calendar.get_calendar_digest(),
+    }
+
+
+@app.get("/xdart/compound-alerts")
+async def compound_alerts_status():
+    """Get compound alert chain status and recent compound fires."""
+    if not _proactive_engine:
+        return {"status": "disabled", "message": "Proactive engine not active"}
+
+    engine = _proactive_engine.compound_alerts
+    return {
+        "status": "active",
+        **engine.stats(),
+        "recent_compounds": engine._compound_fires[-10:],
+        "digest": engine.get_compound_digest(),
     }
 
 
@@ -3402,7 +5289,10 @@ async def serve_ui():
     ui_path = Path(__file__).parent.parent / "ui.html"
     if not ui_path.exists():
         raise HTTPException(status_code=404, detail="UI not found")
-    return HTMLResponse(content=ui_path.read_text(encoding="utf-8"))
+    # run_in_executor avoids blocking the asyncio event loop on file I/O
+    loop = asyncio.get_running_loop()
+    content = await loop.run_in_executor(None, lambda: ui_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content=content)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -3411,7 +5301,9 @@ async def serve_dashboard():
     dash_path = Path(__file__).parent.parent / "dashboard.html"
     if not dash_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    return HTMLResponse(content=dash_path.read_text(encoding="utf-8"))
+    loop = asyncio.get_running_loop()
+    content = await loop.run_in_executor(None, lambda: dash_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content=content)
 
 
 from fastapi.responses import FileResponse
@@ -4180,7 +6072,7 @@ class AgentSpawnRequest(BaseModel):
     task: str = Field(description="The task for the sub-agent")
     context: str = Field(default="", description="Additional context")
     custom_prompt: str = Field(default="", description="Custom system prompt (for role=custom)")
-    max_tokens: int = Field(default=4000, description="Max tokens for response", ge=100, le=8000)
+    max_tokens: int = Field(default=8000, description="Max tokens for response", ge=100, le=16000)
     temperature: float = Field(default=0.5, description="LLM temperature", ge=0.0, le=1.5)
 
 

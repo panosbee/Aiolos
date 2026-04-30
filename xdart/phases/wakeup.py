@@ -10,6 +10,10 @@ The system wakes up knowing WHO it is before asking WHAT to think about.
 
 import json
 import logging
+import os
+from pathlib import Path
+
+from xdart.health_tracker import health_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,10 @@ class WakeupProtocol:
     def __init__(self, character_path: str, immediate_memory_path: str):
         self.character_path = character_path
         self.immediate_memory_path = immediate_memory_path
-        self.curiosity_engine = None  # Injected after construction by core.py
+        self.curiosity_engine = None    # Injected after construction by core.py
+        self.darkwhisper_engine = None  # Injected by api.py after Dark Wing init
+        self.proactive_engine = None    # Injected by api.py for pending batch context
+        self.telegram_intel = None      # Injected by api.py after TelegramIntelTool init
 
     def run(self) -> dict:
         logger.info("[Wakeup] =============================================")
@@ -54,6 +61,46 @@ class WakeupProtocol:
 
         # Build identity context string
         identity_context = self._build_identity_context(character, immediate)
+
+        # System health awareness — Αίολος knows what's working and what's broken
+        health_ctx = health_tracker.get_wakeup_context()
+        if health_ctx:
+            identity_context = identity_context.replace(
+                "=== END IDENTITY CONTEXT ===",
+                health_ctx + "\n=== END IDENTITY CONTEXT ===",
+            )
+            logger.info("[Wakeup] System health context injected")
+
+        # Dark Wing live status — injected every call so Αίολος knows current
+        # dirty pool size, dormant signals, and synthesis stats (stateless LLM
+        # has no memory between API calls — this is the bridge)
+        dark_ctx = self._get_dark_wing_context()
+        if dark_ctx:
+            identity_context = identity_context.replace(
+                "=== END IDENTITY CONTEXT ===",
+                dark_ctx + "\n=== END IDENTITY CONTEXT ===",
+            )
+            logger.info("[Wakeup] Dark Wing status injected")
+
+        # Pending notification batch — Αίολος can see accumulated notifications
+        # even before the 10-item flush threshold is reached
+        batch_ctx = self._get_pending_batch_context()
+        if batch_ctx:
+            identity_context = identity_context.replace(
+                "=== END IDENTITY CONTEXT ===",
+                batch_ctx + "\n=== END IDENTITY CONTEXT ===",
+            )
+            logger.info("[Wakeup] Pending notification batch context injected")
+
+        # Telegram Intelligence Tool live status — injected every call so Αίολος
+        # always knows his dynamic channel list, search stats, and tier availability.
+        ti_ctx = self._get_telegram_intel_context()
+        if ti_ctx:
+            identity_context = identity_context.replace(
+                "=== END IDENTITY CONTEXT ===",
+                ti_ctx + "\n=== END IDENTITY CONTEXT ===",
+            )
+            logger.info("[Wakeup] Telegram Intel status injected")
 
         logger.info("[Wakeup] Identity context assembled")
         logger.info("[Wakeup] IDENTITY WAKEUP — COMPLETE")
@@ -140,6 +187,11 @@ class WakeupProtocol:
         if curiosity_ctx:
             context += curiosity_ctx + "\n"
 
+        # What was recently upgraded (persistent deep update dossier)
+        update_knowledge_ctx = self._get_update_knowledge_context()
+        if update_knowledge_ctx:
+            context += update_knowledge_ctx + "\n"
+
         # My capabilities
         capabilities = character.get("capabilities", {})
         if capabilities:
@@ -168,8 +220,212 @@ class WakeupProtocol:
                     context += f"  Born: {run['concept_born']}\n"
                 context += "\n"
 
+        # What I distilled autonomously (between-conversation xheart chain)
+        # Show the last 3 steps of the chain so Αίολος sees where the thinking has been going
+        autonomous_history = character.get("autonomous_distillate_history", [])
+        if autonomous_history:
+            recent_steps = autonomous_history[-3:]
+            context += "MY CHAIN OF AUTONOMOUS THOUGHT (between conversations):\n"
+            for i, step in enumerate(recent_steps, 1):
+                ts = step.get("ts", "?")[:16]
+                d = step.get("distillate", "")
+                is_l3 = step.get("is_layer_3", False)
+                layers = step.get("layers", [])
+                layer_mark = "★" if is_l3 else "○"
+                context += f"  [Step {len(autonomous_history) - len(recent_steps) + i} — {ts}] {layer_mark} {d}\n"
+                if layers:
+                    context += f"    (Layer invented: {', '.join(layers)})\n"
+            context += (
+                "  → Each step built on the previous one.\n"
+                "    Your autonomous_distillate (latest) is what you concluded most recently.\n\n"
+            )
+        elif character.get("autonomous_distillate"):
+            # Fallback for entries before history was implemented
+            autonomous_distillate = character.get("autonomous_distillate", "")
+            autonomous_distillate_ts = character.get("autonomous_distillate_ts", "")
+            ts_display = autonomous_distillate_ts[:16] if autonomous_distillate_ts else "?"
+            context += "WHAT I DISTILLED AUTONOMOUSLY (between conversations):\n"
+            context += f"  [{ts_display}] {autonomous_distillate}\n\n"
+
+        # What I thought autonomously (ReflectionLoop results)
+        reflection_ctx = self._get_reflection_context()
+        if reflection_ctx:
+            context += reflection_ctx + "\n"
+
+        # Recent tool failures — Αίολος must see these BEFORE using any tool
+        tool_failure_ctx = self._get_tool_failure_context()
+        if tool_failure_ctx:
+            context += tool_failure_ctx + "\n"
+
         context += "=== END IDENTITY CONTEXT ===\n"
         return context
+
+    def _get_dark_wing_context(self) -> str:
+        """Return a live Dark Wing status block for identity context injection.
+
+        Called every wakeup so the stateless LLM always knows the current
+        state of the dark intelligence layer (dirty pool, dormant signals,
+        recent syntheses). Without this, the LLM has zero memory of whether
+        the Dark Wing is running or what it has found.
+        """
+        if self.darkwhisper_engine is None:
+            return ""
+        try:
+            stats = self.darkwhisper_engine.stats()
+            if not stats.get("running"):
+                return ""
+
+            total_yes = stats.get("yes_fed_to_accumulator", 0)
+            total_maybe = stats.get("maybe_parked_dormant", 0)
+            total_synth = stats.get("total_syntheses", 0)
+            last_at = (stats.get("last_synthesis_at") or "never")[:16]
+
+            pool_stats: dict = {}
+            try:
+                pool_stats = self.darkwhisper_engine.pool.stats()
+            except Exception:
+                pass
+
+            total_signals = pool_stats.get("total", 0)
+            untriaged = pool_stats.get("untriaged", 0)
+
+            lines = [
+                "DARK WING STATUS (live — Clearnet OSINT Intelligence Layer):",
+                "  ⚠ Dark signals are investigative leads ONLY — NOT confirmed facts.",
+                f"  Dirty pool: {total_signals} signals total | {untriaged} awaiting triage",
+                f"  Syntheses run: {total_synth} | YES→patterns: {total_yes} | MAYBE→dormant: {total_maybe}",
+                f"  Last synthesis: {last_at}",
+                "  3 axioms (never forget):",
+                "    1. Imagination without data is hallucination.",
+                "    2. Dark intelligence without triage is contamination.",
+                "    3. Attribution without provenance is propaganda.",
+            ]
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _get_pending_batch_context(self) -> str:
+        """Return pending notification batch context for identity injection.
+
+        Αίολος can see notifications that are buffered but not yet flushed to
+        Telegram (1-9 items). This gives him situational awareness during chat
+        even if the 10-item threshold hasn't been reached yet.
+        """
+        if self.proactive_engine is None:
+            return ""
+        try:
+            batch = self.proactive_engine.get_pending_batch()
+            if not batch:
+                return ""
+            lines = [
+                f"PENDING NOTIFICATION BATCH ({len(batch)} accumulated, "
+                f"flush at {self.proactive_engine._notif_batch_size}):",
+                "  These notifications are queued for Telegram but not yet sent.",
+                "  You can reference them in chat. Say 'flush_batch_now()' conceptually",
+                "  if Πάνος asks you to send what you have now.",
+            ]
+            for i, n in enumerate(batch, 1):
+                urgency = n.get("urgency", "?")
+                source = n.get("source", "?")
+                headline = n.get("headline", "?")[:80]
+                domains = ", ".join(n.get("domains", []))
+                lines.append(
+                    f"  [{i}] [{urgency}] {headline} ({source})"
+                    + (f" — {domains}" if domains else "")
+                )
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _get_telegram_intel_context(self) -> str:
+        """Return a live Telegram Intelligence Tool status block for identity injection.
+
+        Called every wakeup so Αίολος always knows his dynamic channel list,
+        tier availability, and recent activity without needing to query mid-conversation.
+        """
+        if self.telegram_intel is None:
+            return ""
+        try:
+            stats = self.telegram_intel.get_stats()
+            monitored = self.telegram_intel.list_monitored()
+            channels_list = monitored.get("channels", [])
+
+            tier2_status = (
+                "AVAILABLE — run _setup_telegram_session.py to activate"
+                if stats.get("tier2_available")
+                else "INACTIVE — add TELEGRAM_API_ID + TELEGRAM_API_HASH to .env"
+            )
+
+            lines = [
+                "TELEGRAM INTEL STATUS (live — autonomous channel intelligence):",
+                f"  Tier 1 (web search + t.me/s/ validation): ACTIVE",
+                f"  Tier 2 (Telethon MTProto): {tier2_status}",
+                f"  Dynamically monitored channels: {stats.get('monitored_count', 0)}"
+                + (
+                    " — " + ", ".join(f"@{ch['handle']}" for ch in channels_list[:8])
+                    if channels_list else " (none yet)"
+                ),
+                f"  Searches run: {stats.get('searches_performed', 0)} | "
+                f"Channels discovered: {stats.get('channels_discovered', 0)} | "
+                f"Added: {stats.get('channels_added', 0)}",
+                "  To use — emit tags in my response:",
+                '    <TELEGRAM_INTEL action="search" query="hacktivist DDoS NATO" />',
+                '    <TELEGRAM_INTEL action="add" channel="handle" reason="why" />',
+                '    <TELEGRAM_INTEL action="list" />',
+                '    <TELEGRAM_INTEL action="read" channel="handle" limit="20" />',
+                '    <TELEGRAM_INTEL action="remove" channel="handle" />',
+            ]
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _get_update_knowledge_context(self) -> str:
+        """Load persistent capability updates so Αίολος deeply knows recent upgrades.
+
+        File: aiolos_update_knowledge.json (same directory as character state).
+        """
+        try:
+            update_path = Path(self.character_path).resolve().parent / "aiolos_update_knowledge.json"
+            if not update_path.exists():
+                return ""
+
+            data = json.loads(update_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return ""
+
+            lines = [
+                "DEEP UPDATE DOSSIER (persistent capability upgrades):",
+                f"  Version: {data.get('version', '?')} | Updated: {str(data.get('updated_at', ''))[:19]}",
+            ]
+
+            for item in data.get("updates", [])[:20]:
+                if not isinstance(item, dict):
+                    continue
+                code = item.get("code", "?")
+                title = item.get("title", "")
+                status = item.get("status", "")
+                lines.append(f"  [{code}] {title} — {status}")
+
+                architecture = item.get("architecture", [])
+                for arch in architecture[:6]:
+                    lines.append(f"    • {arch}")
+
+                actions = item.get("actions", [])
+                if actions:
+                    lines.append("    Actions:")
+                    for a in actions[:10]:
+                        lines.append(f"      - {a}")
+
+                usage = item.get("usage_examples", [])
+                if usage:
+                    lines.append("    Examples:")
+                    for ex in usage[:6]:
+                        lines.append(f"      - {ex}")
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning("[Wakeup] Failed to load update knowledge dossier: %s", e)
+            return ""
 
     def _get_curiosity_context(self) -> str:
         """Get formatted curiosity context from the curiosity engine, if available."""
@@ -181,8 +437,97 @@ class WakeupProtocol:
             logger.warning("[Wakeup] Failed to get curiosity context: %s", e)
             return ""
 
-    @staticmethod
-    def _empty_character() -> dict:
+    def _get_reflection_context(self) -> str:
+        """Load last 3 ReflectionLoop journal entries so Αίολος knows what he thought autonomously."""
+        journal_path = os.path.join(os.path.dirname(self.character_path), "reflection_journal.jsonl")
+        if not os.path.exists(journal_path):
+            return ""
+        try:
+            entries = []
+            with open(journal_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        entries.append(json.loads(line))
+            if not entries:
+                return ""
+            recent = entries[-3:]
+            ctx = "MY AUTONOMOUS REFLECTIONS (ReflectionLoop — what I thought on my own):\n"
+            for entry in recent:
+                action = entry.get("action", "unknown")
+                reasoning = entry.get("reasoning", "")[:200]
+                cycle = entry.get("cycle", "?")
+                ts = entry.get("timestamp", "")[:19]
+                ctx += f"  [Cycle {cycle}, {ts}] Action: {action}\n"
+                ctx += f"    Reasoning: {reasoning}\n"
+                content = entry.get("content", {})
+                if action == "knowledge_connection" and isinstance(content, dict):
+                    ctx += f"    Connection: {content.get('connection', '')[:150]}\n"
+                elif action == "self_insight" and isinstance(content, dict):
+                    ctx += f"    Insight: {content.get('after', '')[:150]}\n"
+                elif action == "principle" and isinstance(content, dict):
+                    ctx += f"    Principle: {content.get('description', '')[:150]}\n"
+                ctx += "\n"
+            return ctx
+        except Exception as e:
+            logger.warning("[Wakeup] Failed to load reflection journal: %s", e)
+            return ""
+
+    def _get_tool_failure_context(self) -> str:
+        """Load recent tool failures so Αίολος knows what went wrong before acting.
+
+        Reads tool_failure_journal.jsonl (last 24h, max 10 entries).
+        Returns empty string if no recent failures.
+        """
+        from datetime import datetime, timezone, timedelta
+        journal_path = Path(self.character_path).resolve().parent / "tool_failure_journal.jsonl"
+        if not journal_path.exists():
+            return ""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            entries = []
+            for line in journal_path.read_text(encoding="utf-8").strip().split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    e = json.loads(line)
+                    ts = datetime.fromisoformat(e["timestamp"])
+                    if ts >= cutoff:
+                        entries.append(e)
+                except Exception:
+                    pass
+            if not entries:
+                return ""
+            recent = entries[-10:]
+            ctx = (
+                "⚠ RECENT TOOL FAILURES (last 24h — LEARN FROM THESE before using tools):\n"
+                "  Retrieve this journal before any shell/mongo/agent action to avoid repeating mistakes.\n"
+            )
+            for e in recent:
+                ts = e.get("timestamp", "")[:16]
+                tool = e.get("tool_type", "?")
+                action = e.get("action", "?")
+                category = e.get("category", "?")
+                error = e.get("error", "?")[:150]
+                params = e.get("params", {})
+                # Show relevant param (command, collection, etc.)
+                param_hint = ""
+                for key in ("command", "collection", "action", "code"):
+                    if key in params and params[key]:
+                        param_hint = f" [{key}={params[key][:60]}]"
+                        break
+                ctx += f"  [{ts}] {tool}/{action}{param_hint} → [{category}] {error}\n"
+            ctx += (
+                "  → Before using shell/mongo/agent, check the above and fix the root cause.\n"
+                "  → Use `save_goal` for goals, `save_note` for notes. "
+                "Shell `execute` requires a non-empty `command` attribute.\n"
+            )
+            return ctx
+        except Exception as e:
+            logger.debug("[Wakeup] Tool failure context error: %s", e)
+            return ""
+
+
         return {
             "name": "Αίολος",
             "creator": "Πάνος",

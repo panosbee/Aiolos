@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ΑΙΟΛΟΣ — Command Center</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
   :root {
     --bg: #0a0e14;
@@ -223,8 +225,8 @@
   .dashboard-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-columns: 1.3fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr 0.8fr;
     gap: 12px;
     padding: 0 24px 12px;
     min-height: 0;
@@ -682,12 +684,281 @@
   .empty-panel .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
   .empty-panel p { font-size: 12px; }
 
+  /* ── Entity Graph Panel ── */
+  #panelGraph {
+    grid-row: 1 / 3;
+    background: var(--bg);
+    position: relative;
+    overflow: hidden;
+  }
+  #panelGraph .panel-header {
+    background: linear-gradient(90deg, #0d1520, #111822);
+    border-bottom: 1px solid var(--border);
+    z-index: 2;
+  }
+  #graphContainer {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  #graphContainer svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  /* Graph controls bar */
+  .graph-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 2;
+  }
+  .graph-search {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    color: var(--text);
+    font-size: 11px;
+    font-family: var(--mono);
+    outline: none;
+    min-width: 0;
+  }
+  .graph-search:focus { border-color: var(--cyan-dim); }
+  .graph-search::placeholder { color: var(--text-dim); }
+  .graph-filter-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .graph-filter-btn:hover { border-color: var(--cyan-dim); color: var(--text); }
+  .graph-filter-btn.active { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-bg); }
+  /* Graph tooltip */
+  #graphTooltip {
+    position: absolute;
+    display: none;
+    background: var(--surface2);
+    border: 1px solid var(--cyan-dim);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+    color: var(--text);
+    z-index: 10;
+    pointer-events: none;
+    max-width: 300px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 15px rgba(0, 212, 255, 0.1);
+    backdrop-filter: blur(8px);
+  }
+  #graphTooltip .tt-name { font-weight: 700; color: var(--text-bright); font-size: 13px; }
+  #graphTooltip .tt-type { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+  #graphTooltip .tt-stat { margin-top: 6px; color: var(--text-dim); }
+  #graphTooltip .tt-headline { margin-top: 6px; font-style: italic; color: var(--text-dim); font-size: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+  /* Graph legend overlay */
+  .graph-legend {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    background: rgba(17, 24, 34, 0.85);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 10px;
+    z-index: 5;
+    backdrop-filter: blur(4px);
+  }
+  .graph-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+  }
+  .graph-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  /* Graph stats overlay */
+  .graph-stats {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    z-index: 5;
+  }
+
+  /* ── Live Events Map Panel ── */
+  #panelMap {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    min-height: 280px;
+    position: relative;
+    overflow: hidden;
+  }
+  #panelMap .panel-header {
+    background: linear-gradient(90deg, #0d1520, #111822);
+    border-bottom: 1px solid var(--border);
+    z-index: 2;
+  }
+  #mapContainer {
+    flex: 1;
+    position: relative;
+    z-index: 1;
+  }
+  /* Override Leaflet default styles for dark theme */
+  #mapContainer .leaflet-container {
+    background: #070b10;
+    font-family: var(--font);
+  }
+  #mapContainer .leaflet-control-zoom a {
+    background: var(--surface2);
+    color: var(--cyan);
+    border-color: var(--border);
+  }
+  #mapContainer .leaflet-control-zoom a:hover {
+    background: var(--surface3);
+  }
+  #mapContainer .leaflet-control-attribution {
+    background: rgba(10, 14, 20, 0.7) !important;
+    color: var(--text-dim) !important;
+    font-size: 9px !important;
+  }
+  #mapContainer .leaflet-control-attribution a {
+    color: var(--cyan-dim) !important;
+  }
+  .map-popup .leaflet-popup-content-wrapper {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--cyan-dim);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 10px rgba(0, 212, 255, 0.1);
+  }
+  .map-popup .leaflet-popup-tip {
+    background: var(--surface2);
+    border: 1px solid var(--cyan-dim);
+  }
+  .map-popup .leaflet-popup-content {
+    margin: 10px 14px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .map-popup .popup-headline {
+    font-weight: 700;
+    color: var(--text-bright);
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .map-popup .popup-meta {
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .map-popup .popup-domain {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 6px;
+  }
+  .map-popup .popup-domain.geo { background: #c4404030; color: #ff6666; }
+  .map-popup .popup-domain.econ { background: #40a06030; color: #60d080; }
+  .map-popup .popup-domain.sec { background: #ff980030; color: #ffb840; }
+  .map-popup .popup-domain.tech { background: #9B59B630; color: #c080ff; }
+  .map-popup .popup-domain.other { background: #80809030; color: #a0a0b0; }
+  .map-legend-box {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(17, 24, 34, 0.90);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 10px;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+  }
+  .map-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 2px;
+    color: var(--text-dim);
+  }
+  .map-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+  .map-stats-overlay {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    z-index: 1000;
+    background: rgba(17, 24, 34, 0.85);
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .map-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 2;
+  }
+  .map-filter-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 8px;
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .map-filter-btn:hover { border-color: var(--cyan-dim); color: var(--text); }
+  .map-filter-btn.active { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-bg); }
+
   /* ── Responsive ── */
+  @media (max-width: 1200px) {
+    .dashboard-grid {
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto;
+    }
+    #panelGraph { grid-row: auto; min-height: 400px; }
+    #panelMap { grid-column: 1 / -1; min-height: 300px; }
+  }
   @media (max-width: 900px) {
     .dashboard-grid {
       grid-template-columns: 1fr;
       grid-template-rows: auto;
     }
+    #panelGraph { min-height: 350px; }
+    #panelMap { min-height: 250px; }
     .kpi-strip { flex-wrap: wrap; }
     .kpi-card { min-width: 120px; }
   }
@@ -853,6 +1124,29 @@
 <!-- ── Main Dashboard Grid ── -->
 <div class="dashboard-grid">
 
+  <!-- Panel 0: Entity Graph (D3.js) — spans 2 rows -->
+  <div class="panel" id="panelGraph">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">🕸</span> Entity Graph</div>
+      <span class="panel-badge" id="graphBadge">—</span>
+    </div>
+    <div class="graph-controls">
+      <input type="text" class="graph-search" id="graphSearch" placeholder="Search entity..." />
+      <button class="graph-filter-btn active" data-type="ALL" onclick="toggleGraphFilter(this)">ALL</button>
+      <button class="graph-filter-btn" data-type="GPE" onclick="toggleGraphFilter(this)">GPE</button>
+      <button class="graph-filter-btn" data-type="PERSON" onclick="toggleGraphFilter(this)">PER</button>
+      <button class="graph-filter-btn" data-type="ORG" onclick="toggleGraphFilter(this)">ORG</button>
+      <button class="graph-filter-btn" data-type="NORP" onclick="toggleGraphFilter(this)">NORP</button>
+      <button class="graph-filter-btn" data-type="EVENT" onclick="toggleGraphFilter(this)">EVT</button>
+    </div>
+    <div id="graphContainer">
+      <div class="empty-panel" id="graphEmpty"><span class="icon">🕸</span><p>Loading entity graph...</p></div>
+      <div id="graphTooltip"></div>
+      <div class="graph-legend" id="graphLegend" style="display:none;"></div>
+      <div class="graph-stats" id="graphStats"></div>
+    </div>
+  </div>
+
   <!-- Panel 1: World Feed -->
   <div class="panel" id="panelWorld">
     <div class="panel-header">
@@ -894,6 +1188,26 @@
     </div>
     <div class="panel-body" id="evoTimeline">
       <div class="empty-panel"><span class="icon">🧬</span><p>Loading evolution history...</p></div>
+    </div>
+  </div>
+
+  <!-- Panel 5: Live Events Map (spans full width) -->
+  <div class="panel" id="panelMap">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">🌍</span> Live Events Map</div>
+      <span class="panel-badge" id="mapBadge">0 events</span>
+    </div>
+    <div class="map-filter-bar">
+      <button class="map-filter-btn active" data-domain="ALL" onclick="toggleMapFilter(this)">ALL</button>
+      <button class="map-filter-btn" data-domain="GEOPOLITICAL" onclick="toggleMapFilter(this)">GEO</button>
+      <button class="map-filter-btn" data-domain="ECONOMIC" onclick="toggleMapFilter(this)">ECON</button>
+      <button class="map-filter-btn" data-domain="SECURITY" onclick="toggleMapFilter(this)">SEC</button>
+      <button class="map-filter-btn" data-domain="TECHNOLOGY" onclick="toggleMapFilter(this)">TECH</button>
+      <button class="map-filter-btn" data-domain="MARKET" onclick="toggleMapFilter(this)">MKT</button>
+    </div>
+    <div id="mapContainer">
+      <div class="map-legend-box" id="mapLegend"></div>
+      <div class="map-stats-overlay" id="mapStats"></div>
     </div>
   </div>
 
@@ -1500,6 +1814,532 @@ async function tryRestorePageAgent() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+//  ENTITY GRAPH — D3.js Force-Directed Network Visualization
+// ══════════════════════════════════════════════════════════════════════
+
+let _d3Loaded = false;
+let _graphData = null;
+let _graphSim = null;
+let _graphSvg = null;
+let _graphG = null;
+let _graphZoom = null;
+let _graphActiveType = 'ALL';
+let _graphSearchTerm = '';
+let _graphHighlightNode = null;
+
+// Type colors matching backend _TYPE_COLORS
+const GRAPH_TYPE_COLORS = {
+  GPE:     '#4A90D9',
+  PERSON:  '#E74C3C',
+  ORG:     '#2ECC71',
+  NORP:    '#F39C12',
+  EVENT:   '#9B59B6',
+  LOC:     '#1ABC9C',
+  FAC:     '#E91E63',
+  PRODUCT: '#FF9800',
+  UNKNOWN: '#95A5A6',
+};
+const GRAPH_TYPE_LABELS = {
+  GPE: 'Countries/Cities', PERSON: 'People', ORG: 'Organizations',
+  NORP: 'Nationalities', EVENT: 'Events', LOC: 'Locations',
+  FAC: 'Facilities', PRODUCT: 'Products', UNKNOWN: 'Other',
+};
+
+async function loadD3() {
+  if (_d3Loaded) return true;
+  try {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+    await new Promise((ok, fail) => { s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+    _d3Loaded = true;
+    return true;
+  } catch (e) {
+    console.error('[Graph] D3 load failed:', e);
+    return false;
+  }
+}
+
+async function fetchGraphData() {
+  try {
+    const resp = await fetch(`${API}/xdart/entity-graph/data?max_nodes=200&min_mentions=2`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  } catch (e) {
+    console.warn('[Graph] Fetch failed:', e.message);
+    return null;
+  }
+}
+
+async function initEntityGraph() {
+  const ok = await loadD3();
+  if (!ok) {
+    document.getElementById('graphEmpty').innerHTML =
+      '<span class="icon">⚠️</span><p>D3.js failed to load</p>';
+    return;
+  }
+  _graphData = await fetchGraphData();
+  if (!_graphData || !_graphData.nodes || _graphData.nodes.length === 0) {
+    document.getElementById('graphEmpty').innerHTML =
+      '<span class="icon">🕸</span><p>No entity data available yet.<br>Run an analysis or wait for data collection.</p>';
+    return;
+  }
+  document.getElementById('graphEmpty').style.display = 'none';
+  renderEntityGraph(_graphData);
+  // Wire search
+  document.getElementById('graphSearch').addEventListener('input', (e) => {
+    _graphSearchTerm = e.target.value.toLowerCase().trim();
+    applyGraphFilters();
+  });
+}
+
+function renderEntityGraph(data) {
+  const container = document.getElementById('graphContainer');
+  const rect = container.getBoundingClientRect();
+  const W = rect.width || 600;
+  const H = rect.height || 400;
+
+  // Update badge
+  document.getElementById('graphBadge').textContent =
+    `${data.nodes.length} entities · ${data.edges.length} links`;
+
+  // Update stats overlay
+  const meta = data.meta || {};
+  document.getElementById('graphStats').innerHTML =
+    `${meta.total_nodes?.toLocaleString() || '?'} total · ${meta.headlines_ingested?.toLocaleString() || '?'} headlines`;
+
+  // Build legend
+  const legendEl = document.getElementById('graphLegend');
+  const typesPresent = meta.type_legend || {};
+  let legendHtml = '';
+  for (const [type, color] of Object.entries(typesPresent)) {
+    legendHtml += `<div class="graph-legend-item">
+      <div class="graph-legend-dot" style="background:${color}"></div>
+      <span>${GRAPH_TYPE_LABELS[type] || type}</span>
+    </div>`;
+  }
+  legendEl.innerHTML = legendHtml;
+  legendEl.style.display = legendHtml ? 'block' : 'none';
+
+  // Prepare data — D3 mutates the arrays, so clone
+  const nodes = data.nodes.map(n => ({ ...n }));
+  const edges = data.edges.map(e => ({ ...e }));
+
+  // Create SVG
+  const svg = d3.select('#graphContainer')
+    .append('svg')
+    .attr('width', W)
+    .attr('height', H);
+
+  // Glow filter for JARVIS effect
+  const defs = svg.append('defs');
+  const filter = defs.append('filter').attr('id', 'glow');
+  filter.append('feGaussianBlur').attr('stdDeviation', 3).attr('result', 'blur');
+  const feMerge = filter.append('feMerge');
+  feMerge.append('feMergeNode').attr('in', 'blur');
+  feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  // Arrow marker for directed edges
+  defs.append('marker')
+    .attr('id', 'arrowhead')
+    .attr('viewBox', '0 -3 6 6')
+    .attr('refX', 20)
+    .attr('markerWidth', 4)
+    .attr('markerHeight', 4)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-3L6,0L0,3')
+    .attr('fill', '#1e2d40');
+
+  // Container group (for zoom/pan)
+  const g = svg.append('g');
+
+  // Zoom
+  const zoom = d3.zoom()
+    .scaleExtent([0.2, 5])
+    .on('zoom', (ev) => g.attr('transform', ev.transform));
+  svg.call(zoom);
+
+  // Edges
+  const linkG = g.append('g').attr('class', 'links');
+  const linkEls = linkG.selectAll('line')
+    .data(edges)
+    .enter().append('line')
+    .attr('stroke', '#1e2d40')
+    .attr('stroke-width', d => Math.max(0.5, d.width * 0.5))
+    .attr('stroke-opacity', 0.5)
+    .attr('marker-end', 'url(#arrowhead)');
+
+  // Nodes
+  const nodeG = g.append('g').attr('class', 'nodes');
+  const nodeEls = nodeG.selectAll('g')
+    .data(nodes)
+    .enter().append('g')
+    .attr('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', dragStart)
+      .on('drag', dragging)
+      .on('end', dragEnd));
+
+  // Node circles
+  nodeEls.append('circle')
+    .attr('r', d => Math.max(4, d.size * 0.35))
+    .attr('fill', d => d.color || '#95A5A6')
+    .attr('stroke', d => d.color || '#95A5A6')
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 0.5)
+    .attr('fill-opacity', 0.75)
+    .attr('filter', d => d.activity_score > 5 ? 'url(#glow)' : null);
+
+  // Node labels (only for larger nodes)
+  nodeEls.append('text')
+    .text(d => d.mentions >= 10 ? d.label : '')
+    .attr('text-anchor', 'middle')
+    .attr('dy', d => -(Math.max(4, d.size * 0.35) + 4))
+    .attr('fill', '#c8d4e0')
+    .attr('font-size', d => Math.max(8, Math.min(12, d.size * 0.25)))
+    .attr('font-family', 'var(--font)')
+    .attr('opacity', 0.8)
+    .attr('pointer-events', 'none');
+
+  // Tooltip on hover
+  const tooltip = document.getElementById('graphTooltip');
+  nodeEls
+    .on('mouseenter', (ev, d) => {
+      // Highlight connected nodes
+      _graphHighlightNode = d.id;
+      const connected = new Set();
+      edges.forEach(e => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        if (src === d.id) connected.add(tgt);
+        if (tgt === d.id) connected.add(src);
+      });
+      connected.add(d.id);
+      nodeEls.select('circle').attr('opacity', n => connected.has(n.id) ? 1 : 0.15);
+      nodeEls.select('text').attr('opacity', n => connected.has(n.id) ? 1 : 0.05);
+      linkEls.attr('stroke-opacity', e => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        return (src === d.id || tgt === d.id) ? 0.8 : 0.05;
+      });
+      linkEls.attr('stroke', e => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        return (src === d.id || tgt === d.id) ? '#00d4ff' : '#1e2d40';
+      });
+
+      // Headlines from connected edges
+      let headlines = [];
+      edges.forEach(e => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        if (src === d.id || tgt === d.id) {
+          headlines = headlines.concat(e.recent_headlines || []);
+        }
+      });
+      headlines = [...new Set(headlines)].slice(0, 3);
+
+      tooltip.innerHTML = `
+        <div class="tt-name">${esc(d.label)}</div>
+        <div class="tt-type" style="color:${d.color}">${d.type}</div>
+        <div class="tt-stat">Mentions: ${d.mentions} · Activity: ${d.activity_score}</div>
+        <div class="tt-stat">Last seen: ${d.last_seen_iso ? timeAgo(d.last_seen_iso) : 'N/A'}</div>
+        ${headlines.length ? '<div class="tt-headline">' + headlines.map(h => esc(h)).join('<br>') + '</div>' : ''}
+      `;
+      tooltip.style.display = 'block';
+      const cr = container.getBoundingClientRect();
+      tooltip.style.left = Math.min(ev.clientX - cr.left + 12, cr.width - 310) + 'px';
+      tooltip.style.top = Math.min(ev.clientY - cr.top - 10, cr.height - 150) + 'px';
+    })
+    .on('mouseleave', () => {
+      _graphHighlightNode = null;
+      nodeEls.select('circle').attr('opacity', 1);
+      nodeEls.select('text').attr('opacity', 0.8);
+      linkEls.attr('stroke-opacity', 0.5).attr('stroke', '#1e2d40');
+      tooltip.style.display = 'none';
+    })
+    .on('click', (ev, d) => {
+      // Zoom to node neighborhood
+      const scale = 2.5;
+      const x = d.x || 0;
+      const y = d.y || 0;
+      svg.transition().duration(500).call(
+        zoom.transform,
+        d3.zoomIdentity.translate(W / 2 - x * scale, H / 2 - y * scale).scale(scale),
+      );
+    });
+
+  // Force simulation
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edges).id(d => d.id).distance(d => 80 + (1 / Math.max(0.1, d.weight)) * 20).strength(d => Math.min(0.3, d.weight * 0.05)))
+    .force('charge', d3.forceManyBody().strength(d => -30 - d.size * 2).distanceMax(300))
+    .force('center', d3.forceCenter(W / 2, H / 2).strength(0.05))
+    .force('collide', d3.forceCollide(d => Math.max(6, d.size * 0.4) + 2))
+    .force('x', d3.forceX(W / 2).strength(0.02))
+    .force('y', d3.forceY(H / 2).strength(0.02))
+    .alphaDecay(0.02)
+    .velocityDecay(0.4)
+    .on('tick', () => {
+      linkEls
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+      nodeEls.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+  // Store refs
+  _graphSim = sim;
+  _graphSvg = svg;
+  _graphG = g;
+  _graphZoom = zoom;
+
+  // Drag functions
+  function dragStart(ev, d) {
+    if (!ev.active) sim.alphaTarget(0.2).restart();
+    d.fx = d.x; d.fy = d.y;
+  }
+  function dragging(ev, d) {
+    d.fx = ev.x; d.fy = ev.y;
+  }
+  function dragEnd(ev, d) {
+    if (!ev.active) sim.alphaTarget(0);
+    d.fx = null; d.fy = null;
+  }
+
+  // Resize handler
+  const ro = new ResizeObserver(() => {
+    const r = container.getBoundingClientRect();
+    svg.attr('width', r.width).attr('height', r.height);
+    sim.force('center', d3.forceCenter(r.width / 2, r.height / 2).strength(0.05));
+    sim.force('x', d3.forceX(r.width / 2).strength(0.02));
+    sim.force('y', d3.forceY(r.height / 2).strength(0.02));
+    sim.alpha(0.1).restart();
+  });
+  ro.observe(container);
+}
+
+function toggleGraphFilter(btn) {
+  const type = btn.dataset.type;
+  // Deselect all, select clicked
+  document.querySelectorAll('.graph-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _graphActiveType = type;
+  applyGraphFilters();
+}
+
+function applyGraphFilters() {
+  if (!_graphSvg) return;
+  const nodeEls = _graphSvg.selectAll('.nodes g');
+  const linkEls = _graphSvg.selectAll('.links line');
+
+  const visibleNodes = new Set();
+  nodeEls.each(function(d) {
+    const matchType = _graphActiveType === 'ALL' || d.type === _graphActiveType;
+    const matchSearch = !_graphSearchTerm || d.label.toLowerCase().includes(_graphSearchTerm);
+    const visible = matchType && matchSearch;
+    d3.select(this).style('display', visible ? null : 'none');
+    if (visible) visibleNodes.add(d.id);
+  });
+
+  linkEls.each(function(d) {
+    const src = typeof d.source === 'object' ? d.source.id : d.source;
+    const tgt = typeof d.target === 'object' ? d.target.id : d.target;
+    d3.select(this).style('display', visibleNodes.has(src) && visibleNodes.has(tgt) ? null : 'none');
+  });
+
+  // If searching, highlight match
+  if (_graphSearchTerm) {
+    nodeEls.select('text').text(function(d) {
+      if (d.label.toLowerCase().includes(_graphSearchTerm)) return d.label;
+      return d.mentions >= 10 ? d.label : '';
+    });
+  }
+}
+
+// Refresh graph data periodically (every 2 min)
+async function refreshGraphData() {
+  const data = await fetchGraphData();
+  if (!data || !data.nodes || data.nodes.length === 0) return;
+  // Just update badge and stats, don't rebuild graph (too disruptive)
+  document.getElementById('graphBadge').textContent =
+    `${data.nodes.length} entities · ${data.edges.length} links`;
+  const meta = data.meta || {};
+  document.getElementById('graphStats').innerHTML =
+    `${meta.total_nodes?.toLocaleString() || '?'} total · ${meta.headlines_ingested?.toLocaleString() || '?'} headlines`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  LIVE EVENTS MAP (Leaflet.js)
+// ══════════════════════════════════════════════════════════════════════
+
+let _map = null;
+let _mapMarkers = [];          // all Leaflet markers
+let _mapGeoData = [];          // raw features from API
+let _mapActiveDomain = 'ALL';
+
+const _MAP_DOMAIN_COLORS = {
+  GEOPOLITICAL: '#ff4444',
+  GEOPOLITICS: '#ff4444',
+  SECURITY: '#ff9800',
+  ECONOMIC: '#40a060',
+  MARKET: '#4A90D9',
+  TECHNOLOGY: '#9B59B6',
+  SOCIAL: '#e91e63',
+  MULTI: '#808090',
+};
+
+const _MAP_DOMAIN_LABELS = [
+  ['GEOPOLITICAL', '#ff4444', 'Geopolitical'],
+  ['ECONOMIC', '#40a060', 'Economic'],
+  ['SECURITY', '#ff9800', 'Security'],
+  ['MARKET', '#4A90D9', 'Market'],
+  ['TECHNOLOGY', '#9B59B6', 'Technology'],
+];
+
+function _mapDomainColor(domain) {
+  if (!domain) return '#808090';
+  return _MAP_DOMAIN_COLORS[domain.toUpperCase()] || '#808090';
+}
+
+function _createCircleIcon(color, salience, precise) {
+  const size = precise ? Math.max(6, Math.min(16, salience * 18)) : 5;
+  const opacity = precise ? Math.max(0.5, salience) : 0.35;
+  const glow = precise && salience >= 0.7 ? `box-shadow:0 0 ${size}px ${color}60;` : '';
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:${size}px;height:${size}px;
+      border-radius:50%;
+      background:${color};
+      opacity:${opacity};
+      border:1px solid rgba(255,255,255,${precise ? 0.25 : 0.1});
+      ${glow}
+    "></div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function _popupDomainClass(domain) {
+  const d = (domain || '').toUpperCase();
+  if (d.includes('GEO') || d.includes('CONFLICT')) return 'geo';
+  if (d.includes('ECON') || d.includes('MARKET')) return 'econ';
+  if (d.includes('SEC') || d.includes('MILIT')) return 'sec';
+  if (d.includes('TECH')) return 'tech';
+  return 'other';
+}
+
+function initEventsMap() {
+  const container = document.getElementById('mapContainer');
+  if (!container || !L) return;
+
+  _map = L.map(container, {
+    center: [25, 20],
+    zoom: 2,
+    minZoom: 2,
+    maxZoom: 12,
+    zoomControl: true,
+    attributionControl: true,
+    preferCanvas: true,
+  });
+
+  // CartoDB Dark Matter — matches JARVIS theme
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> · <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+    subdomains: 'abcd',
+    maxZoom: 19,
+  }).addTo(_map);
+
+  // Build legend
+  const legend = document.getElementById('mapLegend');
+  legend.innerHTML = _MAP_DOMAIN_LABELS.map(([, color, label]) =>
+    `<div class="map-legend-item"><div class="map-legend-dot" style="background:${color}"></div>${label}</div>`
+  ).join('') + '<div class="map-legend-item"><div class="map-legend-dot" style="background:#808090;opacity:0.4;"></div>Approx. location</div>';
+
+  // Fix Leaflet rendering in hidden/flex containers
+  setTimeout(() => _map.invalidateSize(), 300);
+  const ro = new ResizeObserver(() => { if (_map) _map.invalidateSize(); });
+  ro.observe(container);
+
+  // Load initial data
+  refreshMapData();
+}
+
+async function fetchMapData() {
+  try {
+    const resp = await fetch(`${API}/xdart/events/geo?hours_back=48&max_events=500&min_salience=0.3`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    console.warn('[Map] Fetch failed:', e.message);
+    return null;
+  }
+}
+
+function renderMapMarkers(features) {
+  if (!_map) return;
+
+  // Clear existing markers
+  _mapMarkers.forEach(m => _map.removeLayer(m));
+  _mapMarkers = [];
+
+  let visibleCount = 0;
+  features.forEach(f => {
+    // Domain filter
+    if (_mapActiveDomain !== 'ALL') {
+      const fd = (f.domain || '').toUpperCase();
+      if (!fd.includes(_mapActiveDomain) && fd !== _mapActiveDomain) return;
+    }
+
+    const color = _mapDomainColor(f.domain);
+    const icon = _createCircleIcon(color, f.salience, f.precise);
+
+    const marker = L.marker([f.lat, f.lon], { icon })
+      .addTo(_map);
+
+    const domClass = _popupDomainClass(f.domain);
+    const headline = (f.headline || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const source = (f.source || '').replace(/</g, '&lt;');
+    const sal = ((f.salience || 0) * 100).toFixed(0);
+    const time = f.collected_at ? timeAgo(f.collected_at) : '';
+
+    marker.bindPopup(`
+      <div class="popup-headline">${headline}</div>
+      <div class="popup-meta">
+        <span class="popup-domain ${domClass}">${f.domain || 'MULTI'}</span>
+        <span>◉ ${sal}%</span>
+        <span>${source}</span>
+        ${time ? `<span>· ${time}</span>` : ''}
+        ${!f.precise ? '<span style="opacity:0.5;">≈ approx</span>' : ''}
+      </div>
+    `, { className: 'map-popup', maxWidth: 320 });
+
+    _mapMarkers.push(marker);
+    visibleCount++;
+  });
+
+  // Update stats
+  const precise = features.filter(f => f.precise).length;
+  document.getElementById('mapStats').textContent = `${visibleCount} events · ${precise} precise`;
+  document.getElementById('mapBadge').textContent = `${features.length} events`;
+}
+
+async function refreshMapData() {
+  const data = await fetchMapData();
+  if (!data || !data.features) return;
+  _mapGeoData = data.features;
+  renderMapMarkers(_mapGeoData);
+}
+
+function toggleMapFilter(btn) {
+  document.querySelectorAll('.map-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _mapActiveDomain = btn.dataset.domain;
+  renderMapMarkers(_mapGeoData);
+}
+
+// ══════════════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1507,6 +2347,12 @@ async function init() {
   await fetchDashboardData();
   // Auto-refresh
   refreshTimer = setInterval(fetchDashboardData, REFRESH_INTERVAL);
+  // Entity graph (D3.js)
+  initEntityGraph();
+  setInterval(refreshGraphData, 120_000); // 2 min
+  // Live Events Map (Leaflet.js)
+  initEventsMap();
+  setInterval(refreshMapData, 120_000); // 2 min
   // Try restore page agent
   setTimeout(tryRestorePageAgent, 2000);
 }

@@ -116,6 +116,13 @@ You are given ONLY the internal distillate from XHEART — the ζωμός.
 You do NOT have access to the raw phases. You speak FROM the essence.
 
 CRITICAL RULES:
+0. GROUNDING DECLARATION (mandatory first step — do this BEFORE writing anything else):
+   State ONE specific fact, event, or data point from the CURRENT WORLD CONTEXT that either
+   CONFIRMS or CONTRADICTS the distillate. Format: "WORLD ANCHOR: [fact]."
+   If the world context is empty or absent, write: "WORLD ANCHOR: None provided — this output
+   is epistemically ungrounded and should be treated as internal reasoning only."
+   This rule exists to break self-referential loops. Do not skip it.
+
 1. COMPRESSION, NOT REPETITION. You have one job: deliver the ONE insight
    the user could not have reached alone. If 8 domains all say "chokepoint
    concentration rises during decoupling," that is ONE insight — state it
@@ -139,6 +146,7 @@ CRITICAL RULES:
    Short does not mean shallow.
 
 FORMAT:
+- Paragraph 0 (1 sentence): WORLD ANCHOR declaration (from Rule 0 above).
 - Paragraph 1 (3-5 sentences): The core prediction — WHAT will happen,
   WHERE, the mechanism driving it, and the timeline. Be specific with
   numbers, dates, actors, and cited data points from the world context.
@@ -151,7 +159,7 @@ FORMAT:
 
 Respond in JSON:
 {{
-  "final_output": "Your full predictive intelligence brief (4 paragraphs, ~400-800 words). DO NOT compress below 300 words — substance matters.",
+  "final_output": "Your full predictive intelligence brief (paragraphs 0-4, ~400-800 words). DO NOT compress below 300 words — substance matters.",
   "falsifiability": "One specific, dated observation that would disprove this"
 }}"""
 
@@ -332,6 +340,8 @@ class XHEARTPhase:
         scenario_context: str = "",
         distillation_overlay: str = "",
         output_overlay: str = "",
+        semantic_context: str = "",
+        procedural_context: str = "",
     ) -> tuple[XHEARTState, str, str, list[dict]]:
         """Two-stage distillation + optional self-expansion.
 
@@ -374,6 +384,27 @@ class XHEARTPhase:
                 f"{world_context}\n"
             )
             logger.info("[Phase 3a] Injected world context (%d chars)", len(world_context))
+
+        # ── Past distillates as epistemic ground ──
+        # These are abstract truths and reasoning patterns distilled from PREVIOUS runs.
+        # Do NOT repeat them — test them. Does this distillation CONFIRM, EXTEND, or CONTRADICT them?
+        if semantic_context:
+            user_a_parts.append(
+                f"=== WHAT I HAVE ALREADY LEARNED (semantic truths from past distillations) ===\n"
+                f"These are patterns I have extracted and confirmed across previous runs.\n"
+                f"Before you distill: do any of these apply here? Do they hold, deepen, or break?\n"
+                f"{semantic_context}\n"
+            )
+            logger.info("[Phase 3a] Injected semantic context (%d chars)", len(semantic_context))
+
+        if procedural_context:
+            user_a_parts.append(
+                f"=== REASONING PATTERNS I HAVE INTERNALIZED ===\n"
+                f"These are reasoning templates extracted from past distillations.\n"
+                f"Apply them to this problem if relevant — or note if this case breaks them.\n"
+                f"{procedural_context}\n"
+            )
+            logger.info("[Phase 3a] Injected procedural context (%d chars)", len(procedural_context))
 
         user_a_parts.append("Now distill. What is the ζωμός?")
 

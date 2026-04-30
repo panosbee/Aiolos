@@ -9,10 +9,12 @@ RAG θυμάται ΠΛΗΡΟΦΟΡΙΑ. Episodic Memory θυμάται ΕΜΠΕ
 
 import logging
 import json
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
 
+from pathlib import Path
 from xdart.config import (
     QDRANT_COLLECTION,
     QDRANT_STORAGE_PATH,
@@ -26,6 +28,47 @@ from xdart.models import EpisodicMemoryEntry, RetrievedMemory
 CONCEPT_REGISTRY_COLLECTION = "concept_registry"
 
 logger = logging.getLogger(__name__)
+
+_qdrant_migration_checked = False
+
+
+def _check_and_migrate_qdrant(storage_path: str, required_size: int) -> None:
+    """One-time startup check: if the vector-size marker is missing or wrong,
+    wipe all collection directories so Qdrant doesn't read stale segment data.
+    Uses a marker file for idempotency across module reloads.
+    """
+    global _qdrant_migration_checked
+    if _qdrant_migration_checked:
+        return
+    _qdrant_migration_checked = True
+    marker = Path(storage_path) / ".vector_size"
+    try:
+        if marker.exists():
+            try:
+                stored = int(marker.read_text().strip())
+                if stored == required_size:
+                    return
+                logger.warning(
+                    "[Qdrant] Vector size changed %d → %d — purging stale segment data",
+                    stored, required_size,
+                )
+            except ValueError:
+                logger.warning("[Qdrant] Corrupt migration marker — re-migrating")
+        else:
+            logger.info(
+                "[Qdrant] No migration marker — purging any stale segment data "
+                "(first run after embedding dim change)"
+            )
+        col_root = Path(storage_path) / "collection"
+        if col_root.exists():
+            for col_dir in col_root.iterdir():
+                if col_dir.is_dir():
+                    shutil.rmtree(col_dir, ignore_errors=True)
+                    logger.info("[Qdrant] Purged stale collection dir: %s", col_dir.name)
+        marker.write_text(str(required_size))
+        logger.info("[Qdrant] Migration complete — vector size locked to %d", required_size)
+    except Exception as exc:
+        logger.warning("[Qdrant] Migration check failed: %s", exc)
 
 
 class EpisodicMemoryPhase:
@@ -55,35 +98,59 @@ class EpisodicMemoryPhase:
                 logger.info("Qdrant using shared client")
             else:
                 from qdrant_client import QdrantClient
+                # Run migration check before opening the client so stale segment
+                # files are removed before Qdrant can read them.
+                _check_and_migrate_qdrant(QDRANT_STORAGE_PATH, QDRANT_VECTOR_SIZE)
                 self._client = QdrantClient(path=QDRANT_STORAGE_PATH)
                 logger.info("Qdrant local storage: %s", QDRANT_STORAGE_PATH)
 
-            # Ensure collection exists
+            # Ensure collection exists — recreate if vector dims have changed
             collections = [c.name for c in self._client.get_collections().collections]
-            if QDRANT_COLLECTION not in collections:
-                self._client.create_collection(
-                    collection_name=QDRANT_COLLECTION,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", QDRANT_COLLECTION)
-            else:
-                logger.info("Qdrant collection exists: %s", QDRANT_COLLECTION)
 
-            # Ensure concept_registry collection exists
-            if CONCEPT_REGISTRY_COLLECTION not in collections:
-                self._client.create_collection(
-                    collection_name=CONCEPT_REGISTRY_COLLECTION,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", CONCEPT_REGISTRY_COLLECTION)
-            else:
-                logger.info("Qdrant collection exists: %s", CONCEPT_REGISTRY_COLLECTION)
+            def _ensure_collection(col_name: str) -> None:
+                """Create collection or recreate it if vector size has changed."""
+                if col_name not in collections:
+                    self._client.create_collection(
+                        collection_name=col_name,
+                        vectors_config=VectorParams(
+                            size=QDRANT_VECTOR_SIZE,
+                            distance=Distance.COSINE,
+                        ),
+                    )
+                    logger.info("Created Qdrant collection: %s (size=%d)", col_name, QDRANT_VECTOR_SIZE)
+                else:
+                    # Check if dims match — recreate if not
+                    try:
+                        info = self._client.get_collection(col_name)
+                        existing_size = info.config.params.vectors.size
+                        if existing_size != QDRANT_VECTOR_SIZE:
+                            logger.warning(
+                                "[Qdrant] Collection '%s' has %d dims but config requires %d — "
+                                "RECREATING (existing vectors lost).",
+                                col_name, existing_size, QDRANT_VECTOR_SIZE,
+                            )
+                            self._client.delete_collection(col_name)
+                            # Also purge on-disk segment files so Qdrant embedded mode
+                            # doesn't resurrect old vectors on next startup.
+                            _col_dir = Path(QDRANT_STORAGE_PATH) / "collection" / col_name
+                            if _col_dir.exists():
+                                shutil.rmtree(_col_dir, ignore_errors=True)
+                                logger.info("[Qdrant] Physical dir purged: %s", _col_dir)
+                            self._client.create_collection(
+                                collection_name=col_name,
+                                vectors_config=VectorParams(
+                                    size=QDRANT_VECTOR_SIZE,
+                                    distance=Distance.COSINE,
+                                ),
+                            )
+                            logger.info("[Qdrant] Collection '%s' recreated with size=%d", col_name, QDRANT_VECTOR_SIZE)
+                        else:
+                            logger.info("Qdrant collection exists: %s (size=%d)", col_name, QDRANT_VECTOR_SIZE)
+                    except Exception as e:
+                        logger.warning("[Qdrant] Could not verify collection dims for %s: %s", col_name, e)
+
+            _ensure_collection(QDRANT_COLLECTION)
+            _ensure_collection(CONCEPT_REGISTRY_COLLECTION)
 
         except Exception as exc:
             logger.warning(
@@ -1047,6 +1114,9 @@ Rules:
 
     # ── Immediate Memory Update ───────────────────────────────────────
 
+    # Number of recent runs to keep in immediate memory (fast access, always in prompt)
+    IMMEDIATE_MEMORY_MAX_RUNS: int = 10
+
     def update_immediate_memory(
         self,
         problem: str,
@@ -1055,9 +1125,11 @@ Rules:
         concept_born: str | None = None,
         run_mood: str | None = None,
     ) -> None:
-        """Keep the last 3 runs always available without retrieval.
+        """Keep the last N runs always available without retrieval.
 
-        FIFO — max 3 entries. Only successful runs (reaching Phase 4) update this.
+        FIFO — max IMMEDIATE_MEMORY_MAX_RUNS entries.
+        Only successful runs (reaching Phase 4) update this.
+        Older runs beyond this window remain searchable via Qdrant episodic.
         """
         try:
             with open(immediate_memory_path, "r", encoding="utf-8") as f:
@@ -1075,10 +1147,11 @@ Rules:
 
         data["recent_runs"].append(new_entry)
 
-        # Keep only last 3
-        data["recent_runs"] = data["recent_runs"][-3:]
+        # Keep only last N runs — older ones remain in Qdrant episodic
+        data["recent_runs"] = data["recent_runs"][-self.IMMEDIATE_MEMORY_MAX_RUNS:]
 
         with open(immediate_memory_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        logger.info("[ImmediateMemory] Updated — %d recent runs", len(data["recent_runs"]))
+        logger.info("[ImmediateMemory] Updated — %d recent runs (max %d)",
+                    len(data["recent_runs"]), self.IMMEDIATE_MEMORY_MAX_RUNS)

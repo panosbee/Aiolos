@@ -194,6 +194,12 @@ class SelfEvolutionLoop:
         self.change_logger = CoreChangeLogger()
         self._interaction_count = 0
         self._check_interval = 2  # run diagnosis every N interactions
+        self._consecutive_skips = 0  # Track repetitive-loop skips
+        self._MAX_CONSECUTIVE_SKIPS = 5  # Force fresh diagnosis after this many
+        # Cooldown cycles that bypass repetitive-loop gate after a deadlock break.
+        # Prevents immediate re-lock into the same skip pattern.
+        self._repetitive_gate_cooldown = 0
+        self._REPETITIVE_GATE_COOLDOWN_CYCLES = 3
 
     def tick(self) -> None:
         """Called after each interaction. Triggers diagnosis at intervals."""
@@ -227,7 +233,8 @@ class SelfEvolutionLoop:
                                 "root_cause": diag.get("root_cause", "?"),
                                 "change_type": proposed.get("type", "none"),
                                 "target": proposed.get("target", "?"),
-                                "applied": entry.get("result", {}).get("_applied", False),
+                                # _applied is written at top-level after apply logic
+                                "applied": entry.get("_applied", entry.get("result", {}).get("_applied", False)),
                             })
                     except json.JSONDecodeError:
                         pass
@@ -246,9 +253,17 @@ class SelfEvolutionLoop:
 
         last_n = recent_diagnoses[-threshold:]
         # Extract key words from each pattern
-        common_keywords = {"fabricat", "grounding", "over-interpret", "over-specif",
-                          "epistemic", "traceabil", "unverif", "synthesi",
-                          "retrieved", "infer"}
+        common_keywords = {
+            # fabrication / grounding cluster
+            "fabricat", "grounding", "over-interpret", "over-specif",
+            "epistemic", "traceabil", "unverif", "retrieved", "infer",
+            # framework / narrative coherence cluster (the new repeating pattern)
+            "conceptual framework", "novel framework", "framework construct",
+            "narrative coherence", "narrative", "explanatory depth",
+            "premature", "evidence boundar", "sparse data",
+            # general over-synthesis
+            "synthesi", "causal mechanism", "causal chain", "over-extrapolat",
+        }
 
         hits = 0
         for d in last_n:
@@ -256,7 +271,15 @@ class SelfEvolutionLoop:
             if any(kw in pattern for kw in common_keywords):
                 hits += 1
 
-        return hits >= threshold
+        if hits >= threshold:
+            return True
+
+        # Fast-path: if ≥2 of the last entries share the same theme AND at least one
+        # was already applied, treat as repetitive immediately (no need to wait for 3).
+        if hits >= 2 and any(d.get("applied") for d in last_n):
+            return True
+
+        return False
 
     def diagnose(
         self,
@@ -281,25 +304,31 @@ class SelfEvolutionLoop:
 
         # ── Check for repetitive diagnosis loop ──
         recent_diagnoses = self._get_recent_diagnoses(5)
-        if self._is_repetitive_diagnosis(recent_diagnoses, threshold=3):
-            elapsed = time.perf_counter() - t0
+        force_fresh = False
+        bypass_repetitive_gate = self._repetitive_gate_cooldown > 0
+        if bypass_repetitive_gate:
             logger.info(
-                "[SelfEvolution] SKIPPED — last 3 diagnoses detected the same theme "
-                "(fabrication/grounding). Existing overlays already address this. (%.2fs)", elapsed
+                "[SelfEvolution] Repetitive-gate cooldown active (%d cycles left) — allowing fresh diagnosis",
+                self._repetitive_gate_cooldown,
             )
-            self._journal({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "type": "diagnosis",
-                "interactions_reviewed": self._check_interval,
-                "issue_detected": False,
-                "result": {"systematic_issue_detected": False,
-                           "reasoning": "Skipped: repetitive diagnosis loop detected — "
-                                        "same fabrication/grounding pattern diagnosed 3+ times consecutively. "
-                                        "Existing overlays already cover this."},
-                "elapsed_seconds": round(elapsed, 2),
-                "skipped_reason": "repetitive_loop",
-            })
-            return None
+            self._repetitive_gate_cooldown -= 1
+
+        if (not bypass_repetitive_gate) and self._is_repetitive_diagnosis(recent_diagnoses, threshold=3):
+            # Do not keep skipping the same diagnosis loop.
+            # Force a fresh diagnosis immediately and instruct the LLM to search
+            # for different classes of issues.
+            logger.info(
+                "[SelfEvolution] REPETITIVE THEME detected — forcing fresh diagnosis now "
+                "(no skip loop) to search beyond fabrication/grounding"
+            )
+            force_fresh = True
+            self._consecutive_skips = 0
+            self._repetitive_gate_cooldown = self._REPETITIVE_GATE_COOLDOWN_CYCLES
+            # Clear old diagnoses so the LLM isn't anchored to them
+            recent_diagnoses = []
+        else:
+            # Reset skip counter when diagnosis is NOT repetitive
+            self._consecutive_skips = 0
 
         # Format recent diagnoses for the prompt
         recent_diag_text = "(no previous diagnoses)" if not recent_diagnoses else json.dumps(
@@ -358,6 +387,18 @@ class SelfEvolutionLoop:
             recent_diagnoses=recent_diag_text,
         )
 
+        # Inject deadlock-break instruction when forced fresh
+        if force_fresh:
+            prompt += (
+                "\n\n⚠ DEADLOCK BREAK MODE: The system has been stuck diagnosing the same "
+                "fabrication/grounding pattern repeatedly and existing overlays already address it. "
+                "You MUST look for COMPLETELY DIFFERENT issues — performance bottlenecks, "
+                "reasoning depth, scenario quality, memory utilization, creative synthesis gaps, "
+                "prediction accuracy, or any other non-fabrication pattern. "
+                "If you truly find NO new issues, report systematic_issue_detected=false. "
+                "DO NOT diagnose fabrication/grounding/epistemic-traceability again."
+            )
+
         try:
             result = self.llm.call_json(
                 prompt,
@@ -373,8 +414,18 @@ class SelfEvolutionLoop:
         elapsed = time.perf_counter() - t0
         issue_found = result.get("systematic_issue_detected", False)
 
-        # Log to journal
-        journal_entry = {
+        # After a forced fresh diagnosis, keep repetitive gate relaxed for a few cycles
+        # so the loop can discover non-fabrication patterns instead of re-locking.
+        if force_fresh and not issue_found and self._repetitive_gate_cooldown == 0:
+            self._repetitive_gate_cooldown = self._REPETITIVE_GATE_COOLDOWN_CYCLES
+            logger.info(
+                "[SelfEvolution] No new issue after deadlock break — extending repetitive-gate cooldown to %d cycles",
+                self._repetitive_gate_cooldown,
+            )
+
+        # Log to journal (written AFTER apply logic so _applied is accurate)
+        # NOTE: applied/change_type are set below; we defer _journal call.
+        _journal_entry_base = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "type": "diagnosis",
             "interactions_reviewed": self._check_interval,
@@ -384,7 +435,6 @@ class SelfEvolutionLoop:
             "result": result,
             "elapsed_seconds": round(elapsed, 2),
         }
-        self._journal(journal_entry)
 
         if issue_found:
             logger.info("[SelfEvolution] ⚠ SYSTEMATIC ISSUE DETECTED")
@@ -484,7 +534,26 @@ class SelfEvolutionLoop:
                 )
             except Exception as log_err:
                 logger.warning("[SelfEvolution] Failed to log proposal: %s", log_err)
+
+            # Write journal entry now that we know whether the change was applied
+            _journal_entry_base["_applied"] = applied
+            _journal_entry_base["_change_type"] = change_type
+            self._journal(_journal_entry_base)
+
+            # If a change was applied, set a per-pattern cooldown so the same pattern
+            # is not re-diagnosed immediately (allow the applied change to take effect)
+            if applied:
+                self._repetitive_gate_cooldown = max(
+                    self._repetitive_gate_cooldown,
+                    self._REPETITIVE_GATE_COOLDOWN_CYCLES * 2,  # 6 cycles after apply
+                )
+                logger.info(
+                    "[SelfEvolution] Applied change → suppressing re-diagnosis for %d cycles",
+                    self._repetitive_gate_cooldown,
+                )
         else:
+            # No issue: write journal and log
+            self._journal(_journal_entry_base)
             logger.info("[SelfEvolution] No systematic issue detected (%.2fs)", elapsed)
             logger.info("[SelfEvolution]   Avg integrity: %.2f", avg_integrity)
             logger.info("[SelfEvolution]   Reasoning: %s", result.get("reasoning", ""))

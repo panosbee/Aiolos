@@ -323,7 +323,7 @@ class ProphecyResolver:
         result = self.llm.call_json(
             prompt,
             "Judge this prediction. Be strict and honest.",
-            max_tokens=500,
+            max_tokens=2000,
             temperature=0.2,
         )
 
@@ -347,7 +347,7 @@ class ProphecyResolver:
         result = self.llm.call_json(
             prompt,
             "Judge this prediction. Be strict and honest.",
-            max_tokens=500,
+            max_tokens=2000,
             temperature=0.2,
         )
 

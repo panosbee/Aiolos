@@ -24,3 +24,7 @@ opencv-python>=4.9.0
 Pillow>=10.0.0
 # MongoDB structured persistence (entity graph + journals + conversations)
 pymongo>=4.6.0
+# Telegram Intelligence Tool — Tier 2: MTProto user account (join/read private channels)
+# Tier 1 (web search + t.me/s/ validation) works without this.
+# Tier 2 requires: api_id + api_hash from my.telegram.org + _setup_telegram_session.py
+telethon>=1.36.0

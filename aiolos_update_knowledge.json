@@ -1,0 +1,189 @@
+{
+  "version": 2,
+  "updated_at": "2026-04-28T00:00:00+00:00",
+  "updates": [
+    {
+      "code": "E",
+      "title": "Telegram Intelligence Tool — Autonomous Channel Discovery & Monitoring",
+      "status": "active",
+      "architecture": [
+        "Module: xdart/tools/telegram_intel_tool.py",
+        "Channel registry: telegram_intel_channels.json (workspace root)",
+        "Tier 1: web search (Brave API / DuckDuckGo) + t.me/s/ web preview validation",
+        "Tier 2: Telethon MTProto user account (requires _setup_telegram_session.py once)",
+        "DarkWebCollector: _dynamic_channels list — hot-reload without restart",
+        "Core integration: _process_telegram_intel_directives() in both chat paths",
+        "WakeupProtocol: _get_telegram_intel_context() — status injected every API call",
+        "api.py: wired into framework + wakeup; 7 REST endpoints at /xdart/telegram/intel/*",
+        "Capabilities manifest: Capability #19 in system prompt",
+        "Config: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_NAME in config.py + .env"
+      ],
+      "actions": [
+        "search: discover Telegram channels by topic via web search + t.me/s/ validation",
+        "add: validate + add a channel to live monitoring (hot-reload into DarkWebCollector)",
+        "remove: remove a channel from monitoring",
+        "list: show all dynamically monitored channels",
+        "read: read recent messages from a channel's public web preview (Tier 1)",
+        "telethon_search: Telegram native channel search (Tier 2 — requires setup)",
+        "telethon_read: read full channel history + inject into DirtyPool (Tier 2)"
+      ],
+      "usage_examples": [
+        "<TELEGRAM_INTEL action=\"search\" query=\"hacktivist DDoS NATO\" />",
+        "<TELEGRAM_INTEL action=\"search\" query=\"APT Lazarus C2 infrastructure\" limit=\"5\" />",
+        "<TELEGRAM_INTEL action=\"add\" channel=\"vxunderground\" reason=\"malware research tracking\" />",
+        "<TELEGRAM_INTEL action=\"read\" channel=\"secharvester\" limit=\"20\" />",
+        "<TELEGRAM_INTEL action=\"list\" />",
+        "<TELEGRAM_INTEL action=\"remove\" channel=\"old_channel\" />"
+      ],
+      "tier1_notes": [
+        "Always active — no credentials needed",
+        "Uses web search (Brave or DuckDuckGo) to find candidate t.me/ handles",
+        "Validates each candidate: GET t.me/s/{handle} with follow_redirects=False",
+        "Channels that redirect (HTTP 302) have disabled web preview — skipped",
+        "Channels returning HTTP 200 with tgme_widget_message_text are valid",
+        "Valid channels added to telegram_intel_channels.json",
+        "DarkWebCollector._dynamic_channels hot-updated — signals collected next cycle"
+      ],
+      "tier2_notes": [
+        "Requires: TELEGRAM_API_ID + TELEGRAM_API_HASH in .env (from my.telegram.org/apps)",
+        "One-time setup: python _setup_telegram_session.py (phone verification)",
+        "Creates: .telegram_session.session file in workspace root",
+        "Capabilities: join private channels, read full history, Telegram native search",
+        "All Tier 2 reads inject messages directly into DirtyPool for triage"
+      ],
+      "ethical_constraints": [
+        "Only monitors PUBLIC channels (web preview or publicly searchable)",
+        "Does not infiltrate private groups or individual accounts",
+        "All collected signals pass through DirtyPool → LLM triage (same as Dark Wing)",
+        "Dark signal integrity rules (Capability #17) apply to all Telegram Intel signals"
+      ]
+    },
+    {
+      "code": "D",
+      "title": "Physical PC Access via SystemControl",
+      "status": "active",
+      "architecture": [
+        "Module: xdart/tools/system_control.py",
+        "Dispatcher: execute_action(action, params)",
+        "Core integration: core init + context injection + docs + directive parsing",
+        "Chat tags: <SYSTEM_CONTROL action=\"...\" />",
+        "Execution paths wired in streaming and non-streaming chat post-processors",
+        "Action logs persisted through system control journal hooks"
+      ],
+      "actions": [
+        "mouse_move, mouse_click, mouse_scroll, mouse_drag",
+        "type_text, hotkey, press_key",
+        "screenshot, get_mouse_pos, get_screen_size, get_active_window, get_pixel_color",
+        "clipboard_read, clipboard_write",
+        "open_app, open_file, open_url, list_windows, focus_window, close_window",
+        "write_file, append_file, create_dir, delete_file, copy_file, move_file",
+        "desktop_notify, speak",
+        "lock_screen, get_battery, get_wifi"
+      ],
+      "usage_examples": [
+        "<SYSTEM_CONTROL action=\"screenshot\" save_path=\"C:\\Users\\Panos\\Desktop\\screen.png\" />",
+        "<SYSTEM_CONTROL action=\"mouse_click\" x=\"500\" y=\"300\" button=\"left\" />",
+        "<SYSTEM_CONTROL action=\"hotkey\" keys=\"win+d\" />",
+        "<SYSTEM_CONTROL action=\"open_app\" app_name=\"notepad\" />"
+      ]
+    },
+    {
+      "code": "A",
+      "title": "Self-Modification Engine",
+      "status": "active",
+      "architecture": [
+        "Module: xdart/tools/self_modify.py",
+        "Persistent backups: .self_modify_backups/ (timestamped copies)",
+        "Journal: self_modification_journal.jsonl",
+        "Core integration: init + context + docs + directive parser",
+        "Chat tags: <SELF_MODIFY action=\"...\" />",
+        "Execution paths wired in streaming and non-streaming chat post-processors"
+      ],
+      "actions": [
+        "read_self",
+        "patch_file",
+        "edit_file",
+        "create_file",
+        "set_overlay",
+        "update_config",
+        "update_character",
+        "create_tool",
+        "list_modules"
+      ],
+      "usage_examples": [
+        "<SELF_MODIFY action=\"read_self\" path=\"xdart/core.py\" lines=\"100-200\" />",
+        "<SELF_MODIFY action=\"patch_file\" path=\"xdart/tools/my_tool.py\" old_text=\"...\" new_text=\"...\" />",
+        "<SELF_MODIFY action=\"set_overlay\" phase=\"xheart_output\" text=\"...\" reason=\"...\" />",
+        "<SELF_MODIFY action=\"update_config\" key=\"OPENAI_TEMPERATURE\" value=\"0.5\" />"
+      ]
+    },
+    {
+      "code": "B",
+      "title": "External API Management",
+      "status": "active",
+      "architecture": [
+        "Module: xdart/tools/external_api_manager.py",
+        "HTTP engine: httpx.Client with timeout/follow_redirects",
+        "API profile persistence: external_api_profiles.json",
+        "Auth profile support: token_env + header + prefix",
+        "Journal: external_api_journal.jsonl",
+        "Core integration: init + context + docs + directive parser",
+        "Chat tags: <EXTERNAL_API action=\"...\" />"
+      ],
+      "actions": [
+        "request",
+        "set_auth_profile",
+        "remove_auth_profile",
+        "list_auth_profiles",
+        "register_api",
+        "remove_api",
+        "list_apis",
+        "call_api"
+      ],
+      "usage_examples": [
+        "<EXTERNAL_API action=\"request\" method=\"GET\" url=\"https://api.github.com\" />",
+        "<EXTERNAL_API action=\"set_auth_profile\" name=\"github\" token_env=\"GITHUB_TOKEN\" header=\"Authorization\" prefix=\"Bearer \" />",
+        "<EXTERNAL_API action=\"register_api\" name=\"github\" base_url=\"https://api.github.com\" default_method=\"GET\" auth_profile=\"github\" />",
+        "<EXTERNAL_API action=\"call_api\" name=\"github\" path=\"/repos/owner/repo\" method=\"GET\" />"
+      ]
+    },
+    {
+      "code": "C",
+      "title": "Workflow Engine / Scheduler",
+      "status": "active",
+      "architecture": [
+        "Module: xdart/tools/workflow_scheduler.py",
+        "Background loop thread: tick-based due-run execution",
+        "State persistence: workflow_scheduler_state.json",
+        "Journal: workflow_scheduler_journal.jsonl",
+        "Supported workflow kinds: shell, python, external_api",
+        "Core integration: init + context + docs + directive parser",
+        "Chat tags: <WORKFLOW action=\"...\" />"
+      ],
+      "actions": [
+        "create_workflow",
+        "list_workflows",
+        "get_workflow",
+        "run_workflow",
+        "set_enabled",
+        "set_interval",
+        "remove_workflow",
+        "run_due"
+      ],
+      "usage_examples": [
+        "<WORKFLOW action=\"create_workflow\" name=\"health_check\" kind=\"shell\" payload=\"python healthcheck.py\" interval_seconds=\"600\" />",
+        "<WORKFLOW action=\"create_workflow\" name=\"api_ping\" kind=\"external_api\" payload='{\"action\":\"request\",\"method\":\"GET\",\"url\":\"https://api.github.com\"}' interval_seconds=\"900\" />",
+        "<WORKFLOW action=\"run_workflow\" name=\"health_check\" />",
+        "<WORKFLOW action=\"list_workflows\" />"
+      ]
+    }
+  ],
+  "integration_validation": {
+    "compiled": true,
+    "smoke_tests": [
+      "external_api_manager request to https://api.github.com returned status 200",
+      "workflow_scheduler create/list/run/remove workflow succeeded",
+      "telegram_intel_tool tier1 search + add + list + remove tested OK"
+    ]
+  }
+}

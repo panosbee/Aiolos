@@ -19,7 +19,10 @@ Tag format:
 """
 
 import logging
+import math
+import re
 import time
+from datetime import datetime, timezone
 
 from xdart.perception.db import PerceptionDB
 
@@ -30,17 +33,122 @@ MAX_EVENTS = 1500             # DB fetch pool (wide net, domain-capped later)
 MAX_EVENTS_PER_DOMAIN = 40    # per-domain cap for diversity (was 80 — halved to prevent context bloat)
 MAX_CONTEXT_CHARS = 25000     # hard char budget for the full context string (was 50K — halved for pipeline speed)
 
+# Query-aware ranking
+QUERY_AWARE_MAX_EVENTS = 80   # when a query is provided, cap final events to this
+QUERY_AWARE_RECENCY_ALWAYS = 10  # always include this many most-recent events regardless of relevance
+RECENCY_HALF_LIFE_HOURS = 6.0    # recency decay half-life: events 6h old have 0.5 recency score
+
+# Stopwords to ignore in keyword extraction
+_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "in", "on", "at", "to", "for", "of", "and", "or", "but", "not",
+    "with", "by", "from", "as", "into", "through", "about", "against",
+    "between", "during", "after", "before", "above", "below", "it", "its",
+    "this", "that", "these", "those", "i", "we", "you", "he", "she", "they",
+    "what", "which", "who", "whom", "how", "when", "where", "why",
+    "αν", "και", "ή", "σε", "για", "να", "από", "με", "που", "ότι",
+    "της", "του", "τον", "την", "τα", "τη", "τις", "των", "τους",
+})
+
 
 class WorldContextRetriever:
     """Retrieves prioritized world events for the pipeline.
 
     Pipeline step [0.35] — events sorted by salience, capped sensibly.
     Un-injected events (not yet used by previous runs) come first.
+
+    When a problem/query is provided, applies query-aware re-ranking so that
+    semantically relevant events bubble up and irrelevant ones are suppressed.
+    This means the LLM gets ~80 targeted events instead of 200+ flat dump —
+    freeing context window for deeper reasoning.
     """
 
     def __init__(self, db: PerceptionDB, llm=None):
         self.db = db
         self.llm = llm  # kept for interface compat, not used for retrieval
+
+    # ── Query-aware keyword extraction ───────────────────────────────────────
+
+    @staticmethod
+    def _extract_keywords(text: str) -> set[str]:
+        """Extract meaningful keywords from a query/problem string."""
+        words = re.findall(r"[a-zA-Zα-ωΑ-Ω0-9]{3,}", text.lower())
+        return {w for w in words if w not in _STOPWORDS}
+
+    @staticmethod
+    def _recency_score(event: dict) -> float:
+        """Exponential decay score based on event timestamp (0.0–1.0).
+        Events from now → 1.0; events RECENCY_HALF_LIFE_HOURS ago → 0.5."""
+        ts_raw = event.get("collected_at") or event.get("timestamp") or event.get("published_at")
+        if not ts_raw:
+            return 0.5
+        try:
+            if isinstance(ts_raw, str):
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            else:
+                ts = ts_raw
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+            return math.exp(-0.693 * age_hours / RECENCY_HALF_LIFE_HOURS)  # half-life decay
+        except Exception:
+            return 0.5
+
+    @staticmethod
+    def _keyword_relevance(event: dict, keywords: set[str]) -> float:
+        """Fraction of query keywords that appear in the event headline (0.0–1.0)."""
+        if not keywords:
+            return 0.0
+        headline = event.get("headline", "").lower()
+        summary = event.get("summary", "").lower()
+        text = headline + " " + summary
+        hits = sum(1 for kw in keywords if kw in text)
+        return min(hits / len(keywords), 1.0)
+
+    def _query_aware_rank(self, events: list[dict], query: str) -> list[dict]:
+        """Re-rank events combining salience + recency + keyword relevance.
+
+        Formula:
+          score = salience × 0.35 + recency × 0.30 + keyword_relevance × 0.35
+
+        Always ensures QUERY_AWARE_RECENCY_ALWAYS most-recent events are included
+        so Αίολος never misses breaking news.
+        """
+        keywords = self._extract_keywords(query)
+
+        # Score each event
+        scored = []
+        for evt in events:
+            salience = evt.get("salience_score", 0.5)
+            recency = self._recency_score(evt)
+            relevance = self._keyword_relevance(evt, keywords)
+            score = salience * 0.35 + recency * 0.30 + relevance * 0.35
+            scored.append((score, evt))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Always include N most-recent regardless of score (breaking news guarantee)
+        all_sorted_by_time = sorted(events, key=self._recency_score, reverse=True)
+        must_include = {id(e) for e in all_sorted_by_time[:QUERY_AWARE_RECENCY_ALWAYS]}
+
+        # Build final list: top scored + must-include-recent
+        result = []
+        seen = set()
+        for score, evt in scored[:QUERY_AWARE_MAX_EVENTS]:
+            result.append(evt)
+            seen.add(id(evt))
+
+        for evt in all_sorted_by_time[:QUERY_AWARE_RECENCY_ALWAYS]:
+            if id(evt) not in seen:
+                result.append(evt)
+
+        logger.info(
+            "[WorldContext] Query-aware ranking: %d → %d events (keywords: %s)",
+            len(events), len(result), ", ".join(list(keywords)[:8]),
+        )
+        return result
 
     def retrieve(
         self,
@@ -49,8 +157,10 @@ class WorldContextRetriever:
         max_economic: int = 100,
         hours_back: int = 72,
     ) -> dict:
-        """Fetch events and indicators, prioritized by salience.
+        """Fetch events and indicators, prioritized by salience + query relevance.
 
+        When `problem` is non-empty, applies query-aware re-ranking to return
+        the most relevant events instead of a flat salience-sorted dump.
         Events capped at max_events total. Per-domain diversity enforced.
         Context string capped at MAX_CONTEXT_CHARS.
 
@@ -84,6 +194,12 @@ class WorldContextRetriever:
 
         # Re-sort by salience DESC after domain cap
         capped_events.sort(key=lambda e: e.get("salience_score", 0), reverse=True)
+
+        # ── Query-aware re-ranking ──────────────────────────────────────────
+        # When a problem/query is provided, re-rank by relevance+recency+salience
+        # instead of flat salience dump. Reduces ~200 events → ~80 targeted.
+        if problem and problem.strip():
+            capped_events = self._query_aware_rank(capped_events, problem)
 
         elapsed = time.perf_counter() - t0
 

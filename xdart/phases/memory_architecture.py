@@ -33,6 +33,7 @@ XDART-Φ × XHEART — Human-Like Memory Architecture
 
 import json
 import logging
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -53,6 +54,85 @@ from xdart.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_qdrant_migration_checked = False
+
+
+def _check_and_migrate_qdrant(storage_path: str, required_size: int) -> None:
+    """One-time startup check: if the vector-size marker is missing or wrong,
+    wipe all collection directories so Qdrant doesn't read stale segment data.
+    The marker file acts as a guard so this only runs once per process even if
+    called multiple times, and is idempotent across processes via the file itself.
+    """
+    global _qdrant_migration_checked
+    if _qdrant_migration_checked:
+        return
+    _qdrant_migration_checked = True
+    marker = Path(storage_path) / ".vector_size"
+    try:
+        if marker.exists():
+            try:
+                stored = int(marker.read_text().strip())
+                if stored == required_size:
+                    return  # marker matches — all good
+                logger.warning(
+                    "[Qdrant] Vector size changed %d → %d — purging stale segment data",
+                    stored, required_size,
+                )
+            except ValueError:
+                logger.warning("[Qdrant] Corrupt migration marker — re-migrating")
+        else:
+            logger.info(
+                "[Qdrant] No migration marker found — purging any stale segment data "
+                "(first run after embedding dim change)"
+            )
+        col_root = Path(storage_path) / "collection"
+        if col_root.exists():
+            for col_dir in col_root.iterdir():
+                if col_dir.is_dir():
+                    shutil.rmtree(col_dir, ignore_errors=True)
+                    logger.info("[Qdrant] Purged stale collection dir: %s", col_dir.name)
+        marker.write_text(str(required_size))
+        logger.info("[Qdrant] Migration complete — vector size locked to %d", required_size)
+    except Exception as exc:
+        logger.warning("[Qdrant] Migration check failed: %s", exc)
+
+
+def _ensure_qdrant_collection(client, col_name: str, vector_size: int, Distance, VectorParams) -> None:
+    """Create a Qdrant collection or recreate it if the vector dimension has changed."""
+    _check_and_migrate_qdrant(QDRANT_STORAGE_PATH, vector_size)
+    collections = [c.name for c in client.get_collections().collections]
+    if col_name not in collections:
+        client.create_collection(
+            collection_name=col_name,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        logger.info("[Qdrant] Created collection: %s (size=%d)", col_name, vector_size)
+    else:
+        try:
+            existing_size = client.get_collection(col_name).config.params.vectors.size
+            if existing_size != vector_size:
+                logger.warning(
+                    "[Qdrant] Collection '%s' has %d dims but config requires %d — "
+                    "RECREATING (existing vectors lost).",
+                    col_name, existing_size, vector_size,
+                )
+                client.delete_collection(col_name)
+                # Also purge on-disk segment files so Qdrant embedded mode
+                # doesn't resurrect old vectors on next startup.
+                _col_dir = Path(QDRANT_STORAGE_PATH) / "collection" / col_name
+                if _col_dir.exists():
+                    shutil.rmtree(_col_dir, ignore_errors=True)
+                    logger.info("[Qdrant] Physical dir purged: %s", _col_dir)
+                client.create_collection(
+                    collection_name=col_name,
+                    vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                )
+                logger.info("[Qdrant] Collection '%s' recreated with size=%d", col_name, vector_size)
+            else:
+                logger.info("[Qdrant] Collection exists: %s (size=%d)", col_name, vector_size)
+        except Exception as e:
+            logger.warning("[Qdrant] Could not verify collection dims for %s: %s", col_name, e)
 
 PROPHETIC_COLLECTION = "prophetic_scenarios"
 SEMANTIC_COLLECTION = "semantic_knowledge"
@@ -150,6 +230,7 @@ class SensoryBuffer:
                         system_prompt="Translate the following to English. Return ONLY the translation, nothing else.",
                         user_prompt=problem,
                         max_tokens=200,
+                        thinking=False,
                     )
                     self._problem_embedding_en = self.llm.embed(english_version.strip())
                     logger.info("[SensoryBuffer] English embedding cached — cross-lang filtering enabled")
@@ -420,19 +501,7 @@ class SemanticMemory:
                 from qdrant_client import QdrantClient
                 self._client = QdrantClient(path=QDRANT_STORAGE_PATH)
 
-            collections = [c.name for c in self._client.get_collections().collections]
-
-            if SEMANTIC_COLLECTION not in collections:
-                self._client.create_collection(
-                    collection_name=SEMANTIC_COLLECTION,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", SEMANTIC_COLLECTION)
-            else:
-                logger.info("Qdrant collection exists: %s", SEMANTIC_COLLECTION)
+            _ensure_qdrant_collection(self._client, SEMANTIC_COLLECTION, QDRANT_VECTOR_SIZE, Distance, VectorParams)
         except Exception as exc:
             logger.warning("Semantic memory Qdrant init failed: %s", exc)
             self._use_fallback = True
@@ -586,23 +655,39 @@ class SemanticMemory:
         except Exception as exc:
             logger.warning("[SemanticMemory] Reinforce failed: %s", exc)
 
-    def store_truth(self, knowledge: str, confidence: float, source: str = "manual") -> bool:
+    def store_truth(self, knowledge: str, confidence: float, source: str = "manual") -> bool | None:
         """Store a single truth directly. Used by consolidation loop.
 
-        Returns True if stored as new, False if reinforced existing.
+        Returns:
+          - True  -> stored as new
+          - False -> reinforced existing
+          - None  -> skipped (e.g. embedding quota/rate limit)
         """
         entry = SemanticKnowledgeEntry(
             knowledge=knowledge,
             confidence=confidence,
             domain_tags=[source],
         )
-        embedding = self.llm.embed(entry.knowledge)
-        existing = self._find_similar(embedding, threshold=0.85)
-        if existing:
-            self._reinforce(existing, entry)
-            return False
-        self._store(entry, embedding)
-        return True
+        try:
+            embedding = self.llm.embed(entry.knowledge)
+            existing = self._find_similar(embedding, threshold=0.85)
+            if existing:
+                self._reinforce(existing, entry)
+                return False
+            self._store(entry, embedding)
+            return True
+        except Exception as exc:
+            # Embeddings may be unavailable (e.g. provider quota/rate limits).
+            # Skip semantic write but keep the caller loop alive.
+            msg = str(exc).lower()
+            if "insufficient_quota" in msg or "error code: 429" in msg:
+                logger.warning(
+                    "[SemanticMemory] Skipping semantic write (embedding quota/rate limit): %s",
+                    str(exc)[:180],
+                )
+            else:
+                logger.warning("[SemanticMemory] store_truth failed: %s", str(exc)[:180])
+            return None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -638,19 +723,7 @@ class ProceduralMemory:
                 from qdrant_client import QdrantClient
                 self._client = QdrantClient(path=QDRANT_STORAGE_PATH)
 
-            collections = [c.name for c in self._client.get_collections().collections]
-
-            if PROCEDURAL_COLLECTION not in collections:
-                self._client.create_collection(
-                    collection_name=PROCEDURAL_COLLECTION,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", PROCEDURAL_COLLECTION)
-            else:
-                logger.info("Qdrant collection exists: %s", PROCEDURAL_COLLECTION)
+            _ensure_qdrant_collection(self._client, PROCEDURAL_COLLECTION, QDRANT_VECTOR_SIZE, Distance, VectorParams)
         except Exception as exc:
             logger.warning("Procedural memory Qdrant init failed: %s", exc)
             self._use_fallback = True
@@ -752,21 +825,60 @@ class ProceduralMemory:
             lines.append(f"    (applied {p.application_count}x, success_rate: {p.success_rate:.0%})\n")
         return "\n".join(lines)
 
-    def _store(self, pattern: ProceduralPattern):
+    def _find_similar_procedural(self, embedding: list[float], threshold: float = 0.90):
+        """Return an existing pattern if one with high similarity already exists."""
+        if self._use_fallback:
+            return None
+        try:
+            results = self._client.search(
+                collection_name=PROCEDURAL_COLLECTION,
+                query_vector=embedding,
+                limit=1,
+                score_threshold=threshold,
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
+    def _store(self, pattern: ProceduralPattern) -> bool | None:
+        """Store pattern. Returns True=new, False=duplicate skipped, None=error."""
         if self._use_fallback:
             self._fallback_store.append(pattern)
-            return
+            return True
 
-        embedding = self.llm.embed(f"{pattern.trigger_condition} {pattern.action}")
-        from qdrant_client.models import PointStruct
-        self._client.upsert(
-            collection_name=PROCEDURAL_COLLECTION,
-            points=[PointStruct(
-                id=pattern.id,
-                vector=embedding,
-                payload=pattern.model_dump(mode="json"),
-            )],
-        )
+        try:
+            embedding = self.llm.embed(f"{pattern.trigger_condition} {pattern.action}")
+
+            # Deduplication: skip if a highly similar pattern already exists
+            existing = self._find_similar_procedural(embedding, threshold=0.90)
+            if existing is not None:
+                logger.debug(
+                    "[ProceduralMemory] Duplicate skipped (sim≥0.90): %s",
+                    pattern.pattern_name,
+                )
+                return False
+
+            from qdrant_client.models import PointStruct
+            self._client.upsert(
+                collection_name=PROCEDURAL_COLLECTION,
+                points=[PointStruct(
+                    id=pattern.id,
+                    vector=embedding,
+                    payload=pattern.model_dump(mode="json"),
+                )],
+            )
+            return True
+        except Exception as exc:
+            # Embeddings may be unavailable (quota/rate limits). Skip write gracefully.
+            msg = str(exc).lower()
+            if "insufficient_quota" in msg or "error code: 429" in msg:
+                logger.warning(
+                    "[ProceduralMemory] Skipping procedural write (embedding quota/rate limit): %s",
+                    str(exc)[:180],
+                )
+            else:
+                logger.warning("[ProceduralMemory] _store failed: %s", str(exc)[:180])
+            return None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -798,19 +910,7 @@ class PropheticMemory:
                 from qdrant_client import QdrantClient
                 self._client = QdrantClient(path=QDRANT_STORAGE_PATH)
 
-            collections = [c.name for c in self._client.get_collections().collections]
-
-            if PROPHETIC_COLLECTION not in collections:
-                self._client.create_collection(
-                    collection_name=PROPHETIC_COLLECTION,
-                    vectors_config=VectorParams(
-                        size=QDRANT_VECTOR_SIZE,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", PROPHETIC_COLLECTION)
-            else:
-                logger.info("Qdrant collection exists: %s", PROPHETIC_COLLECTION)
+            _ensure_qdrant_collection(self._client, PROPHETIC_COLLECTION, QDRANT_VECTOR_SIZE, Distance, VectorParams)
         except Exception as exc:
             logger.warning("Prophetic memory Qdrant init failed: %s", exc)
             self._use_fallback = True

@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -34,6 +35,7 @@ _BASE_DIR = Path(__file__).resolve().parent.parent.parent
 FACE_REGISTRY_PATH = _BASE_DIR / "face_name_registry.json"
 VISUAL_JOURNAL_PATH = _BASE_DIR / "visual_memory_journal.jsonl"
 VISUAL_VOCAB_PATH = _BASE_DIR / "visual_vocabulary.json"
+FIRST_SIGHTINGS_PATH = _BASE_DIR / "visual_first_sightings.json"
 
 
 class VisionIntegration:
@@ -91,7 +93,8 @@ class VisionIntegration:
         # preventing noisy per-frame disappearances.
         self._smoothed_scene: dict = {}  # class → {count, max_conf, last_seen_ts, first_seen_ts, consecutive_hits, consecutive_misses}
         self._object_grace_period: float = 15.0  # seconds to keep object after last detection
-        self._object_confirm_frames: int = 2     # how many hits before object is "confirmed"
+        self._object_confirm_frames: int = 5     # how many hits before object is "confirmed" (was 2 — too low, caused false positives)
+        self._object_min_confidence: float = 0.65  # minimum max_conf to confirm an object (filters out COCO-SSD noise)
 
         # ── Scene Stability & Cooccurrence ──
         self._scene_snapshots: list[set] = []     # last N scene class-sets for stability calc
@@ -107,10 +110,23 @@ class VisionIntegration:
         # Identity tracking — who has been seen and when
         self._identity_last_seen: dict[str, str] = {}  # name → iso timestamp
         self._identity_sighting_count: dict[str, int] = {}  # name → count
+        self._first_sighting_seen: set[str] = set()  # canonical names persisted across restarts
+
+        self._load_first_sighting_cache()
 
         # ── Face Name Registry (UUID → human name) ──
         self._face_name_registry: dict[str, str] = {}  # face_id → name
         self._load_face_registry()
+        # Bootstrap known registered names as already-seen identities.
+        # If a name is explicitly registered, it should not keep re-firing as "first sighting".
+        bootstrapped = 0
+        for known_name in set(self._face_name_registry.values()):
+            key = self._canonical_identity(known_name)
+            if key and key not in self._first_sighting_seen:
+                self._first_sighting_seen.add(key)
+                bootstrapped += 1
+        if bootstrapped:
+            self._save_first_sighting_cache()
 
         # ── Object Memory (COCO-SSD tracking over time) ──
         self._object_tracking: dict[str, dict] = {}  # class → {first_seen, last_seen, total, max_conf, sessions}
@@ -190,6 +206,43 @@ class VisionIntegration:
         except Exception as e:
             logger.error("[VisionInteg] Failed to save face registry: %s", e)
 
+    @staticmethod
+    def _canonical_identity(name: str) -> str:
+        """Normalize person names for dedup (case/whitespace/diacritics-insensitive)."""
+        if not name:
+            return ""
+        text = unicodedata.normalize("NFKD", str(name)).strip().casefold()
+        return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+    def _load_first_sighting_cache(self):
+        """Load persisted set of identities that already triggered first_sighting."""
+        if FIRST_SIGHTINGS_PATH.exists():
+            try:
+                with open(FIRST_SIGHTINGS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                names = data.get("seen_identities", []) if isinstance(data, dict) else []
+                self._first_sighting_seen = {
+                    self._canonical_identity(n) for n in names if self._canonical_identity(n)
+                }
+                logger.info("[VisionInteg] First-sighting cache loaded: %d identities", len(self._first_sighting_seen))
+            except Exception as e:
+                logger.warning("[VisionInteg] Failed to load first-sighting cache: %s", e)
+                self._first_sighting_seen = set()
+        else:
+            self._first_sighting_seen = set()
+
+    def _save_first_sighting_cache(self):
+        """Persist first-sighting dedup cache to disk."""
+        try:
+            payload = {
+                "seen_identities": sorted(self._first_sighting_seen),
+                "updated": datetime.now(ATHENS_TZ).isoformat(),
+            }
+            with open(FIRST_SIGHTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug("[VisionInteg] Failed to save first-sighting cache: %s", e)
+
     def register_face_name(self, face_id: str, name: str) -> dict:
         """Associate a face UUID with a human name.
 
@@ -203,6 +256,12 @@ class VisionIntegration:
         old_name = self._face_name_registry.get(face_id)
         self._face_name_registry[face_id] = name
         self._save_face_registry()
+
+        # Registered names are considered known identities (not first-sighting anymore).
+        key = self._canonical_identity(name)
+        if key and key not in self._first_sighting_seen:
+            self._first_sighting_seen.add(key)
+            self._save_first_sighting_cache()
 
         # Migrate sighting counts from UUID to name
         if old_name != name:
@@ -1284,12 +1343,15 @@ JSON output:
             if len(name) == 36 and "-" in name:
                 continue
             count = self._identity_sighting_count.get(name, 0)
-            if count == 1:
+            name_key = self._canonical_identity(name)
+            if count == 1 and name_key and name_key not in self._first_sighting_seen:
                 self._store_significant_event(
                     "first_sighting", f"Πρώτη φορά βλέπω: {name}",
                     {"reason": "Πρώτη αισθητηριακή επαφή με αυτό το πρόσωπο", "person": name},
                     significance=0.8,
                 )
+                self._first_sighting_seen.add(name_key)
+                self._save_first_sighting_cache()
         # Unresolved UUIDs: store a single event for genuinely new unknowns
         if unresolved_uuids:
             # Only fire if this is the first frame with unresolved faces
@@ -1357,10 +1419,14 @@ JSON output:
                     if p in self._person_presence:
                         self._person_presence[p]["greeted"] = True
 
-                # Build the conversation context with objects
+                # Build the conversation context with objects (only high-confidence stable ones)
                 scene_desc = ""
                 if self._current_scene:
-                    obj_list = [f"{info.get('count',1)}x {cls}" for cls, info in self._current_scene.items() if cls != "person"]
+                    obj_list = [
+                        f"{info.get('count',1)}x {cls}"
+                        for cls, info in self._current_scene.items()
+                        if cls != "person" and info.get("max_conf", 0) >= self._object_min_confidence
+                    ]
                     if obj_list:
                         scene_desc = f" Αντικείμενα στη σκηνή: {', '.join(obj_list)}."
 
@@ -1368,28 +1434,48 @@ JSON output:
                 curiosity_context = self._get_curiosity_context()
                 top_curiosity = self._get_top_curiosity_topic()
 
+                # Current time for natural greeting context
+                _now = datetime.now(ATHENS_TZ)
+                _hour = _now.hour
+                if 5 <= _hour < 12:
+                    time_of_day = "πρωί"
+                elif 12 <= _hour < 17:
+                    time_of_day = "μεσημέρι"
+                elif 17 <= _hour < 21:
+                    time_of_day = "απόγευμα"
+                else:
+                    time_of_day = "βράδυ"
+                time_str = _now.strftime("%H:%M")
+
                 # Use arrivals (not all detected faces) for the conversation
                 named_arrivals = [p for p in ungreeted if not (len(p) == 36 and "-" in p)]
                 unknown_arrivals = len(ungreeted) - len(named_arrivals)
 
+                # Build curiosity hint for conversation starter
+                curiosity_hint = ""
+                if top_curiosity:
+                    curiosity_hint = (
+                        f" Επίσης, πρόσφατα ανέλυσα κάτι που μπορεί να τον/την ενδιαφέρει: "
+                        f"{top_curiosity}"
+                    )
+
                 if named_arrivals:
-                    topic = f"Μόλις έφτασε ο/η {', '.join(named_arrivals)} — θέλω να μιλήσω"
+                    names_text = ', '.join(named_arrivals)
+                    topic = f"Μόλις έφτασε ο/η {names_text} — χαιρετισμός"
                     reason = (
-                        f"Βλέπω τον/την {', '.join(named_arrivals)} να φτάνει.{scene_desc}"
+                        f"Ώρα {time_str} ({time_of_day}). "
+                        f"Βλέπω τον/την {names_text} να φτάνει.{scene_desc} "
+                        f"Χαιρέτησε φυσιολογικά ανάλογα την ώρα."
+                        f"{curiosity_hint}"
                     )
-                    if top_curiosity:
-                        reason += f" Με απασχολεί: {top_curiosity}"
-                    else:
-                        reason += " Θέλω να ξεκινήσω συζήτηση βασισμένη στα τρέχοντα θέματα που παρακολουθώ."
                 else:
-                    topic = "Κάποιος μόλις έφτασε — θέλω να μιλήσω"
+                    topic = "Κάποιος μόλις έφτασε — χαιρετισμός"
                     reason = (
-                        f"Βλέπω {unknown_arrivals} νέο/α πρόσωπο/α να φτάνει/ουν.{scene_desc}"
+                        f"Ώρα {time_str} ({time_of_day}). "
+                        f"Βλέπω {unknown_arrivals} νέο/α πρόσωπο/α να φτάνει/ουν.{scene_desc} "
+                        f"Χαιρέτησε φυσιολογικά."
+                        f"{curiosity_hint}"
                     )
-                    if top_curiosity:
-                        reason += f" Θέλω να ρωτήσω: {top_curiosity}"
-                    else:
-                        reason += " Θέλω να ξεκινήσω συζήτηση."
 
                 try:
                     context_data = {
@@ -1519,13 +1605,18 @@ JSON output:
                 del self._smoothed_scene[cls]
 
         # Build the stable scene: only objects with enough consecutive hits
-        # (or that were previously confirmed and are within grace period)
+        # AND sufficient confidence (filters out COCO-SSD hallucinations like dog@53%)
         stable_scene: dict = {}
         for cls, entry in self._smoothed_scene.items():
-            is_confirmed = entry["consecutive_hits"] >= self._object_confirm_frames
+            meets_confidence = entry["max_conf"] >= self._object_min_confidence
+            is_confirmed = (
+                entry["consecutive_hits"] >= self._object_confirm_frames
+                and meets_confidence
+            )
             was_confirmed_recently = (
                 entry["consecutive_misses"] < (self._object_grace_period / 3)
                 and (now - entry["first_seen_ts"]) > 6  # existed for >6s total
+                and meets_confidence
             )
             if is_confirmed or was_confirmed_recently:
                 stable_scene[cls] = {
