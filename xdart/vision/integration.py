@@ -1306,7 +1306,7 @@ JSON output:
             self._sighting_log = self._sighting_log[-self._max_sighting_log:]
 
         # ── Write to persistent visual memory journal ──
-        self._write_journal({
+        journal_entry: dict = {
             "type": "human_detected",
             "timestamp": timestamp,
             "faces_count": faces_count,
@@ -1314,7 +1314,24 @@ JSON output:
             "unknown_count": unknown_count,
             "scene_objects": list(self._current_scene.keys()),
             "object_details": {cls: info.get("count", 1) for cls, info in self._current_scene.items()},
-        })
+        }
+
+        # ── Emotion data — per-face and aggregate ──
+        emotion_summary = event.get("emotion_summary", {})
+        face_emotions = []
+        for face in resolved_details:
+            dom = face.get("dominant_emotion")
+            if dom:
+                face_emotions.append({
+                    "identity": face.get("identity", "unknown"),
+                    "dominant_emotion": dom,
+                    "emotion_confidence": face.get("emotion_confidence"),
+                })
+        if face_emotions:
+            journal_entry["emotions"] = face_emotions
+            journal_entry["emotion_summary"] = emotion_summary
+
+        self._write_journal(journal_entry)
 
         # Update identity tracking (resolved names only — no raw UUIDs)
         for name in resolved_identified:

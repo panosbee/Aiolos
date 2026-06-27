@@ -148,6 +148,11 @@ Verdict rules:
   NO    = confidence < 0.15 or signals contradict each other completely or purely propaganda
   MAYBE = everything else
 
+Special case — when NO clean pattern corroboration is available (empty CLEAN PATTERNS section):
+  If the dark signal has credibility_score >= 0.50 AND tactical_relevance >= 0.40, \
+prefer YES over MAYBE even without clean corroboration. \
+The signal passed strict LLM triage — that is sufficient evidence on its own.
+
 Do NOT add any text outside the JSON object. Do NOT wrap in markdown."""
 
 
@@ -702,30 +707,49 @@ class DarkWhisperEngine:
         synthesis: DarkWhisperSynthesis,
         headline: str,
     ) -> None:
-        """Route a YES synthesis into the ProactiveEngine pattern accumulator."""
+        """Route a YES synthesis directly to ProactiveEngine evaluation.
+
+        Dark whisper syntheses are ALREADY LLM-synthesised intelligence products.
+        They bypass PatternAccumulator (which requires 5+ clustered signals) and
+        go straight to evaluate_and_notify() so they reach the user immediately.
+        The old feed_signal() path was silently swallowing all dark content because
+        each synthesis is a unique topic — they never accumulated to 5+.
+        """
         try:
-            self.proactive.feed_signal(
-                source_type="dark_whisper",
-                headline=f"[DARK WHISPER] {headline}",
-                region="GLOBAL",
-                raw_data={
-                    "synthesis_id": synthesis.synthesis_id,
-                    "confidence": synthesis.confidence,
-                    "attribution": synthesis.attribution_text,
-                    "dark_channels": synthesis.dark_signal_channels,
-                    "dark_scores": synthesis.dark_signal_scores,
-                    "creative_nexus_used": synthesis.creative_nexus_used,
-                    "verdict": "YES",
-                },
+            event_data = {
+                "headlines": [f"[DARK WHISPER] {headline}"],
+                "synthesis_id": synthesis.synthesis_id,
+                "confidence": synthesis.confidence,
+                "attribution": synthesis.attribution_text,
+                "dark_channels": synthesis.dark_signal_channels,
+                "dark_scores": synthesis.dark_signal_scores,
+                "creative_nexus_used": synthesis.creative_nexus_used,
+                "source_types": ["dark_whisper"],
+                "domains": [],  # classified from headline by evaluate_and_notify
+                "verdict": "YES",
+            }
+            context_text = (
+                f"DARK WHISPER SYNTHESIS (confidence={synthesis.confidence:.2f}):\n"
+                f"{synthesis.attribution_text}\n\n"
+                f"Dark signal channels: {', '.join(synthesis.dark_signal_channels)}\n"
+                f"Clean pattern topics used: {', '.join(synthesis.clean_pattern_topics[:10])}"
+            )
+            # Submit to ProactiveEngine's dedicated evaluation pool so this
+            # never blocks the DarkWhisper synthesis thread.
+            self.proactive._eval_pool.submit(
+                self.proactive.evaluate_and_notify,
+                "dark_whisper_synthesis",
+                event_data,
+                context_text,
             )
             synthesis.fed_to_pattern_accumulator = True
             self._total_yes_fed += 1
             logger.info(
-                "[DarkWhisper] YES → PatternAccumulator: %s (conf=%.2f)",
+                "[DarkWhisper] YES → evaluate_and_notify (direct): %s (conf=%.2f)",
                 headline[:80], synthesis.confidence,
             )
         except Exception as exc:
-            logger.warning("[DarkWhisper] feed_signal failed: %s", exc)
+            logger.warning("[DarkWhisper] _route_yes failed: %s", exc)
 
     def _route_maybe(
         self,

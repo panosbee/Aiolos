@@ -467,6 +467,22 @@ async def lifespan(app: FastAPI):
                 _proactive_engine.market_collector = market_collector
                 if _mongo_store and _mongo_store.available:
                     _proactive_engine._mongo = _mongo_store
+                    # Wire mongo into Affect Layer for affective trace persistence
+                    try:
+                        _proactive_engine._affect_layer.affective_memory._mongo = _mongo_store
+                        logger.info("Affect Layer wired to MongoDB (affect_traces collection)")
+                        health_tracker.record_startup(
+                            "AffectHeuristicLayer",
+                            True,
+                            "active — dedup(30min/0.85) + scorer(5-dim) + balance + affective_memory(MongoDB)",
+                        )
+                    except Exception as _al_exc:
+                        logger.debug("Affect Layer mongo wire failed (non-critical): %s", _al_exc)
+                        health_tracker.record_startup(
+                            "AffectHeuristicLayer",
+                            True,
+                            "active — dedup + scorer + balance (affective_memory in-memory only, MongoDB wire failed)",
+                        )
 
             # Wire into framework for chat mode access
             if _framework:
@@ -4715,9 +4731,8 @@ async def test_notification():
         source="test",
         reason="Manual test trigger",
     )
-    _proactive_engine._notifications.append(test_notif)
+    _proactive_engine.register_notification(test_notif, dedup=False)
     _proactive_engine._deliver_immediate(test_notif)
-    _proactive_engine._log_notification(test_notif)
 
     return {"status": "sent", "notification": test_notif.to_dict()}
 

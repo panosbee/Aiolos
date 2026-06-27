@@ -54,14 +54,28 @@ DEFAULT_RESEARCH_INTERESTS = [
     "supply chain disruption modeling",
     # Technology & security
     "cyber warfare attribution",
-    "AI autonomous weapons",
+    "AI safety alignment",
     "semiconductor supply chain",
     "infrastructure vulnerability assessment",
+    # Climate & environment
+    "climate tipping points",
+    "extreme weather forecasting",
+    "energy transition risk",
+    # Health & biological risk
+    "pandemic early warning systems",
+    "antimicrobial resistance",
+    "epidemiological forecasting",
+    # Social & demographic
+    "social instability prediction",
+    "demographic transition modeling",
+    "misinformation spread dynamics",
     # Methodology (improve Αίολος's own methods)
-    "Bayesian inference geopolitics",
+    "Bayesian forecasting methodology",
     "fuzzy logic risk assessment",
     "scenario planning methodology",
     "forecasting accuracy calibration",
+    "complex systems emergence",
+    "early warning signal detection",
 ]
 
 # Max papers to process per source per cycle
@@ -491,15 +505,17 @@ async def fetch_ssrn_feeds(
 #  and knowledge integration.
 # ══════════════════════════════════════════════════════════════════════════════
 
-RELEVANCE_PROMPT = """You are a research paper relevance assessor for a geopolitical-financial intelligence system.
+RELEVANCE_PROMPT = """You are a research paper relevance assessor for Αίολος, a broad-domain intelligence system.
 
-Given a paper title and abstract, assess its relevance to our analytical interests:
+Given a paper title and abstract, assess its relevance to our analytical interests across ALL domains:
 - Geopolitical risk, conflict prediction, international relations
 - Financial systemic risk, currency crises, market disruptions
-- Technology security (cyber, AI weapons, semiconductor supply chains)
-- Analytical methodology (Bayesian inference, scenario planning, forecasting)
-- Infrastructure vulnerability, supply chain disruption
-- Cross-domain analysis (where geopolitics meets economics meets technology)
+- Climate science, environmental tipping points, extreme weather
+- Public health, pandemic preparedness, epidemiological forecasting
+- Technology security (cyber, AI safety, semiconductor supply chains)
+- Social dynamics, misinformation, demographic transitions
+- Analytical methodology (Bayesian inference, scenario planning, forecasting, complex systems)
+- Cross-domain analysis — patterns that span multiple domains simultaneously
 
 Return JSON:
 {{
@@ -510,13 +526,14 @@ Return JSON:
 }}
 """
 
-SYNTHESIS_PROMPT = """You are a research synthesizer for Αίολος, a geopolitical-financial intelligence system.
+SYNTHESIS_PROMPT = """You are a research synthesizer for Αίολος, a broad-domain intelligence system
+specialising in cross-domain pattern recognition.
 
 Given {count} research papers, create a concise intelligence brief that:
 1. Identifies the most important findings across all papers
 2. Notes any methodological innovations Αίολος could adopt
 3. Flags contradictions between papers (essential for balanced analysis)
-4. Highlights cross-domain connections (geopolitics ↔ economics ↔ technology)
+4. Highlights cross-domain connections (geopolitics ↔ economics ↔ technology ↔ health ↔ climate)
 
 Write in a direct, analytical style. No fluff. Focus on actionable intelligence.
 
@@ -799,15 +816,36 @@ class CrossSystemLearner:
         return scored
 
     def _keyword_relevance(self, paper: Paper) -> float:
-        """Fallback relevance scoring based on keyword matching."""
+        """Fallback relevance scoring based on keyword matching.
+
+        Covers ALL domains equally — geopolitics, economics, technology,
+        climate, health, social science, and methodology.
+        """
         text = f"{paper.title} {paper.abstract}".lower()
         keywords = {
+            # Geopolitical
             "geopolitical": 0.15, "conflict": 0.10, "sanctions": 0.12,
+            "nuclear": 0.08, "escalation": 0.10, "war": 0.08,
+            # Economic & financial
             "systemic risk": 0.15, "financial crisis": 0.12, "currency": 0.08,
-            "bayesian": 0.15, "fuzzy logic": 0.12, "scenario": 0.08,
+            "supply chain": 0.10, "trade": 0.07, "monetary policy": 0.08,
+            # Technology & cyber
             "cyber": 0.10, "semiconductor": 0.10, "infrastructure": 0.08,
+            "artificial intelligence": 0.12, "machine learning": 0.10,
+            "autonomous": 0.08, "quantum": 0.10,
+            # Climate & environment
+            "climate": 0.12, "emissions": 0.08, "extreme weather": 0.12,
+            "tipping point": 0.15, "drought": 0.07, "flood": 0.07,
+            # Health & biological
+            "pandemic": 0.15, "epidemic": 0.12, "pathogen": 0.10,
+            "vaccine": 0.10, "antimicrobial": 0.12, "outbreak": 0.10,
+            # Social & demographic
+            "social instability": 0.12, "migration": 0.08, "demographic": 0.08,
+            "disinformation": 0.10, "polarization": 0.08,
+            # Methodology (always relevant)
+            "bayesian": 0.15, "fuzzy logic": 0.12, "scenario": 0.08,
             "prediction": 0.10, "forecasting": 0.10, "early warning": 0.12,
-            "supply chain": 0.10, "nuclear": 0.08, "escalation": 0.10,
+            "complex system": 0.12, "emergence": 0.08,
         }
         score = 0.0
         for kw, weight in keywords.items():

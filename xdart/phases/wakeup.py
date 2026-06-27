@@ -33,7 +33,17 @@ class WakeupProtocol:
         self.proactive_engine = None    # Injected by api.py for pending batch context
         self.telegram_intel = None      # Injected by api.py after TelegramIntelTool init
 
-    def run(self) -> dict:
+    def run(self, exclude_proactive_headline: str | None = None) -> dict:
+        """Run identity wakeup.
+
+        Args:
+            exclude_proactive_headline: If set, the matching headline is filtered
+                out of the pending notification batch context. Used by chat_stream
+                when the incoming message is itself a [PROACTIVE ALERT — …] so
+                Αίολος does not see the same notification twice (once in the
+                chat input, once in the pending batch list) and falsely conclude
+                that deduplication has failed.
+        """
         logger.info("[Wakeup] =============================================")
         logger.info("[Wakeup] IDENTITY WAKEUP — START")
 
@@ -84,7 +94,7 @@ class WakeupProtocol:
 
         # Pending notification batch — Αίολος can see accumulated notifications
         # even before the 10-item flush threshold is reached
-        batch_ctx = self._get_pending_batch_context()
+        batch_ctx = self._get_pending_batch_context(exclude_headline=exclude_proactive_headline)
         if batch_ctx:
             identity_context = identity_context.replace(
                 "=== END IDENTITY CONTEXT ===",
@@ -304,12 +314,19 @@ class WakeupProtocol:
         except Exception:
             return ""
 
-    def _get_pending_batch_context(self) -> str:
+    def _get_pending_batch_context(self, exclude_headline: str | None = None) -> str:
         """Return pending notification batch context for identity injection.
 
         Αίολος can see notifications that are buffered but not yet flushed to
         Telegram (1-9 items). This gives him situational awareness during chat
         even if the 10-item threshold hasn't been reached yet.
+
+        Args:
+            exclude_headline: If provided, any pending notification whose
+                headline matches (case-insensitive, normalised) is filtered
+                out. This is used when the current chat input is itself a
+                proactive alert delivery so Αίολος does not see the same
+                notification twice and report a false duplicate.
         """
         if self.proactive_engine is None:
             return ""
@@ -317,6 +334,24 @@ class WakeupProtocol:
             batch = self.proactive_engine.get_pending_batch()
             if not batch:
                 return ""
+
+            # ── Filter out the headline currently being delivered as chat input ──
+            if exclude_headline:
+                norm_target = exclude_headline.strip().lower()
+                filtered = [
+                    n for n in batch
+                    if (n.get("headline", "") or "").strip().lower() != norm_target
+                ]
+                removed = len(batch) - len(filtered)
+                if removed > 0:
+                    logger.info(
+                        "[Wakeup] Pending batch: filtered %d entr%s matching active proactive headline",
+                        removed, "y" if removed == 1 else "ies",
+                    )
+                batch = filtered
+                if not batch:
+                    return ""
+
             lines = [
                 f"PENDING NOTIFICATION BATCH ({len(batch)} accumulated, "
                 f"flush at {self.proactive_engine._notif_batch_size}):",
@@ -336,6 +371,7 @@ class WakeupProtocol:
             return "\n".join(lines)
         except Exception:
             return ""
+
 
     def _get_telegram_intel_context(self) -> str:
         """Return a live Telegram Intelligence Tool status block for identity injection.

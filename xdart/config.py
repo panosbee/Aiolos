@@ -21,13 +21,13 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR)))
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-5.4")
 OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-OPENAI_MAX_TOKENS: int = int(os.getenv("OPENAI_MAX_TOKENS", "65536"))
+OPENAI_MAX_TOKENS: int = int(os.getenv("OPENAI_MAX_TOKENS", "350000"))
 OPENAI_TEMPERATURE: float = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
 
 # ── LLM Context Window ──
-# Maximum context length for the model. DeepSeek chat: 131072. GPT-5.4: 128000+.
+# Maximum context length for the model. DeepSeek V4-Pro: 1,000,000 input context.
 # Used for prompt budget enforcement — prevents 400 errors from oversized prompts.
-LLM_MAX_CONTEXT_TOKENS: int = int(os.getenv("LLM_MAX_CONTEXT_TOKENS", "131072"))
+LLM_MAX_CONTEXT_TOKENS: int = int(os.getenv("LLM_MAX_CONTEXT_TOKENS", "1000000"))
 
 # ── LLM Provider (multi-provider support) ──
 # Set LLM_BASE_URL to switch providers. Leave empty for OpenAI default.
@@ -73,7 +73,7 @@ QDRANT_VECTOR_SIZE: int = int(os.getenv("QDRANT_VECTOR_SIZE", _default_vector_si
 # ── Framework Parameters ──
 XDART_MIN_DOMAINS: int = int(os.getenv("XDART_MIN_DOMAINS", "10"))
 XDART_MAX_VIEWS: int = int(os.getenv("XDART_MAX_VIEWS", "18"))
-XHEART_MEMORY_TOP_K: int = int(os.getenv("XHEART_MEMORY_TOP_K", "3"))
+XHEART_MEMORY_TOP_K: int = int(os.getenv("XHEART_MEMORY_TOP_K", "20"))
 LAYER3_THRESHOLD: int = int(os.getenv("LAYER3_THRESHOLD", "4"))
 
 # ── Identity / Character / Immediate Memory ──
@@ -87,14 +87,14 @@ FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
 UCDP_API_TOKEN: str = os.getenv("UCDP_API_TOKEN", "")
 FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
 PERCEPTION_HOURS_BACK: int = int(os.getenv("PERCEPTION_HOURS_BACK", "72"))
-PERCEPTION_MAX_EVENTS: int = int(os.getenv("PERCEPTION_MAX_EVENTS", "10"))
-PERCEPTION_MAX_ECONOMIC: int = int(os.getenv("PERCEPTION_MAX_ECONOMIC", "5"))
+PERCEPTION_MAX_EVENTS: int = int(os.getenv("PERCEPTION_MAX_EVENTS", "60"))
+PERCEPTION_MAX_ECONOMIC: int = int(os.getenv("PERCEPTION_MAX_ECONOMIC", "30"))
 
 # ── Palantir P0: Real-Time Intelligence Feeds ──
 # OTX AlienVault (free, register at https://otx.alienvault.com)
-OTX_API_KEY: str = os.getenv("OTX_API_KEY", "***REMOVED***")
+OTX_API_KEY: str = os.getenv("OTX_API_KEY", "")
 # GreyNoise Community (free, register at https://www.greynoise.io)
-GREYNOISE_API_KEY: str = os.getenv("GREYNOISE_API_KEY", "***REMOVED***")
+GREYNOISE_API_KEY: str = os.getenv("GREYNOISE_API_KEY", "")
 # Sanctions cross-reference auto-download (always enabled, no key needed)
 SANCTIONS_ENABLED: bool = os.getenv("SANCTIONS_ENABLED", "true").lower() in ("true", "1", "yes")
 # Event calendar (always enabled, curated + dynamic)
@@ -187,10 +187,10 @@ TELEGRAM_INTEL_TIER2_ENABLED: bool = bool(TELEGRAM_API_ID and TELEGRAM_API_HASH)
 # ── Multimodal Perception ──
 # OpenSky Network (free, registration recommended for higher rate limits)
 # API Client credentials — clientId as user, clientSecret as pass
-OPENSKY_USER: str = os.getenv("OPENSKY_USER", "***REMOVED***")
-OPENSKY_PASS: str = os.getenv("OPENSKY_PASS", "***REMOVED***")
+OPENSKY_USER: str = os.getenv("OPENSKY_USER", "")
+OPENSKY_PASS: str = os.getenv("OPENSKY_PASS", "")
 # NASA FIRMS (free MAP_KEY from https://firms.modaps.eosdis.nasa.gov/api/area/)
-FIRMS_MAP_KEY: str = os.getenv("FIRMS_MAP_KEY", "***REMOVED***")
+FIRMS_MAP_KEY: str = os.getenv("FIRMS_MAP_KEY", "")
 # MarineTraffic (optional, free tier available)
 MARINETRAFFIC_API_KEY: str = os.getenv("MARINETRAFFIC_API_KEY", "")
 # Enable/disable multimodal perception

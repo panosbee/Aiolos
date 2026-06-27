@@ -654,7 +654,7 @@ def _default_signal_domain_classifier() -> str:
                     domains.add(domain)
 
             if not domains:
-                domains.add("GEOPOLITICAL")  # default fallback
+                domains.add("GENERAL")  # default fallback — non-matching signals are GENERAL, not GEOPOLITICAL
 
             return sorted(domains)
     ''')
@@ -1050,8 +1050,8 @@ def build_default_registry() -> dict[str, ModifiableFunction]:
             original_code=domain_class_code,
             constraints=[
                 "Must return a non-empty list of domain strings",
-                "Valid domains: GEOPOLITICAL, ECONOMIC, MARKET, SOCIAL, TECHNOLOGY",
-                "Must default to ['GEOPOLITICAL'] if no keywords match",
+                "Valid domains: GEOPOLITICAL, ECONOMIC, MARKET, SOCIAL, TECHNOLOGY, GENERAL",
+                "Must default to ['GENERAL'] if no keywords match — never default to GEOPOLITICAL",
                 "Must handle empty headline gracefully",
                 "Only safe imports allowed (json, math, datetime, etc.)",
             ],

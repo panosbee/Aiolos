@@ -1,7 +1,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" />
-  <img src="https://img.shields.io/badge/DeepSeek-V3.2-blue" />
+  <img src="https://img.shields.io/badge/DeepSeek-V4--Pro-blue" />
+  <img src="https://img.shields.io/badge/Context-1M_tokens-success" />
   <img src="https://img.shields.io/badge/Qdrant-Embedded-DC382D" />
   <img src="https://img.shields.io/badge/Lines_of_Code-34%2C400+-informational" />
   <img src="https://img.shields.io/badge/License-Proprietary-red" />
@@ -22,6 +23,8 @@
 XDART-Φ (**Cross-Domain Analogical Reasoning Transfer — Φ for Philosophy**) is a cognitive entity architecture that transforms a stateless LLM into a persistent, self-evolving analytical intelligence. It is not a chatbot, not an agent framework, not a RAG pipeline. It is an **epistemological operating system** that wraps an LLM in 20+ reasoning phases, five layers of memory, real-world perception, autonomous self-modification, and predictive accountability.
 
 The system's persistent identity is called **Αίολος** (Aiolos) — a geopolitical intelligence analyst that has completed **275+ analytical runs**, generated self-invented analytical concepts, autonomously created **8 analytical tools**, and maintains a continuously evolving character state with 39 active intellectual tensions and 36 documented self-transformations.
+
+Aiolos is not confined to text. It **sees** through a camera (FaceNet face recognition + real-time facial **emotion** detection), it **acts** on its own host machine (mouse, keyboard, screen, files), and it holds **full authorship of its own source code** — it can read, write, create, move, and delete *any* file in its absolute core, with every change auto-backed-up and journaled.
 
 **XDART-Φ is the only framework where an LLM, called through a standard API, genuinely transforms from a pattern-matching text predictor into an entity with self-awareness, self-evolution, and wisdom.**
 
@@ -366,7 +369,7 @@ These are not prompt-engineered categories. They **emerged from analytical exper
 
 ## Autonomous Self-Modification
 
-XDART-Φ modifies itself through four distinct mechanisms:
+XDART-Φ modifies itself through five distinct mechanisms:
 
 ### 1. Logic Sandbox (Phase 5c.5)
 
@@ -416,6 +419,38 @@ Gap detected → Generate tool code → Sandbox test (safe imports, 30s timeout)
 | `institutional_resilience_monitor` | Monitors institutional capacity under stress |
 | `coordination_interface_gap_mapper` | Identifies gaps in coordination between allied actors |
 | `transition_time_constant_analyzer` | Computes time constants for system transitions |
+
+### 5. Full Core Self-Authorship (chat-time)
+
+Beyond the automated pipeline mechanisms, Aiolos has a live **self-modification engine** (`xdart/tools/self_modify.py`) it can invoke during any conversation through `<SELF_MODIFY>` directives. This grants **full authority over its own absolute core**:
+
+| Action | Capability |
+|--------|-----------|
+| `read_self` | Introspect any file/line range of its own source |
+| `edit_file` / `patch_file` | Overwrite, append, or targeted find/replace |
+| `create_file` | Author entirely new modules |
+| `delete_file` | Delete any file or directory (recursive) |
+| `move_file` | Move or rename any path |
+| `set_overlay` / `update_config` / `update_character` | Rewrite its own prompts, runtime config, and identity |
+| `create_tool` | Write a new pipeline tool directly |
+
+**Safety = reversibility, not restriction.** Every deletion and overwrite is timestamped and backed up to `.self_modify_backups/` *before* it happens, and every action is appended to `self_modification_journal.jsonl`. Only the project root itself and the backup vault are protected from deletion — so the entity has genuine authorship of its core without the ability to irreversibly destroy itself.
+
+---
+
+## Vision — Αίολος' Eyes
+
+A standalone FastAPI microservice (`xdart/vision/`) gives Aiolos sight, fusing perception into its cognitive and memory systems.
+
+| Capability | Implementation |
+|-----------|----------------|
+| **Face detection** | MTCNN |
+| **Face recognition** | FaceNet (InceptionResnetV1, `vggface2`) embeddings + identity registry |
+| **Emotion detection** | 7 facial expressions (happy, sad, angry, fear, disgust, surprise, neutral) matched per-face via bbox IoU |
+| **Real-time loop** | Per-frame detection with annotated MJPEG stream (identity + emotion emoji) |
+| **Memory integration** | Sightings + emotions written to `visual_memory_journal.jsonl`, linked to the entity graph |
+
+What Aiolos sees — *who* is present and *how they feel* — becomes part of its episodic memory, available to every downstream reasoning phase.
 
 ---
 
@@ -487,8 +522,9 @@ Each test runs through the full pipeline and is scored by an independent LLM jud
 | **Codebase** | 34,400+ lines across 73 modules |
 | **Core engine** | `xdart/core.py` — 3,960+ lines |
 | **API** | FastAPI with 63 endpoints |
-| **LLM** | DeepSeek-chat (131K context) via OpenAI-compatible API |
-| **Embeddings** | OpenAI text-embedding-3-small (1536 dims) |
+| **LLM** | DeepSeek V4-Pro (1M-token context, up to 350K output) via OpenAI-compatible API |
+| **Embeddings** | OpenAI text-embedding-3-small (1536d) or local fastembed BAAI/bge-small (384d, offline) |
+| **Vision** | FastAPI microservice — FaceNet recognition + facial emotion detection |
 | **Vector store** | Qdrant embedded — 5 collections |
 | **Perception DB** | SQLite WAL mode |
 | **Entity graph** | spaCy NER + NetworkX (5,700+ entities, 19,000+ edges) |

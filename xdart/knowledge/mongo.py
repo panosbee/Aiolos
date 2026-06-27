@@ -841,7 +841,15 @@ class MongoStore:
     # ── Goal & Upsert actions ──
 
     def _action_save_goal(self, p: dict) -> dict:
-        """Save or update a self-evolution goal in the entities collection."""
+        """Save or update a self-evolution goal in the canonical goals array.
+
+        Historical bug: this action used to create one flat document per goal
+        with ``type=self_evolution_goals`` and ``goal_id=...``. The
+        ReflectionLoop expects exactly one canonical document with a ``goals``
+        array, so flat documents polluted ``entities`` and could confuse
+        ``find_one({"type": "self_evolution_goals"})``. Keep every goal in
+        the canonical array from now on.
+        """
         # Robust field extraction: LLM may use alternative key names
         goal_id = str(p.get("goal_id") or p.get("id") or p.get("goal") or "").strip()
         title = str(p.get("title") or p.get("name") or p.get("goal_title") or "").strip()
@@ -865,32 +873,83 @@ class MongoStore:
         if isinstance(tools, str):
             tools = [t.strip() for t in tools.split(",") if t.strip()]
 
-        doc = {
-            "type": "self_evolution_goals",
-            "goal_id": goal_id,
+        status = str(p.get("status", "pending"))
+        if status == "active":
+            status = "pending"
+
+        goal_doc = {
+            "id": goal_id,
             "title": title,
             "description": str(p.get("description", "")),
-            "status": str(p.get("status", "active")),
+            "status": status,
             "target": str(p.get("target", "")),
             "tools": tools,
-            "updated_at": now,
+            "success_metric": str(p.get("success_metric", "")),
+            "progress_notes": str(
+                p.get("progress_notes")
+                or p.get("progress")
+                or p.get("evidence")
+                or "Created/updated via MONGO_ACTION save_goal."
+            ),
+            "last_updated": now,
         }
-        for key in ("next_checkpoint", "progress", "evidence", "created_at"):
+        for key in ("next_checkpoint", "evidence", "created_at"):
             if key in p:
-                doc[key] = p[key]
+                goal_doc[key] = p[key]
 
         try:
-            result = self._db.entities.update_one(
-                {"type": "self_evolution_goals", "goal_id": goal_id},
-                {"$set": doc, "$setOnInsert": {"created_at": now}},
-                upsert=True,
+            canonical = self._db.entities.find_one(
+                {"type": "self_evolution_goals", "goals": {"$type": "array"}},
+                {"_id": 1},
             )
-            upserted = result.upserted_id is not None
+
+            if not canonical:
+                insert_result = self._db.entities.insert_one({
+                    "type": "self_evolution_goals",
+                    "name": "Core Self-Evolution Goals v1",
+                    "description": "Canonical self-evolution goals document.",
+                    "created": now,
+                    "last_reviewed": now,
+                    "review_cycle_minutes": 30,
+                    "goals": [],
+                })
+                canonical_id = insert_result.inserted_id
+            else:
+                canonical_id = canonical["_id"]
+
+            result = self._db.entities.update_one(
+                {"_id": canonical_id, "goals.id": goal_id},
+                {"$set": {
+                    "goals.$[g].title": goal_doc["title"],
+                    "goals.$[g].description": goal_doc["description"],
+                    "goals.$[g].status": goal_doc["status"],
+                    "goals.$[g].target": goal_doc["target"],
+                    "goals.$[g].tools": goal_doc["tools"],
+                    "goals.$[g].success_metric": goal_doc["success_metric"],
+                    "goals.$[g].progress_notes": goal_doc["progress_notes"],
+                    "goals.$[g].last_updated": now,
+                }},
+                array_filters=[{"g.id": goal_id}],
+            )
+
+            created = False
+            if result.matched_count == 0:
+                goal_doc.setdefault("created", now)
+                goal_doc.setdefault("created_by", "mongo_action")
+                goal_doc.setdefault("attempt_counts", {})
+                goal_doc.setdefault("last_attempt_type", None)
+                goal_doc.setdefault("last_attempt_ts", None)
+                self._db.entities.update_one(
+                    {"_id": canonical_id},
+                    {"$push": {"goals": goal_doc}},
+                )
+                created = True
+
             logger.info("[MongoDB] save_goal: %s '%s' [%s]",
-                        "created" if upserted else "updated", title, goal_id)
+                        "created" if created else "updated", title, goal_id)
             return {
                 "success": True,
-                "description": f"Goal '{title}' {'created' if upserted else 'updated'} [id: {goal_id}]",
+                "description": f"Goal '{title}' {'created' if created else 'updated'} [id: {goal_id}]",
             }
         except Exception as exc:
             return {"success": False, "description": f"save_goal failed: {exc}"}

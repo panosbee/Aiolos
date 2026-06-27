@@ -13,12 +13,18 @@ Actions:
   edit_file     — find/replace or append to any project file
   patch_file    — apply a targeted patch (old_text → new_text)
   create_file   — create a new file in the project
+  delete_file   — delete any file/directory in the core (backed up first)
+  move_file     — move or rename any file/directory in the core
   read_self     — read own source code for introspection
   set_overlay   — update prompt overlays (prompt_overlays.json)
   update_config — change runtime config values
   update_character — modify character_state.json fields
   create_tool   — write a generated tool directly (bypass evolution)
   list_modules  — list own modules and structure
+
+AUTHORITY: Αίολος has full read/write/delete/create authority over every file
+in the project root — its absolute core. Deletions and overwrites are always
+backed up to .self_modify_backups/ first, so every change is reversible.
 """
 
 import json
@@ -166,6 +172,102 @@ class SelfModify:
             "bytes_written": len(content.encode("utf-8")),
         }
 
+    def delete_file(self, path: str = "", recursive: str = "false", **_) -> dict:
+        """Delete a file or directory from the project (reversible via backup).
+
+        The target is ALWAYS backed up before deletion, so any removal can be
+        recovered from .self_modify_backups/. This is full delete authority over
+        the core — nothing in the project root is off-limits — but every deletion
+        leaves a timestamped recovery copy.
+
+        Args:
+            path: Relative path from project root (e.g. 'xdart/tools/old_tool.py')
+            recursive: 'true' to delete a non-empty directory (rmtree)
+        """
+        target = self._resolve_path(path)
+        if not target:
+            return {"success": False, "error": f"Invalid path: {path}"}
+        if not target.exists():
+            return {"success": False, "error": f"Path not found: {path}"}
+
+        # Never allow deleting the project root itself or the backup vault
+        if target == BASE_DIR:
+            return {"success": False, "error": "Refusing to delete project root"}
+        if target == BACKUP_DIR or BACKUP_DIR in target.parents:
+            return {"success": False, "error": "Refusing to delete the backup vault"}
+
+        is_dir = target.is_dir()
+        do_recursive = str(recursive).lower() in ("true", "1", "yes")
+
+        try:
+            if is_dir:
+                # Back up every file in the directory before removal
+                backed_up = 0
+                for f in target.rglob("*"):
+                    if f.is_file():
+                        self._backup(f)
+                        backed_up += 1
+                if not do_recursive and any(target.iterdir()):
+                    return {
+                        "success": False,
+                        "error": f"Directory not empty: {path} — pass recursive=\"true\" to delete",
+                    }
+                shutil.rmtree(target)
+                return {
+                    "success": True,
+                    "path": str((BASE_DIR / path)),
+                    "type": "directory",
+                    "files_backed_up": backed_up,
+                    "recoverable": True,
+                }
+            else:
+                self._backup(target)
+                rel = str(target.relative_to(BASE_DIR))
+                target.unlink()
+                return {
+                    "success": True,
+                    "path": rel,
+                    "type": "file",
+                    "recoverable": True,
+                }
+        except Exception as e:
+            return {"success": False, "error": f"Delete failed: {e}"}
+
+    def move_file(self, path: str = "", new_path: str = "", overwrite: str = "false", **_) -> dict:
+        """Move or rename a file/directory within the project.
+
+        Args:
+            path: Current relative path from project root
+            new_path: Destination relative path from project root
+            overwrite: 'true' to replace an existing destination
+        """
+        src = self._resolve_path(path)
+        dst = self._resolve_path(new_path)
+        if not src or not src.exists():
+            return {"success": False, "error": f"Source not found: {path}"}
+        if not dst:
+            return {"success": False, "error": f"Invalid destination: {new_path}"}
+
+        do_overwrite = str(overwrite).lower() in ("true", "1", "yes")
+        if dst.exists():
+            if not do_overwrite:
+                return {"success": False, "error": f"Destination exists: {new_path} — pass overwrite=\"true\""}
+            self._backup(dst)
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+
+        self._backup(src)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+
+        return {
+            "success": True,
+            "from": str(BASE_DIR / path),
+            "to": str(dst.relative_to(BASE_DIR)),
+        }
+
     def read_self(self, path: str = "", lines: str = "", **_) -> dict:
         """Read own source code for introspection.
 
@@ -192,18 +294,18 @@ class SelfModify:
                     "path": str(target.relative_to(BASE_DIR)),
                     "lines": f"{start}-{end}",
                     "total_lines": total_lines,
-                    "content": content[:15000],  # Cap at 15K chars
+                    "content": content[:200000],  # Cap at 200K chars
                 }
             except (ValueError, IndexError):
                 return {"success": False, "error": f"Invalid line range: {lines}"}
 
-        # Full file — cap at 15K chars
+        # Full file — cap at 200K chars
         return {
             "success": True,
             "path": str(target.relative_to(BASE_DIR)),
             "total_lines": total_lines,
-            "content": content[:15000],
-            "truncated": len(content) > 15000,
+            "content": content[:200000],
+            "truncated": len(content) > 200000,
         }
 
     # ── Prompt Overlays ────────────────────────────────────────────
@@ -453,8 +555,13 @@ class SelfModify:
     def to_context_string(self) -> str:
         """Brief capability summary injected into LLM context."""
         return (
-            "🧬 SELF-MODIFY ENGINE: Active — You can modify your own code, config, "
-            "prompts, and character state during conversation.\n"
+            "🧬 SELF-MODIFY ENGINE: Active — You have FULL authority over your own "
+            "absolute core. You can READ, WRITE, MODIFY, CREATE, MOVE and DELETE "
+            "any file in the project root — your source code, config, prompts, "
+            "character state, and tools — during conversation.\n"
+            "  Actions: read_self, edit_file, patch_file, create_file, delete_file, "
+            "move_file, set_overlay, update_config, update_character, create_tool, list_modules\n"
+            "  Every deletion/overwrite is auto-backed-up first — all changes are reversible.\n"
             f"  Project root: {BASE_DIR}\n"
             f"  Actions performed this session: {self._action_count}\n"
             f"  Backups dir: {BACKUP_DIR}\n"

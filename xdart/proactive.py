@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from affect_layer import AffectLayer
 from xdart.llm import LLMClient
 
 logger = logging.getLogger("xdart.proactive")
@@ -49,6 +50,7 @@ DIGEST = "digest"          # Daily summary
 
 # ── Max notifications stored in memory ──
 MAX_NOTIFICATIONS = 200
+_NOTIFICATION_DEDUP_WINDOW_SECONDS = 1800
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PATTERN ACCUMULATOR — event-driven, not timer-driven
@@ -64,8 +66,13 @@ PATTERN_MERGE_SIMILARITY = 0.40  # Word overlap threshold to merge into same pat
 MIN_SIGNALS_TO_EVALUATE = 5      # Don't bother LLM until 5+ signals in cluster
 # ── Runaway pattern caps ──
 # Prevents one topic (e.g., Iran) from absorbing all signals into a single blob
-PATTERN_SIGNAL_CAP = 60     # After this many signals, start a new pattern for low-overlap signals
-PATTERN_SPLIT_ENTITY_OVERLAP = 0.20  # New signal with < this entity overlap → force new pattern
+PATTERN_SIGNAL_CAP = 30     # After this many signals, start a new pattern for low-overlap signals
+PATTERN_SPLIT_ENTITY_OVERLAP = 0.15  # New signal with < this entity overlap → force new pattern
+# ── Entity dominance guard: when one entity appears in >70% of signals,
+# the pattern is oversaturated — force-split to let other topics surface.
+PATTERN_ENTITY_DOMINANCE_THRESHOLD = 0.70  # Entity in >70% of signals → force pattern split
+PATTERN_MAX_FIRES_PER_DAY = 6  # Max fires per pattern cluster per calendar day
+PATTERN_RE_FIRE_COOLDOWN = 900  # 15 min minimum between re-fires (was 600)
 
 # ── Signal weight by source type ──
 SIGNAL_WEIGHTS = {
@@ -81,6 +88,7 @@ SIGNAL_WEIGHTS = {
     "financial_anomaly": 0.45,       # Market anomaly (VIX spike, crash, etc.)
     "cross_pattern_synthesis": 0.50, # Deep fusion compound insight (highest value)
     "temporal_precursor": 0.45,      # Temporal pattern precursor match (pre-event alert)
+    "dark_whisper": 0.60,            # Dark whisper synthesis (LLM-triaged OSINT, pre-synthesised)
 }
 
 # ── Decay: signal weight decays over time (half-life in seconds) ──
@@ -89,12 +97,24 @@ SIGNAL_HALF_LIFE = 14400  # 4 hours — signal loses half its weight in 4h
 # ══════════════════════════════════════════════════════════════════════════════
 #  IMPACT SCORING — determines if a pattern is strategically significant
 #  enough to warrant notification. Assesses ALL domains equally:
-#  geopolitical, economic, market, social, technology.
-#  Cross-domain patterns (2+ domains) get a BONUS — that's where unique
-#  insights live.
-# ══════════════════════════════════════════════════════════════════════════════
-
-IMPACT_THRESHOLD = 0.60  # Pattern must score ≥ this to fire notification
+# ── Topic & Domain Diversity Budget ──
+# Prevents the PatternAccumulator from re-notifying the same topic endlessly.
+# After MAX_NOTIFICATIONS_PER_TOPIC_PER_DAY on the same topic, only Layer-3
+# cross-domain syntheses (2+ domains, impact ≥ 0.80) can bypass the budget.
+_MAX_NOTIFICATIONS_PER_TOPIC_PER_DAY = 5     # Daily cap per topic
+_MAX_NOTIFICATIONS_PER_TOPIC_PER_HOUR = 2    # Hourly cap per topic
+# ── Domain rotation guard: if a single domain dominates recent notifications,
+# force the system to surface non-dominant domain patterns.
+_DOMAIN_DOMINANCE_THRESHOLD = 0.75           # 75%+ of recent notifications from one domain
+_DOMAIN_ROTATION_WINDOW = 20                 # Check last 20 notifications
+_DOMAIN_ROTATION_BYPASS_THRESHOLD = 0.80     # Non-dominant patterns need ≥ this impact to bypass
+# ── Novelty penalty: repeated topics get impact score penalty ──
+_NOVELTY_PENALTY_TOPIC_EXHAUSTED = 0.15      # Penalty when topic has been notified >=5x in 24h
+_NOVELTY_PENALTY_RECENT_TOPIC = 0.10         # Penalty when same topic in last 4 notifications
+_NOVELTY_PENALTY_SAME_HEADLINE = 0.25        # Penalty when headline nearly identical to recent
+# ── Auto-research exhaustion guard ──
+_RESEARCH_EXHAUSTION_TTL = 43200             # 12h — skip auto-research for topics researched within this window
+_MAX_RESEARCHED_TOPICS = 200                 # Max topics in research-exhaustion cache
 
 # ── Scope indicators: detected in pattern headlines ──
 # Global events (planet-wide impact)
@@ -103,6 +123,10 @@ _GLOBAL_SCOPE = frozenset({
     "united nations", "g7", "g20", "nato", "wto", "imf", "who",
     "world economy", "global recession", "climate crisis",
     "international", "planet", "humanity",
+    # Technology / science equivalents with planet-wide impact
+    "agi", "artificial general intelligence", "global grid", "internet outage",
+    "global cyberattack", "solar storm", "asteroid", "extinction",
+    "global food crisis", "sea level", "climate tipping point",
 })
 
 # Continental scope (multi-country regional impact)
@@ -136,12 +160,19 @@ _MAJOR_POWERS = frozenset({
     "egypt", "egyptian", "cairo",
 })
 
-# Tier-1 global figures (their actions move markets + geopolitics)
+# Tier-1 global figures (their actions move markets + geopolitics + technology)
 _GLOBAL_FIGURES = frozenset({
-    "trump", "biden", "xi jinping", "putin", "modi",
+    # Political leaders
+    "trump", "xi jinping", "putin", "modi",
     "kim jong un", "khamenei", "netanyahu", "erdogan",
     "macron", "scholz", "starmer", "mohammed bin salman",
     "zelensky", "pope", "powell", "lagarde",
+    # Tech / AI leaders (move markets as much as heads of state)
+    "altman", "sam altman", "musk", "elon musk", "jensen huang",
+    "zuckerberg", "mark zuckerberg", "bezos", "jeff bezos",
+    "pichai", "sundar pichai",
+    # Scientists / institutional leaders with strategic impact
+    "fauci", "tedros", "guterres",
 })
 
 # Breaking news indicators (headline urgency markers)
@@ -295,12 +326,15 @@ _SOURCE_TYPE_DOMAINS: dict[str, str] = {
     "financial_anomaly": "MARKET",
     "infrastructure_cascade": "ECONOMIC",
     "security_event": "GEOPOLITICAL",
-    "perception_event": "GEOPOLITICAL",
-    "perception_alert": "GEOPOLITICAL",       # multimodal OSINT (airspace, satellite)
     "social_disruption": "SOCIAL",
     "tech_disruption": "TECHNOLOGY",
     "curiosity_finding": "GENERAL",
     "prophecy_resolved": "GENERAL",
+    # NOTE: perception_event and perception_alert are NOT defaulted to GEOPOLITICAL —
+    # they carry multi-domain news. Domain classification is done by keyword matching
+    # in _classify_signal_domain(), which checks all 5 domain keyword sets.
+    # Defaulting them to GEOPOLITICAL was causing 87% of alerts to be labelled
+    # as geopolitical regardless of actual content.
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -688,6 +722,26 @@ class EmergentPattern:
             return set(self._entity_counts.keys())
         min_mentions = 2
         return {e for e, c in self._entity_counts.items() if c >= min_mentions}
+
+    def dominant_entity(self) -> tuple[str, float] | None:
+        """Return (entity_name, fraction_of_signals) for the most dominant entity.
+
+        When one entity appears in > PATTERN_ENTITY_DOMINANCE_THRESHOLD
+        of signals, the pattern is oversaturated and should be split.
+        """
+        if not self._entity_counts or len(self.signals) < 5:
+            return None
+        total = len(self.signals)
+        best_entity = ""
+        best_count = 0
+        for entity, count in self._entity_counts.items():
+            if count > best_count:
+                best_count = count
+                best_entity = entity
+        if not best_entity:
+            return None
+        fraction = best_count / total
+        return (best_entity, round(fraction, 3)) if fraction >= 0.35 else None
 
     def absorb(self, signal: PatternSignal) -> None:
         """Absorb a new signal into this pattern cluster."""
@@ -1147,17 +1201,17 @@ class Hypothesis:
         hypothesis_text: str,
         trigger_condition: str,
         expected_outcome: str,
-        trigger_keywords: set,
-        outcome_keywords: set,
-        trigger_entities: set | None = None,
-        outcome_entities: set | None = None,
+        trigger_keywords: set[str],
+        outcome_keywords: set[str],
+        trigger_entities: set[str] | None = None,
+        outcome_entities: set[str] | None = None,
         timeframe_days: int = 30,
         deadline: float = 0.0,
         confidence: float = 0.5,
         status: str = "active",
-        domains: list | None = None,
-        trigger_evidence: list | None = None,
-        outcome_evidence: list | None = None,
+        domains: list[str] | None = None,
+        trigger_evidence: list[str] | None = None,
+        outcome_evidence: list[str] | None = None,
         trigger_confidence: float = 0.0,
         outcome_confidence: float = 0.0,
         resolution_reason: str = "",
@@ -1214,6 +1268,8 @@ class HypothesisEngine:
         self._total_disconfirmed = 0
         self._total_expired = 0
         self._total_signals_checked = 0
+        self._total_llm_deferred = 0  # LLM verifications skipped while user chatting
+        self._chat_active_check: Callable[[], bool] | None = None  # Set by api.py
         self._load_state()
 
     # ────────────────────────────────────────────────────────────
@@ -1316,6 +1372,7 @@ class HypothesisEngine:
             trigger_entities=trigger_entities or set(),
             outcome_entities=outcome_entities or set(),
             timeframe_days=timeframe_days,
+            deadline=deadline or (time.time() + timeframe_days * 86400),
             confidence=confidence,
             domains=domains or [],
             pattern_id=pattern_id,
@@ -1447,8 +1504,26 @@ class HypothesisEngine:
     # ────────────────────────────────────────────────────────────
 
     def _llm_verify(self, hyp: Hypothesis) -> dict | None:
-        """Ask LLM to judge whether hypothesis is confirmed or disconfirmed."""
+        """Ask LLM to judge whether hypothesis is confirmed or disconfirmed.
+
+        When chat is active (user waiting for response), skip LLM verification
+        to avoid blocking the chat endpoint. Evidence still accumulates;
+        verification waits until chat is idle.
+        """
         self._last_verification[hyp.id] = time.time()
+
+        # ── Chat priority guard: skip LLM when user is active ──
+        if self._chat_active_check is not None:
+            try:
+                if self._chat_active_check():
+                    self._total_llm_deferred += 1
+                    logger.debug(
+                        "[HypothesisEngine] Deferred LLM verify for %s — chat is active",
+                        hyp.id,
+                    )
+                    return None  # Evidence still accumulated, just skip LLM
+            except Exception:
+                pass  # If check fails, proceed with verification
 
         trigger_lines = "\n".join(
             f"  - [{e['ts'][:10]}] {e['headline']}" for e in hyp.trigger_evidence[-5:]
@@ -2327,6 +2402,17 @@ class PatternAccumulator:
             event_data["continuation_of"] = continuation_of
 
         # ── Record fire for Compound Alert Chain analysis ──
+        # IMPORTANT (fix 2026-05-01 — Πάνος "double alarm" report):
+        # A single pattern fire used to spawn up to 3 parallel evaluations:
+        # one per compound that triggered (e.g. SANCTIONS_ESCALATION +
+        # MULTI_DOMAIN_CRISIS) PLUS the emergent_pattern itself. They all
+        # raced into the eval_pool faster than the headline-dedup window
+        # could catch them, producing duplicate Telegram/UI alerts about
+        # the same underlying story (e.g. Tuapse fired twice within ~6
+        # minutes). Now we MERGE all compounds + the pattern into a single
+        # evaluation when any compound fires, and only fall back to the
+        # standalone emergent_pattern submission when no compound fired.
+        compounds: list[dict] = []
         try:
             self.engine.compound_alerts.record_fire(
                 source_types=pattern.source_types,
@@ -2334,16 +2420,9 @@ class PatternAccumulator:
                 region=sorted(pattern.regions)[0] if pattern.regions else "GLOBAL",
                 domains=sorted(domains),
             )
-            # Check for compound alerts
-            compounds = self.engine.compound_alerts.check_compounds()
+            compounds = self.engine.compound_alerts.check_compounds() or []
             for compound in compounds:
                 logger.info("[PatternAccumulator] Compound alert fired: %s", compound["compound_type"])
-                self.engine._eval_pool.submit(
-                    self.engine.evaluate_and_notify,
-                    "compound_alert",
-                    compound,
-                    f"Compound escalation: {compound['headline']}\nConstituents: {'; '.join(compound.get('constituents', []))}",
-                )
         except Exception as exc:
             logger.debug("[PatternAccumulator] Compound alert check failed: %s", exc)
 
@@ -2351,12 +2430,41 @@ class PatternAccumulator:
         # called on_alert → feed_signal → _fire_pattern. This keeps HTTP
         # request handling responsive while LLM evaluation runs in background.
         context_text = pattern.summary_text(entity_graph=self.engine.entity_graph)
-        self.engine._eval_pool.submit(
-            self.engine.evaluate_and_notify,
-            "emergent_pattern",
-            event_data,
-            context_text,
-        )
+
+        if compounds:
+            # MERGE: attach all compound metadata onto the pattern's event
+            # and submit ONE evaluation. The notification will mention both
+            # the underlying pattern and any compound escalations.
+            primary = compounds[0]
+            merged_event = dict(event_data)
+            merged_event["compound_alerts"] = [
+                {
+                    "compound_type": c.get("compound_type"),
+                    "headline": c.get("headline"),
+                    "weight": c.get("weight"),
+                    "constituents": c.get("constituents", []),
+                }
+                for c in compounds
+            ]
+            merged_event["primary_compound_type"] = primary.get("compound_type")
+            compound_ctx = "\n\nCOMPOUND ESCALATIONS DETECTED:\n" + "\n".join(
+                f"  • {c.get('compound_type','?')} (weight={c.get('weight','?')}) — "
+                f"constituents: {'; '.join(c.get('constituents', []))}"
+                for c in compounds
+            )
+            self.engine._eval_pool.submit(
+                self.engine.evaluate_and_notify,
+                "emergent_pattern_with_compound",
+                merged_event,
+                context_text + compound_ctx,
+            )
+        else:
+            self.engine._eval_pool.submit(
+                self.engine.evaluate_and_notify,
+                "emergent_pattern",
+                event_data,
+                context_text,
+            )
 
         # ── Hypothesis Engine: auto-generate testable hypothesis from pattern ──
         if self.engine.hypothesis_engine:
@@ -2508,7 +2616,7 @@ class PatternAccumulator:
         alive.sort(key=lambda p: p.convergence_score, reverse=True)
 
         lines = [
-            f"ACTIVE PATTERN CLUSTERS ({len(alive)} alive, showing top {min(top_n, len(alive))}):",
+            "ACTIVE PATTERN CLUSTERS ({len(alive)} alive, showing top {min(top_n, len(alive))}):",
             "These are patterns BUILDING from multiple data signals — not yet fired.",
             "Cross-domain patterns (2+ domains) are HIGH VALUE.",
             "",
@@ -2927,7 +3035,9 @@ class PatternAccumulator:
             "combined_convergence": synthesis["combined_convergence"],
             "combined_signals": synthesis["combined_signals"],
             "core_entities": synthesis["core_entities"],
-            "headlines": [],  # populated from compound insight
+            "headline": synthesis["headline"],
+            "headlines": [synthesis["headline"]],
+            "source_types": ["cross_pattern_synthesis"],
             "convergence_score": synthesis["combined_convergence"],
         }
 
@@ -3223,6 +3333,8 @@ class PatternAccumulator:
             {
                 "theme": macro["theme"],
                 "headline": macro["headline"],
+                "headlines": [macro["headline"]],
+                "source_types": ["macro_pattern"],
                 "domains": macro["domains"],
                 "cross_domain": True,
                 "domain_count": macro["domain_count"],
@@ -3578,6 +3690,7 @@ _HYPOTHESIS_GENERATION_PROMPT = """You are the HYPOTHESIS GENERATOR of Αίολ�
 
 You are given pattern intelligence (either a fired pattern or a cross-pattern synthesis).
 Your task: determine whether this intelligence warrants a TESTABLE HYPOTHESIS —
+a conditional prediction in the form "IF [trigger condition] THEN [expected
 a conditional prediction in the form "IF [trigger condition] THEN [expected outcome]".
 
 A hypothesis is warranted when:
@@ -3709,6 +3822,7 @@ class ProactiveEngine:
 
         # Notification storage
         self._notifications: deque[Notification] = deque(maxlen=MAX_NOTIFICATIONS)
+        self._notification_lock = threading.RLock()
 
         # SSE subscribers (asyncio.Queue per connected client)
         self._sse_subscribers: list[asyncio.Queue] = []
@@ -3777,6 +3891,10 @@ class ProactiveEngine:
             max_workers=3, thread_name_prefix="proactive-eval",
         )
 
+        # ── Affect Heuristic Layer — dedup + scoring + balance + affective memory ──
+        # Initialised with mongo=None; api.py wires in self._mongo after startup.
+        self._affect_layer: AffectLayer = AffectLayer(mongo=None)
+
         # Load existing log
         self._load_log()
 
@@ -3805,6 +3923,201 @@ class ProactiveEngine:
             region=region,
             raw_data=raw_data,
         )
+
+    # ══════════════════════════════════════════════════════════════
+    #  NOTIFICATION REGISTRY — one dedup gate for every delivery path
+    # ══════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _notification_dedup_text(notification: Notification) -> str:
+        """Content signature used to dedup notifications across source labels."""
+        return "\n".join(
+            part.strip()
+            for part in (
+                notification.headline or "",
+                notification.summary or "",
+                notification.reason or "",
+            )
+            if part and part.strip()
+        )
+
+    @staticmethod
+    def _canonical_notification_payload(notification: Notification) -> str:
+        """Whitespace-normalised payload for exact in-memory comparisons."""
+        text = ProactiveEngine._notification_dedup_text(notification).lower()
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _notification_dedup_sources(notification: Notification) -> list[str]:
+        """Source labels for exact hash stats; semantic dedup remains cross-source."""
+        sources = [notification.source or "unknown"]
+        raw = notification.raw_data or {}
+        raw_sources = raw.get("source_types")
+        if isinstance(raw_sources, list):
+            sources.extend(str(item) for item in raw_sources if item)
+        trigger = raw.get("trigger")
+        if trigger:
+            sources.append(str(trigger))
+        raw_type = raw.get("type")
+        if raw_type:
+            sources.append(str(raw_type))
+        return sorted(set(sources))
+
+    @staticmethod
+    def _notification_within_dedup_window(
+        notification: Notification,
+        *,
+        now_ts: float | None = None,
+    ) -> bool:
+        """Whether an existing notification is still within the dedup window."""
+        now_ts = now_ts if now_ts is not None else time.time()
+        try:
+            created_ts = datetime.fromisoformat(notification.created_at).timestamp()
+        except Exception:
+            return True
+        return (now_ts - created_ts) <= _NOTIFICATION_DEDUP_WINDOW_SECONDS
+
+    @staticmethod
+    def _is_visual_conversation_request(notification: Notification) -> bool:
+        """Detect visual-arrival conversation requests, including old log rows.
+
+        Older persistent notification entries did not store raw_data, so after a
+        restart the cooldown could no longer see trigger=visual_perception_arrival
+        and identical greetings were emitted again. The text heuristic preserves
+        compatibility with those old rows.
+        """
+        if notification.source != "conversation_request":
+            return False
+        raw = notification.raw_data or {}
+        if raw.get("trigger") == "visual_perception_arrival":
+            return True
+        text = f"{notification.headline} {notification.summary}".lower()
+        return "μόλις έφτασε" in text or ("βλέπω" in text and "φτάνει" in text)
+
+    def _has_recent_conversation_request_locked(
+        self,
+        *,
+        is_visual_arrival: bool,
+        cooldown: int,
+        now_ts: float,
+    ) -> bool:
+        """Return True when a matching conversation request is on cooldown."""
+        for notification in self._notifications:
+            if notification.source != "conversation_request":
+                continue
+            try:
+                age = now_ts - datetime.fromisoformat(notification.created_at).timestamp()
+            except Exception:
+                continue
+            if age >= cooldown:
+                continue
+            if not is_visual_arrival:
+                return True
+            if self._is_visual_conversation_request(notification):
+                return True
+        return False
+
+    def _check_notification_duplicate_locked(
+        self,
+        notification: Notification,
+        *,
+        respect_time_window: bool = True,
+        affect_dedup: bool = True,
+        seed_dedup: bool = True,
+    ) -> str | None:
+        """Check exact in-memory and affect-layer dedup under notification lock."""
+        candidate_key = self._canonical_notification_payload(notification)
+        now_ts = time.time()
+        if candidate_key:
+            for existing in list(self._notifications)[-MAX_NOTIFICATIONS:]:
+                if (
+                    candidate_key == self._canonical_notification_payload(existing)
+                    and (
+                        not respect_time_window
+                        or self._notification_within_dedup_window(existing, now_ts=now_ts)
+                    )
+                ):
+                    return "exact notification payload already registered"
+
+        if not affect_dedup:
+            return None
+
+        dedup_text = self._notification_dedup_text(notification)
+        if not dedup_text:
+            return None
+        result = self._affect_layer.deduplicator.check(
+            summary=dedup_text,
+            sources=self._notification_dedup_sources(notification),
+        )
+        if result.is_duplicate:
+            return result.reason
+        if seed_dedup:
+            self._affect_layer.deduplicator.record(
+                summary=dedup_text,
+                sources=self._notification_dedup_sources(notification),
+            )
+        return None
+
+    def _register_notification_locked(
+        self,
+        notification: Notification,
+        *,
+        dedup: bool = True,
+        count_stats: bool = True,
+        respect_time_window: bool = True,
+        affect_dedup: bool = True,
+        seed_dedup: bool = True,
+    ) -> Notification | None:
+        """Append a notification exactly once. Caller must hold _notification_lock."""
+        if dedup:
+            duplicate_reason = self._check_notification_duplicate_locked(
+                notification,
+                respect_time_window=respect_time_window,
+                affect_dedup=affect_dedup,
+                seed_dedup=seed_dedup,
+            )
+            if duplicate_reason:
+                if count_stats:
+                    self._total_suppressed += 1
+                logger.info(
+                    "[Proactive] NOTIFICATION DEDUP suppressed %s: %s",
+                    notification.source,
+                    duplicate_reason,
+                )
+                return None
+
+        self._notifications.append(notification)
+        if count_stats:
+            self._total_notified += 1
+        return notification
+
+    def register_notification(
+        self,
+        notification: Notification,
+        *,
+        dedup: bool = True,
+        log: bool = True,
+        count_stats: bool = True,
+        respect_time_window: bool = True,
+    ) -> Notification | None:
+        """Public notification registration path for all producers.
+
+        This is the only safe way to add a notification. It performs atomic
+        dedup+append under one lock, then writes the persistent log outside the
+        lock. Direct writes to _notifications bypass cross-source dedup and are
+        what caused paired duplicates across conversation_request, macro_pattern,
+        and cross_pattern_synthesis.
+        """
+        with self._notification_lock:
+            registered = self._register_notification_locked(
+                notification,
+                dedup=dedup,
+                count_stats=count_stats,
+                respect_time_window=respect_time_window,
+            )
+        if registered and log:
+            self._log_notification(registered)
+        return registered
 
     def replay_buffered_evaluations(self) -> int:
         """Replay evaluations that were buffered during pipeline execution.
@@ -3850,6 +4163,65 @@ class ProactiveEngine:
         Returns:
             Notification if sent, None if suppressed.
         """
+        # ── COGNITIVE POOL ROUTING (Architectural fix 2026-05-27) ──────────
+        # ALL information flows through the CognitivePool first.
+        # The pool auto-classifies urgency. Only BREAKING/HIGH items
+        # get LLM evaluation; MEDIUM/LOW items go to HOLD for context
+        # recall during chat. This breaks the linear pipeline and gives
+        # Αίολος autonomous decision power over what to surface.
+        pool = getattr(self._affect_layer, 'cognitive_pool', None)
+        if pool is not None:
+            try:
+                domains_raw = event_data.get('domains', [])
+                if isinstance(domains_raw, str):
+                    domains_raw = [domains_raw]
+                entities_set = set(event_data.get('core_entities', []))
+                if isinstance(entities_set, list):
+                    entities_set = set(entities_set)
+                convergence = float(event_data.get('convergence_score', 0) or 0)
+                impact = float(event_data.get('impact_score', 0) or 0)
+                
+                headline = (
+                    event_data.get('headline')
+                    or (event_data.get('headlines', [''])[0] if event_data.get('headlines') else '')
+                    or event_type
+                )
+                
+                pool_item = pool.ingest(
+                    headline=str(headline)[:200],
+                    summary=context[:500] if context else '',
+                    entities=entities_set,
+                    domains=list(domains_raw) if domains_raw else [],
+                    source_type=event_type,
+                    event_data=event_data,
+                    convergence_score=convergence,
+                    impact_score=impact,
+                )
+                
+                decision = pool.decide(pool_item)
+                
+                if not decision.get('should_notify', False):
+                    if decision.get('action') == 'HOLD':
+                        logger.info(
+                            "[Proactive] COGNITIVE POOL HOLD: %s → held for context recall",
+                            pool_item.brevity[:80],
+                        )
+                    else:
+                        logger.info(
+                            "[Proactive] COGNITIVE POOL DISCARD: %s → %s",
+                            pool_item.brevity[:80], decision.get('reason', 'low priority'),
+                        )
+                    return None
+                
+                # BREAKING or HIGH urgency → proceed to LLM evaluation
+                logger.info(
+                    "[Proactive] COGNITIVE POOL BREAKING: %s → full LLM eval",
+                    pool_item.brevity[:80],
+                )
+            except Exception as exc:
+                logger.debug("[Proactive] CognitivePool routing error (non-critical): %s", exc)
+        # ── END COGNITIVE POOL ROUTING ──────────────────────────────────────
+
         # ── Pipeline guard: buffer evaluations instead of spending LLM tokens ──
         if self.pipeline_running:
             self._buffered_evaluations.append((event_type, event_data, context))
@@ -3889,6 +4261,8 @@ class ProactiveEngine:
         headlines_in_data = event_data.get("headlines", [])
         if headlines_in_data:
             candidate_headline = headlines_in_data[0] if isinstance(headlines_in_data, list) else str(headlines_in_data)
+        elif event_data.get("headline"):
+            candidate_headline = str(event_data.get("headline", ""))
         candidate_topics = _extract_topics(
             candidate_headline or json.dumps(event_data, ensure_ascii=False)[:500]
         )
@@ -3899,6 +4273,26 @@ class ProactiveEngine:
                 logger.info("[Proactive] DEDUP suppressed — too similar to recent '%s'",
                             existing.headline[:60])
                 return None
+
+        # ── Affect Layer — Pre-LLM dedup (saves LLM tokens on clear duplicates) ──
+        candidate_text = candidate_headline or json.dumps(event_data, ensure_ascii=False)[:500]
+        pre_dedup = self._affect_layer.deduplicator.check(
+            summary=candidate_text,
+            sources=event_data.get("source_types", [event_type]),
+        )
+        if pre_dedup.is_duplicate:
+            self._total_suppressed += 1
+            logger.info("[Proactive] AFFECT DEDUP (pre-LLM) — %s", pre_dedup.reason)
+            return None
+
+        # ── Pre-claim the dedup slot to prevent Semaphore(2) race condition ──
+        # With 2 concurrent eval threads, both can pass the check above before either
+        # records delivery — resulting in exact duplicate notifications. Recording
+        # the candidate text NOW ensures the second thread is blocked immediately.
+        self._affect_layer.deduplicator.record(
+            summary=candidate_text,
+            sources=event_data.get("source_types", [event_type]),
+        )
 
         # Build evaluation context
         now_str = datetime.now(ZoneInfo("Europe/Athens")).strftime("%Y-%m-%d %H:%M Athens")
@@ -3934,6 +4328,23 @@ class ProactiveEngine:
         summary = decision.get("summary", "")
         reason = decision.get("reason", "")
 
+        # ── Post-LLM topic dedup: re-check with synthesized headline+summary ──
+        # The pre-LLM check used raw event data (short, unsynthesized). The LLM
+        # synthesis can reveal same-topic patterns that looked different in raw form
+        # (e.g. "Hormuz+tariffs" ≈ "Trade War+Iran" after synthesis). This second
+        # check catches near-duplicates that slipped through the first gate.
+        llm_topics = _extract_topics(headline + " " + summary[:300])
+        for existing in list(self._notifications)[-20:]:
+            existing_topics = _extract_topics(existing.headline + " " + existing.summary[:300])
+            sim = _topic_similarity(llm_topics, existing_topics)
+            if sim >= 0.50:
+                self._total_suppressed += 1
+                logger.info(
+                    "[Proactive] POST-LLM DEDUP — synthesized topic matches recent '%s' (sim=%.2f)",
+                    existing.headline[:60], sim,
+                )
+                return None
+
         # ── AUTO-RESEARCH: if we have WebAgent, investigate before notifying ──
         research_findings = ""
         if self.web_agent:  # Always research before notifying — be confident
@@ -3956,6 +4367,24 @@ class ProactiveEngine:
         if not notif_domains:
             notif_domains = sorted(_classify_signal_domain(headline, event_type))
 
+        # ── Affect Layer — full evaluation gate (scoring + balance + fatigue) ──
+        affect_decision = self._affect_layer.evaluate(
+            headline=headline,
+            summary=summary,
+            domains=notif_domains,
+            event_type=event_type,
+            event_data=event_data,
+        )
+        if not affect_decision["fire"]:
+            self._total_suppressed += 1
+            logger.info("[Proactive] AFFECT GATE rejected: %s", affect_decision["reason"])
+            return None
+
+        # Scorer may upgrade/downgrade urgency based on quality score
+        if affect_decision.get("urgency_override"):
+            urgency = affect_decision["urgency_override"]
+            logger.debug("[Proactive] AFFECT urgency override: %s → %s", urgency, affect_decision["urgency_override"])
+
         notification = Notification(
             headline=headline,
             summary=summary,
@@ -3966,18 +4395,27 @@ class ProactiveEngine:
             domains=notif_domains,
         )
 
-        self._notifications.append(notification)
-        self._total_notified += 1
-        self._log_notification(notification)
+        if not self.register_notification(notification):
+            return None
 
         # All evaluated alerts get full delivery — the LLM already decided
         # should_notify=true. Urgency controls Telegram only.
         self._deliver_immediate(notification)
 
+        # Record delivery in Affect Layer (updates dedup window + domain balance)
+        self._affect_layer.record_delivery(
+            headline=headline,
+            summary=summary,
+            domains=notif_domains,
+            source_types=event_data.get("source_types", [event_type]),
+            event_data=event_data,
+            score=affect_decision.get("score"),
+        )
+
         # ── AUTONOMOUS PROPHECY: if pattern meets prophecy thresholds ──
         convergence = event_data.get("convergence_score", 0)
         signal_count = len(event_data.get("headlines", []))
-        # Use content-based domain classification (not raw source_type labels)
+        # Use content-based domain classification (not raw source type labels)
         # because most signals arrive as 'perception_alert' regardless of domain
         content_domains = event_data.get("domains", [])
         if (convergence >= self._PROPHECY_MIN_CONVERGENCE
@@ -4030,7 +4468,7 @@ class ProactiveEngine:
 
     def get_stats(self) -> dict:
         """Return proactive engine stats."""
-        return {
+        stats = {
             "total_evaluated": self._total_evaluated,
             "total_notified": self._total_notified,
             "total_suppressed": self._total_suppressed,
@@ -4040,6 +4478,11 @@ class ProactiveEngine:
             "telegram_enabled": bool(self.telegram_bot_token and self.telegram_chat_id),
             "accumulator": self.accumulator.get_stats(),
         }
+        try:
+            stats["affect_layer"] = self._affect_layer.get_stats()
+        except Exception:
+            pass
+        return stats
 
     def get_recent_context_for_chat(self, max_items: int = 10) -> str:
         """Return recent proactive notifications formatted as chat context.
@@ -4069,6 +4512,45 @@ class ProactiveEngine:
             "respond in that context. They may say 'ναι', 'σχετικά με αυτό', "
             "'πες μου περισσότερα', etc. — match their reply to the relevant notification."
         )
+
+        # Append Affect Layer domain balance + affective memory context
+        try:
+            balance_ctx = self._affect_layer.get_balance_context()
+            if balance_ctx:
+                lines.append(balance_ctx)
+            affect_ctx = self._affect_layer.get_affective_context()
+            if affect_ctx:
+                lines.append(affect_ctx)
+        except Exception:
+            pass
+
+        # Append recent Dark Whisper syntheses from MongoDB so dark/Telegram
+        # signal themes are visible in every chat context (even if they never
+        # accumulated into a fired pattern).
+        try:
+            if hasattr(self, "_mongo") and self._mongo and hasattr(self._mongo, "db"):
+                dw_docs = list(
+                    self._mongo.db["dark_whisper_syntheses"]
+                    .find({}, {"_id": 0, "hypothesis": 1, "confidence": 1,
+                               "verdict": 1, "dark_signal_channels": 1, "created_at": 1})
+                    .sort("created_at", -1)
+                    .limit(5)
+                )
+                if dw_docs:
+                    lines.append("\nRECENT DARK WHISPER INTELLIGENCE (from Telegram/OSINT channels):")
+                    for dw in dw_docs:
+                        verdict = dw.get("verdict", "?")
+                        conf = dw.get("confidence", 0.0)
+                        channels = ", ".join(dw.get("dark_signal_channels", []))
+                        hyp = dw.get("hypothesis", "")
+                        ts = dw.get("created_at", "")[:16]
+                        lines.append(
+                            f"  [{ts}] [{verdict} conf={conf:.2f}] "
+                            f"Channels: {channels or 'unknown'}\n  → {hyp}"
+                        )
+        except Exception:
+            pass
+
         return "\n".join(lines)
 
     # ══════════════════════════════════════════════════════════════
@@ -4199,6 +4681,17 @@ class ProactiveEngine:
     def _buffer_notification(self, notification: Notification) -> None:
         """Add a notification to the batch buffer.  Flush when full."""
         with self._notif_batch_lock:
+            candidate_key = self._canonical_notification_payload(notification)
+            if candidate_key and any(
+                candidate_key == self._canonical_notification_payload(existing)
+                for existing in self._notif_batch
+            ):
+                self._total_suppressed += 1
+                logger.info(
+                    "[Proactive] Batch buffer dedup suppressed duplicate: %s",
+                    notification.headline[:80],
+                )
+                return
             self._notif_batch.append(notification)
             current_size = len(self._notif_batch)
 
@@ -4279,7 +4772,7 @@ class ProactiveEngine:
         lines = [f"📦 *{len(batch)} νέες ειδοποιήσεις*\n"]
         for i, n in enumerate(batch[:10], 1):
             emoji = "🚨" if n.urgency == CRITICAL else "📌" if n.urgency == IMPORTANT else "📋"
-            lines.append(f"{emoji} *{n.headline}*")
+            lines.append(f"{emoji} *{n.headline}*\n")
         lines.append(f"\n_Αίολος · {datetime.now(ZoneInfo('Europe/Athens')).strftime('%H:%M')}_")
         return "\n".join(lines)
 
@@ -4346,7 +4839,7 @@ class ProactiveEngine:
             notification.delivered_sse = True
 
         # Telegram routing: bypass (vision / critical) → immediate; else → batch buffer
-        if notification.urgency == CRITICAL and self._is_bypass_notification(notification):
+        if self._is_bypass_notification(notification):
             # Immediate delivery — critical alert or face arrival
             self._send_telegram(notification)
         elif notification.urgency in (CRITICAL, IMPORTANT, DIGEST):
@@ -4394,23 +4887,7 @@ class ProactiveEngine:
             else self._CONVERSATION_REQUEST_COOLDOWN
         )
 
-        # Cooldown check — visual arrivals only check against other visual arrivals
         now_ts = datetime.now(timezone.utc).timestamp()
-        recent_requests = [
-            n for n in self._notifications
-            if n.source == "conversation_request"
-            and (now_ts - datetime.fromisoformat(n.created_at).timestamp()) < cooldown
-            and (
-                not is_visual_arrival
-                or n.raw_data.get("trigger") == "visual_perception_arrival"
-            )
-        ]
-        if recent_requests:
-            logger.info("[Proactive] Conversation request cooldown (%ds) — skipping: %s",
-                        cooldown, topic[:80])
-            return None
-
-        # Create a conversation-request notification
         conv_domains = (context_data or {}).get("domains", [])
         if not conv_domains:
             conv_domains = sorted(_classify_signal_domain(topic, "conversation_request"))
@@ -4424,8 +4901,24 @@ class ProactiveEngine:
             domains=conv_domains,
         )
 
-        self._notifications.append(notification)
-        self._total_notified += 1
+        # Cooldown + dedup + append must be atomic. Otherwise two camera events
+        # can both pass the cooldown check before either one appends.
+        with self._notification_lock:
+            if self._has_recent_conversation_request_locked(
+                is_visual_arrival=is_visual_arrival,
+                cooldown=cooldown,
+                now_ts=now_ts,
+            ):
+                logger.info(
+                    "[Proactive] Conversation request cooldown (%ds) — skipping: %s",
+                    cooldown,
+                    topic[:80],
+                )
+                return None
+            registered = self._register_notification_locked(notification, dedup=True)
+
+        if not registered:
+            return None
         self._log_notification(notification)
 
         # SSE: push with conversation_request flag — THREAD-SAFE
@@ -4469,7 +4962,7 @@ class ProactiveEngine:
             f"*{notification.headline}*\n\n"
             f"{notification.summary[:800]}\n\n"
             f"{context_block}\n\n"
-            "_Αυτό χρειάζεται συζήτηση, όχι απλά ειδοποίηση. "
+            "_Αυτό χρειάζεται συζήτηση, όχι απλά ειδοποιήση. "
             "Όταν μπορέσεις, άνοιξε chat._"
         )
 
@@ -4857,14 +5350,11 @@ class ProactiveEngine:
         self.request_conversation(
             topic=f"Αυτόνομη πρόβλεψη: {scenario.name}",
             reason=(
-                f"Ανίχνευσα ένα cross-domain pattern (convergence={convergence:.2f}) "
-                f"και δημιούργησα μια αυτόνομη πρόβλεψη:\n\n"
-                f"**{scenario.name}**\n"
-                f"{scenario.narrative[:500]}\n\n"
-                f"→ Predicted outcome: {scenario.predicted_outcome}\n"
-                f"→ Timeline: {scenario.timeline}\n"
-                f"→ Confidence: {scenario.confidence:.0%}\n\n"
-                f"Χρειάζομαι την έγκρισή σου για να αρχίσω active tracking."
+                f"Ανίχνευσα ένα cross-domain pattern (convergence={convergence:.2f}, {len(headlines)} signals)",
+                f"→ {scenario.narrative[:500]}",
+                f"→ {scenario.predicted_outcome}",
+                f"→ {scenario.timeline}",
+                f"→ {scenario.confidence:.0%}",
             ),
             urgency=IMPORTANT,
             context_data={
@@ -4893,8 +5383,7 @@ class ProactiveEngine:
             raw_data={"entry_id": entry.id, "scenario_name": scenario.name},
             domains=source_types if isinstance(source_types, list) else list(source_types),
         )
-        self._notifications.append(notification)
-        self._log_notification(notification)
+        self.register_notification(notification)
 
         return {
             "entry_id": entry.id,
@@ -4935,14 +5424,19 @@ class ProactiveEngine:
 
     def _log_notification(self, notification: Notification) -> None:
         """Append notification to persistent JSONL log + MongoDB."""
+        try:
+            raw_data = json.loads(json.dumps(notification.raw_data or {}, ensure_ascii=False, default=str))
+        except Exception:
+            raw_data = {}
         entry = {
             "type": "notification",
             "timestamp": notification.created_at,
             **notification.to_dict(),
+            "raw_data": raw_data,
         }
         try:
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except Exception as exc:
             logger.warning("[Proactive] Log write failed: %s", exc)
         # Dual-write to MongoDB
@@ -4969,14 +5463,31 @@ class ProactiveEngine:
                     urgency=entry.get("urgency", DIGEST),
                     source=entry.get("source", "unknown"),
                     reason=entry.get("reason", ""),
+                    raw_data=entry.get("raw_data") if isinstance(entry.get("raw_data"), dict) else {},
+                    domains=entry.get("domains", []) if isinstance(entry.get("domains", []), list) else [],
                 )
                 n.id = entry.get("id", n.id)
                 n.created_at = entry.get("created_at", n.created_at)
                 n.delivered_sse = entry.get("delivered_sse", False)
                 n.delivered_telegram = entry.get("delivered_telegram", False)
                 n.read = entry.get("read", False)
-                self._notifications.append(n)
-            logger.info("[Proactive] Loaded %d notifications from log", len(self._notifications))
+                with self._notification_lock:
+                    registered = self._register_notification_locked(
+                        n,
+                        dedup=True,
+                        count_stats=False,
+                        respect_time_window=False,
+                        affect_dedup=False,
+                        seed_dedup=False,
+                    )
+                    if registered and self._notification_within_dedup_window(n):
+                        dedup_text = self._notification_dedup_text(n)
+                        if dedup_text:
+                            self._affect_layer.deduplicator.record(
+                                summary=dedup_text,
+                                sources=self._notification_dedup_sources(n),
+                            )
+            logger.info("[Proactive] Loaded %d unique notifications from log", len(self._notifications))
         except Exception as exc:
             logger.warning("[Proactive] Failed to load log: %s", exc)
 
@@ -5075,8 +5586,8 @@ class ProactiveDigestLoop:
             source="daily_digest",
         )
 
-        self.engine._notifications.append(digest_notification)
-        self.engine._deliver_immediate(digest_notification)
+        if self.engine.register_notification(digest_notification):
+            self.engine._deliver_immediate(digest_notification)
 
         # Mark digest items as read
         for d in digests:

@@ -184,7 +184,11 @@ class MemoryConsolidationLoop:
     def _cross_run_extraction(self) -> int:
         """Extract cross-run patterns from recent episodic memories."""
         # Get recent episodic memories
-        recent_memories = self.episodic.retrieve("geopolitical economic financial market technology social conflict", top_k=10)
+        # Broad domain query — retrieve from ALL domains, not just geopolitics/finance
+        recent_memories = self.episodic.retrieve(
+            "pattern analysis insight discovery risk opportunity change trend signal",
+            top_k=10,
+        )
         if len(recent_memories) < 3:
             return 0
 

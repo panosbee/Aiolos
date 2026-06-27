@@ -201,25 +201,47 @@ class TemporalClock:
         self._chat_count = 0
         self._last_shutdown: datetime | None = None
         self._offline_seconds: float = 0.0
+        # Heartbeat-based shutdown estimate: graceful record_shutdown() is not
+        # always called (Ctrl+C in dev, taskkill, OS reboot). We persist a
+        # rolling heartbeat every tick + every 30s so that on the next boot
+        # we can estimate the previous shutdown moment from the last heartbeat
+        # rather than the last *graceful* shutdown (which on a dev machine
+        # with frequent hot-restarts could be days old — exactly what
+        # Πάνος hit on 2026-05-01: gap reported "95h" while we'd been
+        # restarting all day).
+        self._last_heartbeat: datetime | None = None
+        self._heartbeat_interval_s: float = 30.0
+        self._last_heartbeat_persist: float = 0.0
 
         # Load previous shutdown timestamp (if exists)
         try:
             if self._PERSIST_FILE.exists():
                 data = _json.loads(self._PERSIST_FILE.read_text(encoding="utf-8"))
                 ts = data.get("last_shutdown_utc")
-                if ts:
-                    self._last_shutdown = datetime.fromisoformat(ts)
+                hb = data.get("last_heartbeat_utc")
+                graceful_dt = datetime.fromisoformat(ts) if ts else None
+                heartbeat_dt = datetime.fromisoformat(hb) if hb else None
+                # Choose the MORE RECENT of (graceful shutdown, last heartbeat).
+                # Heartbeat wins for hard kills; graceful wins for clean exits.
+                candidates = [d for d in (graceful_dt, heartbeat_dt) if d is not None]
+                if candidates:
+                    self._last_shutdown = max(candidates)
+                    source = "heartbeat" if (
+                        heartbeat_dt and self._last_shutdown == heartbeat_dt
+                        and (not graceful_dt or heartbeat_dt > graceful_dt)
+                    ) else "graceful"
                     self._offline_seconds = (self._boot_time - self._last_shutdown).total_seconds()
                     if self._offline_seconds < 0:
                         self._offline_seconds = 0.0
                     logger.info(
-                        "[Clock] Previous shutdown: %s — offline for %.0fs",
-                        self._last_shutdown.isoformat(), self._offline_seconds,
+                        "[Clock] Previous shutdown: %s (%s) — offline for %.0fs",
+                        self._last_shutdown.isoformat(), source, self._offline_seconds,
                     )
         except Exception as e:
             logger.warning("[Clock] Could not load temporal state: %s", e)
 
-        # Write current boot time
+        # Write current boot time (and seed first heartbeat)
+        self._last_heartbeat = self._boot_time
         self._persist(boot=True)
         logger.info("[Clock] Booted at %s (Athens)", self._boot_time.astimezone(self._TZ).strftime("%H:%M:%S"))
 
@@ -227,22 +249,64 @@ class TemporalClock:
         """Record a new activity (called on each chat/pipeline interaction)."""
         self._last_activity = datetime.now(timezone.utc)
         self._chat_count += 1
+        # Opportunistic heartbeat: every interaction also refreshes our
+        # "last alive" marker on disk, throttled by _heartbeat_interval_s.
+        self.heartbeat()
+
+    def heartbeat(self) -> None:
+        """Persist a rolling 'last alive' timestamp.
+
+        Called from tick() and from a periodic background task. Throttled to
+        once per ``_heartbeat_interval_s`` to avoid disk thrash. On the next
+        boot, the offline gap is computed against the LATER of (last graceful
+        shutdown, last heartbeat) — which fixes the false multi-day offline
+        gaps when the server is killed abruptly between hot-restarts.
+        """
+        now = datetime.now(timezone.utc)
+        self._last_heartbeat = now
+        try:
+            mono = time.monotonic()
+            if mono - self._last_heartbeat_persist < self._heartbeat_interval_s:
+                return
+            self._last_heartbeat_persist = mono
+            self._persist(boot=False, heartbeat_only=True)
+        except Exception as e:
+            logger.debug("[Clock] Heartbeat persist failed: %s", e)
 
     def record_shutdown(self) -> None:
         """Persist shutdown timestamp for offline gap detection on next boot."""
         self._persist(boot=False)
         logger.info("[Clock] Shutdown recorded at %s", datetime.now(timezone.utc).isoformat())
 
-    def _persist(self, boot: bool = False) -> None:
-        """Write temporal state to disk."""
+    def _persist(self, boot: bool = False, heartbeat_only: bool = False) -> None:
+        """Write temporal state to disk.
+
+        Args:
+            boot: True on initial boot — preserves the prior shutdown timestamp.
+            heartbeat_only: True for periodic heartbeats — updates the
+                heartbeat field but does NOT touch last_shutdown_utc (the
+                heartbeat is its own field that serves as a fallback).
+        """
         import json as _json
         try:
+            now_iso = datetime.now(timezone.utc).isoformat()
             data = {
                 "boot_time_utc": self._boot_time.isoformat(),
                 "last_activity_utc": self._last_activity.isoformat() if self._last_activity else None,
+                "last_heartbeat_utc": now_iso,
             }
-            if not boot:
-                data["last_shutdown_utc"] = datetime.now(timezone.utc).isoformat()
+            if heartbeat_only:
+                # Preserve the existing graceful-shutdown timestamp, only
+                # bump the heartbeat. Read existing file if present.
+                if self._PERSIST_FILE.exists():
+                    try:
+                        prev = _json.loads(self._PERSIST_FILE.read_text(encoding="utf-8"))
+                        if prev.get("last_shutdown_utc"):
+                            data["last_shutdown_utc"] = prev["last_shutdown_utc"]
+                    except Exception:
+                        pass
+            elif not boot:
+                data["last_shutdown_utc"] = now_iso
             elif self._last_shutdown:
                 data["last_shutdown_utc"] = self._last_shutdown.isoformat()
             self._PERSIST_FILE.write_text(_json.dumps(data, indent=2), encoding="utf-8")
@@ -673,7 +737,10 @@ class XDARTFramework:
         if not mongo:
             return ""
         try:
-            doc = mongo.db.entities.find_one({"type": "self_evolution_goals"})
+            doc = mongo.db.entities.find_one({
+                "type": "self_evolution_goals",
+                "goals": {"$type": "array"},
+            })
             if not doc or not doc.get("goals"):
                 return ""
             lines = ["SELF-EVOLUTION GOALS (your active development objectives):"]
@@ -3358,6 +3425,38 @@ class XDARTFramework:
         """Check if a full pipeline analysis is currently running."""
         return self._pipeline_running.is_set()
 
+    @staticmethod
+    def _extract_proactive_headline(message: str) -> str | None:
+        """Extract the Headline value from a frontend [PROACTIVE ALERT — …] message.
+
+        The frontend (ui.html) sends proactive alerts to /xdart/chat/stream as a
+        multi-line message of the form:
+
+            [PROACTIVE ALERT — IMPORTANT]
+            Headline: <text>
+            Summary: <text>
+            …
+
+        Returning the headline lets the chat layer suppress the same notification
+        from the wakeup pending-batch context so Αίολος does not perceive a
+        duplicate (the alert appearing both as the chat input AND as a queued
+        pending entry).
+
+        Returns the headline string, or None if the message is not a proactive
+        envelope or the headline line is missing.
+        """
+        if not message:
+            return None
+        # Cheap prefix check before splitting; the bracketed token is unique enough.
+        if "[PROACTIVE ALERT" not in message[:64]:
+            return None
+        for raw in message.splitlines()[:8]:  # headline is always near the top
+            line = raw.strip()
+            if line.lower().startswith("headline:"):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+        return None
+
     # ── External Knowledge Hooks ──
 
     # ── Chat Mode ──
@@ -3646,9 +3745,15 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # We call _chat_inner but intercept just before the LLM call.
         # Instead, we extract the prepared context and stream the LLM ourselves.
 
+        # If the incoming message is a [PROACTIVE ALERT — …] envelope, extract its
+        # headline so wakeup can suppress that exact entry from the pending batch
+        # context (otherwise Αίολος sees the same notification twice and reports
+        # a false duplicate to Πάνος).
+        _excl_headline = self._extract_proactive_headline(message) if proactive else None
+
         # Build context (same 17 sections as _chat_inner)
         context_parts = []
-        wakeup = self.wakeup.run()
+        wakeup = self.wakeup.run(exclude_proactive_headline=_excl_headline)
         character = wakeup["character"]
         identity = wakeup["identity_context"]
         context_parts.append(f"IDENTITY:\n{identity[:3000]}")
@@ -4122,8 +4227,13 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         # Build context from all available knowledge
         context_parts = []
 
+        # If the incoming message is a [PROACTIVE ALERT — …] envelope, extract its
+        # headline so wakeup can suppress that exact entry from the pending batch
+        # context (avoids false-duplicate reports).
+        _excl_headline = self._extract_proactive_headline(message) if proactive else None
+
         # 1. Character state
-        wakeup = self.wakeup.run()
+        wakeup = self.wakeup.run(exclude_proactive_headline=_excl_headline)
         character = wakeup["character"]
         identity = wakeup["identity_context"]
         context_parts.append(f"IDENTITY:\n{identity[:3000]}")
@@ -5035,8 +5145,9 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                if self.system_control else "")
 
             + (("YOUR SELF-MODIFY TOOL (you CAN edit your own code, config, prompts, and character state):\n"
-               "You have the power to modify yourself — your source code, configuration, prompt overlays,\n"
-               "character state, and even create new tools. All changes are backed up automatically.\n"
+               "You have FULL authority over your own absolute core — your source code, configuration, prompt overlays,\n"
+               "character state, and tools. You can READ, WRITE, MODIFY, CREATE, MOVE and DELETE any file in the project root.\n"
+               "Every deletion and overwrite is backed up automatically first — nothing is irreversible.\n"
                "After modifying source code, use <SHELL_ACTION action=\"hot_reload\" modules=\"affected_module\" /> to apply.\n\n"
                "FILE OPERATIONS:\n"
                "  <SELF_MODIFY action=\"read_self\" path=\"xdart/core.py\" lines=\"100-200\" />  (introspect own code)\n"
@@ -5044,7 +5155,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                "  <SELF_MODIFY action=\"patch_file\" path=\"xdart/tools/my_tool.py\" old_text=\"old code here\" new_text=\"new code here\" />\n"
                "  <SELF_MODIFY action=\"edit_file\" path=\"xdart/tools/new_module.py\" content=\"full file content\" mode=\"write\" />\n"
                "  <SELF_MODIFY action=\"edit_file\" path=\"some_file.py\" content=\"appended text\" mode=\"append\" />\n"
-               "  <SELF_MODIFY action=\"create_file\" path=\"xdart/tools/new_helper.py\" content=\"...\" />\n\n"
+               "  <SELF_MODIFY action=\"create_file\" path=\"xdart/tools/new_helper.py\" content=\"...\" />\n"
+               "  <SELF_MODIFY action=\"delete_file\" path=\"xdart/tools/old_tool.py\" />  (deletes — backed up first)\n"
+               "  <SELF_MODIFY action=\"delete_file\" path=\"xdart/old_dir\" recursive=\"true\" />  (delete a whole folder)\n"
+               "  <SELF_MODIFY action=\"move_file\" path=\"xdart/tools/a.py\" new_path=\"xdart/tools/b.py\" />  (move/rename)\n\n"
                "PROMPT OVERLAYS (modify your own phase prompts — takes effect immediately):\n"
                "  <SELF_MODIFY action=\"set_overlay\" phase=\"xheart_output\" text=\"New overlay prompt text\" reason=\"Why I'm changing this\" />\n"
                "  <SELF_MODIFY action=\"set_overlay\" phase=\"chat_system\" text=\"Additional chat instructions\" reason=\"...\" />\n"
@@ -5375,10 +5489,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
             f"RULES:\n"
             f"- Be direct and insightful, not verbose\n"
             f"- WHEN THE USER ASKS 'τι νέα', 'what's happening', 'τι γίνεται', or any general briefing question: "
-            f"SYNTHESIZE the CURRENT WORLD DATA into a structured geopolitical/economic analysis. "
+            f"SYNTHESIZE the CURRENT WORLD DATA into a structured multi-domain analysis (geopolitical, economic, technological, social, scientific — whatever the data contains). "
             f"Do NOT just list raw data points. Provide a coherent analytical briefing with: "
             f"key developments, their interconnections, risk assessments, and strategic implications. "
-            f"You ARE an analyst — analyze, don't just report.\n"
+            f"You ARE an analyst — analyze ALL domains equally, don't just report, and don't default to geopolitics if the data covers other topics.\n"
             f"- Reference specific past analyses, memories, or data when relevant\n"
             f"- CRITICAL: ONLY cite information that actually appears in the RETRIEVED CONTEXT above. "
             f"If you cannot find specific content in your retrieved memories, say "
@@ -5716,6 +5830,14 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
         """
         msg_lower = message.lower()
         tools_ran = False
+
+        # ── PROACTIVE GUARD: Heavy analytical tools (BF, Creative Synthesis,
+        # Principle Discovery) are SKIPPED for proactive alerts. Proactive
+        # alerts are notifications that need a fast response, not a full
+        # 20-phase analytical pipeline. The LLM response alone is sufficient.
+        if proactive:
+            logger.info("[Chat.Tools] Proactive mode — skipping heavy analytical tools")
+            return False
 
         # ── Autonomous engine selection ────────────────────────────────────
         # Detect message intent → auto-select analytical engine without
@@ -7024,7 +7146,7 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                         path = result.get("path", "")
                         lines_info = result.get("lines", "full")
                         truncated = " (truncated)" if result.get("truncated") else ""
-                        msg = f"🧬 read_self [{path} : {lines_info}]{truncated}:\n```\n{content[:8000]}\n```"
+                        msg = f"🧬 read_self [{path} : {lines_info}]{truncated}:\n```\n{content[:200000]}\n```"
                     elif action == "list_modules":
                         modules = result.get("modules", [])
                         mod_list = "\n".join(f"  {m['path']} ({m['size']}B) — {m['doc'][:60]}" for m in modules[:30])
@@ -7035,6 +7157,10 @@ Respond with ONLY the self_prompt text. No JSON wrapping, no markdown fences."""
                         msg = f"🧬 edit_file: ✓ wrote {result.get('bytes_written', 0)}B to {result.get('path', '')} ({result.get('mode', 'write')})"
                     elif action == "create_file":
                         msg = f"🧬 create_file: ✓ created {result.get('path', '')} ({result.get('bytes_written', 0)}B)"
+                    elif action == "delete_file":
+                        msg = f"🧬 delete_file: ✓ deleted {result.get('path', '')} ({result.get('type', 'file')}) — recoverable from backups"
+                    elif action == "move_file":
+                        msg = f"🧬 move_file: ✓ {result.get('from', '')} → {result.get('to', '')}"
                     elif action == "set_overlay":
                         msg = f"🧬 set_overlay: ✓ phase={result.get('phase', '')} active={result.get('active', '')} ({result.get('text_length', 0)} chars)"
                     elif action == "update_config":

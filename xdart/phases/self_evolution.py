@@ -38,6 +38,11 @@ logger = logging.getLogger("xdart.self_evolution")
 
 JOURNAL_PATH = Path(_JOURNAL_PATH_STR)
 
+_MIN_DIAGNOSES_BETWEEN_INTERVENTIONS = 3
+_INTEGRITY_IMPROVEMENT_EPSILON = 0.02
+_RECENT_INTERVENTION_WINDOW = 8
+_MAX_RECENT_UNVALIDATED_INTERVENTIONS = 2
+
 
 DIAGNOSIS_PROMPT = """\
 You are the self-evolution module of an AI system named Αίολος.
@@ -138,6 +143,9 @@ analytical capabilities rather than tweaking existing ones.
 
 RECENT DIAGNOSIS HISTORY (what you already diagnosed — DO NOT repeat these):
 {recent_diagnoses}
+
+INTERVENTION CONTROL STATE:
+{intervention_control}
 
 CRITICAL RULES:
 - Be conservative. Only propose changes for clear, recurring patterns.
@@ -285,6 +293,115 @@ class SelfEvolutionLoop:
 
         return False
 
+    def _get_intervention_control_state(self, current_avg_integrity: float) -> dict:
+        """Decide whether another self-evolution intervention may be applied.
+
+        This closes the open-loop failure mode where every diagnosis creates a
+        new overlay/strategy before the previous one has had enough post-change
+        evidence to prove that it helped.
+        """
+        state = {
+            "hold_new_intervention": False,
+            "reason": "No applied intervention is awaiting validation.",
+            "diagnoses_since_last_apply": None,
+            "last_applied_change": None,
+            "integrity_delta_since_last_apply": None,
+            "recent_applied_count": 0,
+        }
+        if not JOURNAL_PATH.exists():
+            return state
+
+        entries = []
+        try:
+            with open(JOURNAL_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if entry.get("type") == "diagnosis":
+                        entries.append(entry)
+        except Exception:
+            return state
+
+        if not entries:
+            return state
+
+        applied = [
+            (idx, entry)
+            for idx, entry in enumerate(entries)
+            if entry.get("_applied")
+        ]
+        if not applied:
+            return state
+
+        last_idx, last_entry = applied[-1]
+        diagnoses_since = len(entries) - last_idx - 1
+        baseline = last_entry.get("avg_integrity")
+        delta = None
+        if isinstance(baseline, (int, float)):
+            delta = current_avg_integrity - float(baseline)
+
+        proposed = last_entry.get("result", {}).get("proposed_change", {}) or {}
+        state.update({
+            "diagnoses_since_last_apply": diagnoses_since,
+            "last_applied_change": {
+                "timestamp": last_entry.get("timestamp"),
+                "type": last_entry.get("_change_type"),
+                "target": proposed.get("target"),
+                "description": proposed.get("description"),
+                "baseline_integrity": baseline,
+            },
+            "integrity_delta_since_last_apply": delta,
+            "recent_applied_count": sum(
+                1 for _, entry in applied[-_RECENT_INTERVENTION_WINDOW:]
+                if entry.get("_applied")
+            ),
+        })
+
+        if diagnoses_since < _MIN_DIAGNOSES_BETWEEN_INTERVENTIONS:
+            if delta is None or delta < _INTEGRITY_IMPROVEMENT_EPSILON:
+                state["hold_new_intervention"] = True
+                state["reason"] = (
+                    f"Last intervention has only {diagnoses_since} post-change diagnoses; "
+                    f"need {_MIN_DIAGNOSES_BETWEEN_INTERVENTIONS} and integrity delta "
+                    f">= {_INTEGRITY_IMPROVEMENT_EPSILON:.2f} before stacking another change."
+                )
+                return state
+
+        recent_applied = state["recent_applied_count"]
+        if recent_applied >= _MAX_RECENT_UNVALIDATED_INTERVENTIONS and (
+            delta is None or delta < _INTEGRITY_IMPROVEMENT_EPSILON
+        ):
+            state["hold_new_intervention"] = True
+            state["reason"] = (
+                f"{recent_applied} interventions were applied in the recent window without "
+                "measurable integrity improvement; pause and validate/prune instead."
+            )
+        return state
+
+    @staticmethod
+    def _format_intervention_control_state(state: dict) -> str:
+        """Compact control-state text for the diagnosis prompt."""
+        last = state.get("last_applied_change") or {}
+        delta = state.get("integrity_delta_since_last_apply")
+        delta_text = "unknown" if delta is None else f"{delta:+.3f}"
+        if not last:
+            return "No applied intervention is awaiting validation. New changes are allowed if evidence is strong."
+        return (
+            f"hold_new_intervention={state.get('hold_new_intervention')}\n"
+            f"reason={state.get('reason')}\n"
+            f"diagnoses_since_last_apply={state.get('diagnoses_since_last_apply')}\n"
+            f"integrity_delta_since_last_apply={delta_text}\n"
+            f"recent_applied_count={state.get('recent_applied_count')}\n"
+            f"last_change={last.get('type')} target={last.get('target')} "
+            f"at={last.get('timestamp')} baseline={last.get('baseline_integrity')}\n"
+            "If hold_new_intervention=True, diagnose only if useful but do NOT propose another overlay/strategy."
+        )
+
     def diagnose(
         self,
         character: dict,
@@ -366,6 +483,9 @@ class SelfEvolutionLoop:
             failure_patterns = self.introspection.get_failure_patterns()
             avg_integrity = self.introspection.get_average_integrity()
 
+        intervention_state = self._get_intervention_control_state(avg_integrity)
+        intervention_control_text = self._format_intervention_control_state(intervention_state)
+
         # Character summary
         character_summary = (
             f"Version: {character.get('version', 0)}\n"
@@ -390,6 +510,7 @@ class SelfEvolutionLoop:
             strategy_context=strategy_context,
             valid_injection_points=", ".join(sorted(VALID_INJECTION_POINTS)),
             recent_diagnoses=recent_diag_text,
+            intervention_control=intervention_control_text,
         )
 
         # Inject deadlock-break instruction when forced fresh
@@ -439,6 +560,7 @@ class SelfEvolutionLoop:
             "issue_detected": issue_found,
             "result": result,
             "elapsed_seconds": round(elapsed, 2),
+            "intervention_control": intervention_state,
         }
 
         if issue_found:
@@ -451,9 +573,16 @@ class SelfEvolutionLoop:
             proposed = result.get("proposed_change", {})
             change_type = proposed.get("type", "none")
             applied = False
+            intervention_hold = bool(intervention_state.get("hold_new_intervention"))
 
             # If the proposed change is a prompt overlay, apply it directly
-            if change_type == "prompt_overlay":
+            if intervention_hold and change_type != "none":
+                logger.warning(
+                    "[SelfEvolution] Intervention held for validation: %s",
+                    intervention_state.get("reason"),
+                )
+
+            elif change_type == "prompt_overlay":
                 overlay_text = proposed.get("overlay_text", "")
                 target = proposed.get("target", "")
                 if overlay_text and target in VALID_TARGETS:
@@ -553,6 +682,9 @@ class SelfEvolutionLoop:
             # Write journal entry now that we know whether the change was applied
             _journal_entry_base["_applied"] = applied
             _journal_entry_base["_change_type"] = change_type
+            if intervention_hold and change_type != "none":
+                _journal_entry_base["_held_for_validation"] = True
+                _journal_entry_base["_hold_reason"] = intervention_state.get("reason")
             self._journal(_journal_entry_base)
 
             # If a change was applied, set a per-pattern cooldown so the same pattern

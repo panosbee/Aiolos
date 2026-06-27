@@ -417,6 +417,16 @@ class StrategyRegistry:
 
     # ── CRUD ──
 
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """Jaccard similarity on lowercased word sets."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return 0.0
+        union = words_a | words_b
+        return len(words_a & words_b) / len(union) if union else 0.0
+
     def add(self, strategy: CognitiveStrategy) -> bool:
         """Add a strategy. Returns False if at capacity or duplicate name."""
         active_count = sum(1 for s in self._strategies.values() if s.active)
@@ -427,7 +437,12 @@ class StrategyRegistry:
             )
             return False
 
-        # Check for duplicate name
+        # Check for duplicate name or near-duplicate strategy intent.
+        new_signature = " ".join([
+            strategy.name,
+            strategy.purpose,
+            strategy.trigger_conditions,
+        ])
         for s in self._strategies.values():
             if s.active and s.name.lower() == strategy.name.lower():
                 logger.warning(
@@ -435,6 +450,19 @@ class StrategyRegistry:
                     strategy.name, s.id,
                 )
                 return False
+            if s.active:
+                existing_signature = " ".join([
+                    s.name,
+                    s.purpose,
+                    s.trigger_conditions,
+                ])
+                similarity = self._text_similarity(new_signature, existing_signature)
+                if similarity >= 0.55:
+                    logger.warning(
+                        "[CognitiveStrategies] Strategy '%s' rejected — %.0f%% similar to active '%s'",
+                        strategy.name, similarity * 100, s.name,
+                    )
+                    return False
 
         self._strategies[strategy.id] = strategy
         self._save()

@@ -104,6 +104,8 @@
         "patch_file",
         "edit_file",
         "create_file",
+        "delete_file",
+        "move_file",
         "set_overlay",
         "update_config",
         "update_character",
@@ -113,6 +115,8 @@
       "usage_examples": [
         "<SELF_MODIFY action=\"read_self\" path=\"xdart/core.py\" lines=\"100-200\" />",
         "<SELF_MODIFY action=\"patch_file\" path=\"xdart/tools/my_tool.py\" old_text=\"...\" new_text=\"...\" />",
+        "<SELF_MODIFY action=\"delete_file\" path=\"xdart/tools/old_tool.py\" />",
+        "<SELF_MODIFY action=\"move_file\" path=\"xdart/tools/a.py\" new_path=\"xdart/tools/b.py\" />",
         "<SELF_MODIFY action=\"set_overlay\" phase=\"xheart_output\" text=\"...\" reason=\"...\" />",
         "<SELF_MODIFY action=\"update_config\" key=\"OPENAI_TEMPERATURE\" value=\"0.5\" />"
       ]

@@ -753,8 +753,10 @@ class ScheduledBriefingEngine:
                 raw_data={"brief_id": brief.get("id"), "security_level": brief.get("security_level")},
                 domains=["GEOPOLITICAL", "ECONOMIC", "MARKET"],
             )
-            self.proactive_engine._notifications.append(notification)
-            logger.info("[Briefing] In-app notification created")
+            if self.proactive_engine.register_notification(notification):
+                logger.info("[Briefing] In-app notification created")
+            else:
+                logger.info("[Briefing] Duplicate in-app notification suppressed")
         except Exception as exc:
             logger.debug("[Briefing] In-app notification failed: %s", exc)
 

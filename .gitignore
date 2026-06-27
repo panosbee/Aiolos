@@ -54,3 +54,56 @@ Thumbs.db
 # ── Temporary / helper scripts ──
 _*.py
 migrate_from_docker.py
+temp_test.ps1
+.self_inject_next.txt
+
+# ── Self-modification backups & journal (runtime) ──
+.self_modify_backups/
+self_modification_journal.jsonl
+
+# ══════════════════════════════════════════════════════════════
+#  PERSISTENT MEMORY & STATE — keep OUT of the public repo
+#  These accumulate personal data (names, faces, journals, history).
+#  They are recreated at runtime; the repo ships with clean memory.
+# ══════════════════════════════════════════════════════════════
+# Identity / character / memory
+character_state.json
+character_state_*.json
+immediate_memory.json
+self_awareness_brief.json
+narrative.txt
+self.txt
+world.txt
+next.txt
+
+# Knowledge graphs & people/face data (PRIVACY-SENSITIVE)
+entity_graph.json
+face_name_registry.json
+visual_first_sightings.json
+
+# Cognitive / reasoning state
+cognitive_strategies.json
+cognitive_pool_state.json
+principle_registry.json
+wisdom_calibration.json
+ontology_state.json
+hypothesis_state.json
+temporal_state.json
+temporal_patterns.json
+logic_sandbox_state.json
+workflow_scheduler_state.json
+action_graph.json
+cross_system_cache.json
+prompt_overlays.json
+visual_predictions.json
+xdart/evolution/evolution_log.json
+
+# All runtime journals
+*_journal.jsonl
+*_journal.json
+reflection_journal.jsonl
+shell_action_journal.jsonl
+
+# Generated tools (Αίολος' autonomous creations — runtime)
+xdart/tools/_generated/*.py
+!xdart/tools/_generated/__init__.py

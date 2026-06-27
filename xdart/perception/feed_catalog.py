@@ -481,11 +481,22 @@ HEADLINE_SCORE_CATEGORIES = {
                       "mass protest", "civil war", "refugee"],
     },
     # ── Geopolitical flashpoints ──
+    # Score is per-match only (base=0) — being about a specific country
+    # does NOT automatically make something more important than science/tech.
     "flashpoint": {
-        "base": 0, "per_match": 20,
+        "base": 0, "per_match": 10,
         "keywords": ["iran", "russia", "china", "taiwan", "ukraine", "israel",
                       "gaza", "north korea", "syria", "yemen", "hamas",
                       "hezbollah", "nato", "kremlin"],
+    },
+    # ── Science / Health / Climate (elevated to equal tech_disruption) ──
+    "science_breakthrough": {
+        "base": 40, "per_match": 15,
+        "keywords": ["breakthrough", "discovery", "clinical trial", "fda approval",
+                      "vaccine", "pandemic", "epidemic", "mutation", "outbreak",
+                      "nobel prize", "climate tipping", "record temperature",
+                      "ipcc", "extinction", "agi", "quantum supremacy",
+                      "fusion", "gene therapy", "crispr"],
     },
     # ── General crisis (cross-domain) ──
     "crisis": {
