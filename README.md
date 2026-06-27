@@ -714,7 +714,7 @@ The full technical paper is available in this repository:
 
 📄 **[XDART-Φ: From Prompt Engineering to Persistent Entity Architecture](XDART_Phi_Paper_V2.pdf)**
 
-*Panos Skouras — Salimov MON IKE, Athens, Greece*
+*Panos Skouras — Infosphere Technologies Crete, Greece*
 
 The paper covers the theoretical foundations, architectural decisions, mathematical formalisms, production results, and lessons learned from building and operating the system.
 
